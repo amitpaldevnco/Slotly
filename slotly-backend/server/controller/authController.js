@@ -1,33 +1,133 @@
+/**
+ * Authentication, identity and profile endpoints.
+ *
+ * This file owns three things that are easy to conflate and are kept apart on
+ * purpose:
+ *
+ *   1. **Proving who someone is** — `registerUser`/`loginUser` for the password
+ *      route, `googleAuth`/`githubAuthRedirect`/`githubAuthCallback` for OAuth.
+ *      All five end the same way: a signed JWT in an httpOnly cookie. Nothing in
+ *      this file ever puts a token in the response body, because a token a
+ *      script can read is a token an injected script can steal.
+ *   2. **Deciding what account they land on** — delegated entirely to
+ *      `services/accountLinking.js`, so Google and GitHub cannot drift apart.
+ *      See that file for why one email always resolves to one row.
+ *   3. **Completing and editing a profile** — `completeProfile` runs exactly
+ *      once, `updateProfile` runs any number of times. That split is the whole
+ *      reason `role` cannot be rewritten; see `completeProfile`.
+ *
+ * ## The one asymmetry worth knowing about
+ *
+ * Signing in socially on an email that already has a password account *links*
+ * the two. Registering with a password on an email that already has a social
+ * account is *refused* with 409 naming the provider to use. The directions are
+ * deliberately different: the social provider has verified the address, so it
+ * is safe to attach that identity to the existing row, whereas anyone can type
+ * an email into a registration form and attaching a password to a stranger's
+ * verified account on that basis would be an account-takeover primitive.
+ */
 import { OAuth2Client } from "google-auth-library";
 import jwt from "jsonwebtoken";
-import { query } from "../config/dbConfig.js";
-import { successResponse, errorResponse, validationErrorResponse } from "../responseController/responseHandler.js"; 
+import { DateTime } from "luxon";
 import axios from "axios";
 import bcrypt from "bcrypt";
+import { query } from "../config/dbConfig.js";
 import {
-  validateUploadedImage,
-  buildStoredFileName,
-  deleteStoredFile,
-  discardUpload,
-} from "../utils/fileValidation.js";
+  successResponse,
+  errorResponse,
+  validationErrorResponse,
+  ERROR_CODES,
+} from "../responseController/responseHandler.js";
+import { validateUploadedImage, discardUpload } from "../utils/fileValidation.js";
+import { storeImage, deleteImage } from "../services/imageStorage.js";
 import { resolveSocialAccount } from "../services/accountLinking.js";
 import {
   frontendBaseUrl,
   sessionCookieOptions,
   sessionCookieClearOptions,
 } from "../config/appConfig.js";
-import { DateTime } from "luxon";
-import fs from "fs/promises";
-import path from "path";
 
+/** How long a session lasts. Matches the cookie's own maxAge in appConfig. */
+const SESSION_LIFETIME = "7d";
+
+/** bcrypt work factor. 10 is ~100ms per hash on current hardware. */
+const BCRYPT_ROUNDS = 10;
+
+/**
+ * True when Luxon can resolve `zone` as an IANA timezone name.
+ *
+ * Used rather than a regex or a hardcoded list because the set of valid zones
+ * is whatever the runtime's ICU data says it is, and that changes with the
+ * Node version. Asking the library that will later do the arithmetic is the
+ * only check that cannot disagree with it.
+ *
+ * @param {unknown} zone
+ * @returns {boolean}
+ */
 function isValidTimezone(zone) {
   return typeof zone === "string" && zone.length > 0 && DateTime.local().setZone(zone).isValid;
 }
 
+/**
+ * Mints the session cookie for a user row.
+ *
+ * Shared by all five sign-in paths so the token's claims, lifetime and cookie
+ * attributes cannot drift between them — a difference there would be invisible
+ * until one route's sessions started outliving another's.
+ *
+ * @param {import('express').Response} res
+ * @param {{id: number, email: string}} user
+ */
+function issueSession(res, user) {
+  const token = jwt.sign({ userId: user.id, email: user.email }, process.env.JWT_SECRET, {
+    expiresIn: SESSION_LIFETIME,
+  });
+  res.cookie("token", token, sessionCookieOptions);
+}
+
+/**
+ * The user shape every auth endpoint returns.
+ *
+ * One function rather than six inline object literals, because the client reads
+ * these fields positionally in its auth context and a field missing from one
+ * response but present in another shows up as a value that mysteriously blanks
+ * after signing in by a different route.
+ *
+ * @param {object} row A `users` row.
+ * @returns {object} Safe to send to the browser — no password hash, no
+ *   provider ids.
+ */
+function publicUser(row) {
+  return {
+    id: row.id,
+    name: row.name,
+    email: row.email,
+    avatar: row.avatar_url,
+    role: row.role,
+    phoneNumber: row.phone_number,
+    timezone: row.timezone,
+    businessName: row.business_name,
+    businessType: row.business_type,
+  };
+}
+
 const googleClient = new OAuth2Client(process.env.GOOGLE_CLIENT_ID);
 
-// POST /api/auth/google
-// Body: { credential: "<Google ID token from the frontend button>" }
+/**
+ * POST /api/auth/google — public.
+ *
+ * Body: `{ credential }` — the ID token Google's button hands the frontend.
+ *
+ * The token is verified against Google's own keys with the audience pinned to
+ * `GOOGLE_CLIENT_ID`, so a token minted for some other application is rejected.
+ * That verification is why the client is trusted to supply it at all: nothing
+ * in the request is believed until Google has vouched for it.
+ *
+ * @returns 200 with `{ user, isNewUser, profileComplete }` and a session cookie.
+ *   401 if the credential is missing, expired, forged, or issued for a
+ *   different client id — all reported identically, since distinguishing them
+ *   would tell an attacker which of their guesses was closer.
+ */
 export const googleAuth = async (req, res) => {
   try {
     const { credential } = req.body;
@@ -60,29 +160,13 @@ export const googleAuth = async (req, res) => {
       avatarUrl: picture,
     });
 
-    const token = jwt.sign(
-      { userId: user.id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.cookie("token", token, sessionCookieOptions);
+    issueSession(res, user);
 
     // role is NULL until the user finishes the profile-completion form
     const profileComplete = Boolean(user.role);
 
     return successResponse(res, isNewUser ? "Account created" : "Login successful", {
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        avatar: user.avatar_url,
-        role: user.role,
-        phoneNumber: user.phone_number,
-        timezone: user.timezone,
-        businessName: user.business_name,
-        businessType: user.business_type,
-      },
+      user: publicUser(user),
       isNewUser,
       profileComplete,
     });
@@ -92,11 +176,56 @@ export const googleAuth = async (req, res) => {
   }
 };
 
-// PATCH /api/auth/profile (protected by verifyToken)
-// Body: { role, phoneNumber, timezone, businessName?, serviceCategory? }
+/**
+ * PATCH /api/auth/complete-profile — requires a session.
+ *
+ * Body: `{ role, phoneNumber, timezone, businessName?, businessType? }`
+ *
+ * The one and only time a user's `role` is ever written. Everything after this
+ * goes through `updateProfile`, which cannot touch `role` at all.
+ *
+ * ## Why this is refused once the role is set
+ *
+ * `role` is not a preference, it is the axis every authorization decision in the
+ * app turns on: `requireProviderRole` gates the service and availability
+ * endpoints, `createBooking` insists the caller is a client, and the booking
+ * queries choose between `provider_id = me` and `client_id = me` from it.
+ * Letting a signed-in user rewrite it would mean any client could grant
+ * themselves provider access by replaying this request with a different value —
+ * server-side authorization that the client gets to reconfigure is not
+ * authorization at all.
+ *
+ * It is refused in the other direction too, which matters just as much and is
+ * less obvious: a provider who flipped to `client` would keep every booking on
+ * their calendar while losing every endpoint that can read or act on one, so
+ * real appointments with real people on the other end would become
+ * unreachable — cancellable by nobody, visible to nobody.
+ *
+ * Changing role is therefore a support operation on a fresh account, not a
+ * self-service toggle. The check reads the *current* value from the database
+ * rather than trusting anything in the request or the token.
+ *
+ * @returns 200 with `{ user }` on success. 400 VALIDATION_FAILED for a bad
+ *   field. **409 INVALID_TRANSITION when a role has already been chosen.**
+ *   404 if the session names a user that no longer exists.
+ */
 export const completeProfile = async (req, res) => {
   try {
     const { role, phoneNumber, timezone, businessName, businessType } = req.body;
+
+    const current = await query("SELECT role FROM users WHERE id = $1", [req.user.userId]);
+    if (current.rows.length === 0) {
+      return errorResponse(res, "User not found", 404, ERROR_CODES.NOT_FOUND);
+    }
+
+    if (current.rows[0].role) {
+      return errorResponse(
+        res,
+        `Your account is already set up as a ${current.rows[0].role}. Roles cannot be changed once chosen.`,
+        409,
+        ERROR_CODES.INVALID_TRANSITION
+      );
+    }
 
     const errors = [];
     if (!role || !["client", "provider"].includes(role)) {
@@ -109,18 +238,21 @@ export const completeProfile = async (req, res) => {
       errors.push({ field: "timezone", message: "That is not a timezone we recognise" });
     }
     if (role === "provider") {
-      if (!businessName) errors.push({ field: "businessName", message: "Business name is required for providers" });
-      if (!businessType)
-    errors.push({
-        field: "businessType",
-        message: "Business type is required",
-    });
+      if (!businessName) {
+        errors.push({ field: "businessName", message: "Business name is required for providers" });
+      }
+      if (!businessType) {
+        errors.push({ field: "businessType", message: "Business type is required" });
+      }
     }
 
     if (errors.length > 0) {
       return validationErrorResponse(res, "Please fix the errors below", errors);
     }
 
+    // `AND role IS NULL` repeats the check above inside the write itself. Two
+    // requests arriving together would both pass the SELECT; only one can match
+    // this UPDATE, so the role is still written exactly once.
     const updated = await query(
       `UPDATE users
        SET role = $1,
@@ -129,7 +261,7 @@ export const completeProfile = async (req, res) => {
            business_name = $4,
            business_type = $5,
            updated_at = NOW()
-       WHERE id = $6
+       WHERE id = $6 AND role IS NULL
        RETURNING *`,
       [
         role,
@@ -142,29 +274,38 @@ export const completeProfile = async (req, res) => {
     );
 
     if (updated.rows.length === 0) {
-      return errorResponse(res, "User not found", 404);
+      // The row exists — the SELECT above found it — so matching nothing here
+      // means a concurrent request set the role first.
+      return errorResponse(
+        res,
+        "Your account was already set up. Please reload the page.",
+        409,
+        ERROR_CODES.INVALID_TRANSITION
+      );
     }
 
-    const user = updated.rows[0];
-    return successResponse(res, "Profile completed", {
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        avatar: user.avatar_url,
-        role: user.role,
-        phoneNumber: user.phone_number,
-        timezone: user.timezone,
-        businessName: user.business_name,
-        businessType: user.business_type,
-      },
-    });
+    return successResponse(res, "Profile completed", { user: publicUser(updated.rows[0]) });
   } catch (err) {
     console.error("completeProfile error:", err.message);
     return errorResponse(res, "Could not update profile", 500);
   }
 };
 
+/**
+ * GET /api/auth/me — requires a session.
+ *
+ * The endpoint the React app calls on every page load to rehydrate its auth
+ * context, which is why it returns the full profile rather than just an id: the
+ * alternative is a second round trip before anything can render.
+ *
+ * Columns are listed explicitly rather than `SELECT *` so that adding a column
+ * to `users` — a password hash, a provider id, a reset token — cannot silently
+ * start sending it to the browser.
+ *
+ * @returns 200 with the profile. 401 if the cookie is missing or invalid
+ *   (raised by `verifyToken` before this runs). 404 if the session names a user
+ *   that has since been deleted.
+ */
 export const getCurrentUser = async (req, res) => {
   try {
     const userId = req.user.userId;
@@ -205,8 +346,16 @@ export const getCurrentUser = async (req, res) => {
 
 
 
-// GET /api/auth/github
-// Step 1: redirect the browser to GitHub's authorize screen
+/**
+ * GET /api/auth/github — public. Step 1 of the OAuth 2.0 authorization-code flow.
+ *
+ * Redirects the browser to GitHub's consent screen. Nothing secret is involved
+ * here: only the client *id* travels, in a URL the user can read. The client
+ * secret never leaves the server and is used once, in the callback below, to
+ * exchange the returned code for a token.
+ *
+ * @returns 302 to github.com.
+ */
 export const githubAuthRedirect = (req, res) => {
   const params = new URLSearchParams({
     client_id: process.env.GITHUB_CLIENT_ID,
@@ -218,8 +367,27 @@ export const githubAuthRedirect = (req, res) => {
   res.redirect(`https://github.com/login/oauth/authorize?${params.toString()}`);
 };
 
-// GET /api/auth/github/callback
-// Step 2: GitHub redirects here with a one-time ?code=
+/**
+ * GET /api/auth/github/callback — public. Step 2 of the flow.
+ *
+ * GitHub sends the browser here with a single-use `?code=`, which is exchanged
+ * server-to-server for an access token. The profile is then read with that
+ * token by this server, never by the client — so the identity this endpoint
+ * acts on came from GitHub directly and cannot be forged by whoever is driving
+ * the browser.
+ *
+ * A primary *verified* email is preferred when the profile's own email is
+ * private, because the address is what account linking keys on; accepting an
+ * unverified one would let someone claim an account by adding its address to
+ * their GitHub profile.
+ *
+ * @returns 302 to the frontend — `/dashboard` when the profile is complete,
+ *   `/complete-profile` when it is not, or `/login?error=…` for each distinct
+ *   failure (`github_cancelled`, `github_token_failed`, `github_no_email`,
+ *   `github_failed`) so the login page can explain what went wrong. Errors are
+ *   redirects rather than JSON because the caller here is a browser following a
+ *   redirect chain, not a fetch.
+ */
 export const githubAuthCallback = async (req, res) => {
   const { code } = req.query;
 
@@ -281,13 +449,7 @@ export const githubAuthCallback = async (req, res) => {
       avatarUrl,
     });
 
-    const token = jwt.sign(
-      { userId: user.id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.cookie("token", token, sessionCookieOptions);
+    issueSession(res, user);
 
     const profileComplete = Boolean(user.role);
     res.redirect(
@@ -302,8 +464,23 @@ export const githubAuthCallback = async (req, res) => {
 
 
 
-// POST /api/auth/register
-// Body: { name, email, password }
+/**
+ * POST /api/auth/register — public.
+ *
+ * Body: `{ name, email, password }`. Minimum password length is 8; the hash is
+ * bcrypt, and the plaintext is never written anywhere, including logs.
+ *
+ * An email that already exists is never turned into a second row — `users.email`
+ * is UNIQUE, and each reason the address is taken gets its own message so the
+ * user is told which button to press instead of being stonewalled. See the file
+ * header for why this direction refuses rather than links.
+ *
+ * @returns 201 with `{ user, isNewUser, profileComplete }` and a session cookie.
+ *   400 VALIDATION_FAILED for a bad name, email or short password. 409 when the
+ *   address already belongs to a Google, GitHub or password account. 500 for a
+ *   row with no auth method at all, which should be unreachable and is logged
+ *   as a data-integrity problem rather than guessed at.
+ */
 export const registerUser = async (req, res) => {
   try {
     const { name, email, password } = req.body;
@@ -324,7 +501,7 @@ export const registerUser = async (req, res) => {
 
     // Case 1 — email not present: brand new user
     if (existing.rows.length === 0) {
-      const passwordHash = await bcrypt.hash(password, 10);
+      const passwordHash = await bcrypt.hash(password, BCRYPT_ROUNDS);
 
       const inserted = await query(
         `INSERT INTO users (email, name, password_hash)
@@ -334,19 +511,14 @@ export const registerUser = async (req, res) => {
       );
       const user = inserted.rows[0];
 
-      const token = jwt.sign(
-        { userId: user.id, email: user.email },
-        process.env.JWT_SECRET,
-        { expiresIn: "7d" }
+      issueSession(res, user);
+
+      return successResponse(
+        res,
+        "Account created",
+        { user: publicUser(user), isNewUser: true, profileComplete: false },
+        201
       );
-
-      res.cookie("token", token, sessionCookieOptions);
-
-      return successResponse(res, "Account created", {
-        user: { id: user.id, name: user.name, email: user.email, role: user.role },
-        isNewUser: true,
-        profileComplete: false,
-      });
     }
 
     // Email is present — figure out why, and never create a duplicate row for it
@@ -374,8 +546,22 @@ export const registerUser = async (req, res) => {
   }
 };
 
-// POST /api/auth/login
-// Body: { email, password }
+/**
+ * POST /api/auth/login — public.
+ *
+ * Body: `{ email, password }`.
+ *
+ * An account with no `password_hash` reached this app through Google or GitHub,
+ * so it is told which to use rather than being given "invalid password" for a
+ * password it never had. That does disclose that an address is registered and
+ * by which method — accepted deliberately, because the alternative is a user
+ * who cannot work out how to get into their own account, and the address is
+ * already discoverable through the registration form regardless.
+ *
+ * @returns 200 with `{ user, isNewUser: false, profileComplete }` and a session
+ *   cookie. 400 if a field is missing. 401 for an unknown email or a wrong
+ *   password. 409 when the account uses a social provider instead.
+ */
 export const loginUser = async (req, res) => {
   try {
     const { email, password } = req.body;
@@ -412,30 +598,12 @@ export const loginUser = async (req, res) => {
       return errorResponse(res, "Invalid email or password", 401);
     }
 
-    const token = jwt.sign(
-      { userId: user.id, email: user.email },
-      process.env.JWT_SECRET,
-      { expiresIn: "7d" }
-    );
-
-    res.cookie("token", token, sessionCookieOptions);
-
-    const profileComplete = Boolean(user.role);
+    issueSession(res, user);
 
     return successResponse(res, "Login successful", {
-      user: {
-        id: user.id,
-        name: user.name,
-        email: user.email,
-        avatar: user.avatar_url,
-        role: user.role,
-        phoneNumber: user.phone_number,
-        timezone: user.timezone,
-        businessName: user.business_name,
-        businessType: user.business_type,
-      },
+      user: publicUser(user),
       isNewUser: false,
-      profileComplete,
+      profileComplete: Boolean(user.role),
     });
   } catch (err) {
     console.error("loginUser error:", err.message);
@@ -443,8 +611,28 @@ export const loginUser = async (req, res) => {
   }
 };
 
-
-
+/**
+ * PATCH /api/auth/profile — requires a session. multipart/form-data.
+ *
+ * Edits the signed-in user's own profile, and only ever their own: the row is
+ * chosen by `req.user.userId`, so there is no id in the request for a caller to
+ * change. Every provider-only field is gated on the role read from the database
+ * a few lines up rather than on anything the request claims, so a client cannot
+ * set a bio or qualifications that would then appear on a public page.
+ *
+ * **`role` is deliberately not editable here.** See `completeProfile`.
+ *
+ * The optional `profilePicture` file has its real type decided by sniffing its
+ * header, never by its extension or the MIME type the browser declared — see
+ * `utils/fileValidation.js`. The previous image is removed only after the
+ * replacement is safely stored, so a failure part-way through leaves the user
+ * with a photo rather than none.
+ *
+ * @returns 200 with the updated row. 400 for an invalid phone number, timezone,
+ *   over-long bio, or a rejected upload. 404 if the session names a user that no
+ *   longer exists. 500 on an unexpected failure, after discarding the temporary
+ *   upload so a rejected request leaves nothing behind on disk.
+ */
 export async function updateProfile(req, res) {
   try {
     const userId = req.user.userId;
@@ -524,15 +712,19 @@ export async function updateProfile(req, res) {
         ]);
       }
 
-      const fileName = buildStoredFileName(userId, validation.extension);
-      await fs.rename(req.file.path, path.join(path.dirname(req.file.path), fileName));
+      const storedUrl = await storeImage({
+        file: req.file,
+        kind: "avatar",
+        extension: validation.extension,
+        ownerId: userId,
+      });
 
       // Remove the previous avatar only after the replacement is in place, so a
       // failure part-way through leaves the user with a photo rather than none.
       const user = await query("SELECT avatar_url FROM users WHERE id = $1", [userId]);
-      await deleteStoredFile(user.rows[0]?.avatar_url);
+      await deleteImage(user.rows[0]?.avatar_url);
 
-      updateData.avatar_url = `/uploads/avatars/${fileName}`;
+      updateData.avatar_url = storedUrl;
     }
 
     // Update user in database
@@ -567,8 +759,20 @@ export async function updateProfile(req, res) {
   }
 }
 
-// POST /api/auth/logout
-// POST /api/auth/logout
+/**
+ * POST /api/auth/logout — public.
+ *
+ * Deliberately unauthenticated: signing out a session that has already expired
+ * must still clear the cookie, and requiring a valid token to do that would
+ * leave a stale cookie sitting in the browser precisely when it is least wanted.
+ *
+ * `sessionCookieClearOptions` omits `maxAge` on purpose — a cookie is only
+ * cleared when its attributes match the ones it was set with, and Express
+ * derives `expires` from `maxAge`, which would overwrite the expiry-in-the-past
+ * that does the clearing. See `config/appConfig.js`.
+ *
+ * @returns 200, always.
+ */
 export const logout = (req, res) => {
   res.clearCookie("token", sessionCookieClearOptions);
   return successResponse(res, "Logged out");

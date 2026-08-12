@@ -5,6 +5,7 @@ import {
   ProtectedRoute,
   RoleRoute,
   GuestOnlyRoute,
+  CompleteProfileRoute,
 } from "./components/RouteGuards";
 import Layout from "./components/Layout";
 
@@ -40,10 +41,13 @@ export default function App() {
                 <Route path="/login" element={<LoginPage />} />
               </Route>
 
-              <Route
-                path="/complete-profile"
-                element={<CompleteProfilePage />}
-              />
+              {/* Signed in, but no role chosen yet. */}
+              <Route element={<CompleteProfileRoute />}>
+                <Route
+                  path="/complete-profile"
+                  element={<CompleteProfilePage />}
+                />
+              </Route>
 
               {/* Any signed-in user with a completed profile. */}
               <Route element={<ProtectedRoute />}>

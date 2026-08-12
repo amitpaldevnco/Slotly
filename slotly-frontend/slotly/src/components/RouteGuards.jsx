@@ -45,6 +45,28 @@ export function RoleRoute({ role }) {
 }
 
 
+/**
+ * Profile completion — reachable only by a signed-in user who has no role yet.
+ *
+ * The role is chosen once and cannot be changed afterwards (the server returns
+ * 409 INVALID_TRANSITION on a second attempt, which is where the rule is
+ * actually enforced). Sending a user who already has one back to their
+ * dashboard means they never see a form whose submit button could only fail.
+ */
+export function CompleteProfileRoute() {
+  const { user, loading } = useAuth();
+  const location = useLocation();
+
+  if (loading) return <PageLoader label="Checking your session…" />;
+  if (!user) {
+    return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
+  }
+  if (user.role) return <Navigate to="/dashboard" replace />;
+
+  return <Outlet />;
+}
+
+
 export function GuestOnlyRoute() {
   const { user, loading } = useAuth();
 
