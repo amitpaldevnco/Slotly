@@ -5,9 +5,31 @@ the hours they work; a client picks an open slot and books it. The provider gets
 calendar that is always correct, and every person sees every time in their own
 timezone.
 
-This repository is the **Express / PostgreSQL API**. The React client lives in
-[slotly-frontend](https://github.com/amitpaldevnco/slotly-frontend). The two are
-genuinely separate services: this one renders no HTML except its own docs page.
+This folder is the **Express / PostgreSQL API**. The React client is at
+[`../../slotly-frontend/slotly`](../../slotly-frontend/slotly). The two are
+genuinely separate services that happen to be versioned together: this one
+renders no HTML except its own docs page.
+
+**Start at the [repository README](../../README.md)** for the live URLs, the demo
+accounts and the one-minute tour. This file is the API's own reference.
+
+| | |
+|---|---|
+| **API** | <https://slotly-backend-p2r5.onrender.com/api> |
+| **API reference** | <https://slotly-backend-p2r5.onrender.com/api/docs> |
+| **App** | <https://slotly-navy.vercel.app> |
+
+> Render's free tier sleeps after 15 minutes idle; the first request after a nap
+> takes 20–50 seconds while the container wakes.
+
+**Demo accounts** — password `SlotlyDemo123!` for all three. Recreate them at any
+time with `npm run db:seed`.
+
+| Role | Email | Timezone |
+|---|---|---|
+| Provider | `priya.provider@slotly.demo` | `Europe/London` (observes DST) |
+| Provider | `arjun.provider@slotly.demo` | `Asia/Kolkata` (no DST, +05:30) |
+| Client | `casey.client@slotly.demo` | `America/New_York` |
 
 Two guarantees run through the whole build, and everything else is secondary to
 them:
@@ -39,22 +61,13 @@ them:
 
 ---
 
-
-Frontend:
-https://slotly-navy.vercel.app/
-
-Backend:
-https://your-backend.onrender.com/
-
-API Documentation:
-https://your-backend.onrender.com/api/docs
 ## Running it locally
 
 **Prerequisites:** Node 20+, PostgreSQL 14+ (15 recommended), and a database the
 app can connect to. The app creates the database itself if it does not exist.
 
 ```bash
-git clone https://github.com/amitpaldevnco/slotly-backend.git && cd slotly-backend
+git clone https://github.com/amitpaldevnco/Slotly.git && cd Slotly/slotly-backend/server
 ```
 
 ```bash
@@ -71,17 +84,32 @@ The API comes up on <http://localhost:5000>. The schema is created automatically
 on first boot — every statement in `config/schema.js` is `IF NOT EXISTS`, so
 starting the server is the only setup step a database needs.
 
+**Seed the demo data**
+
+```bash
+npm run db:seed
+```
+
+Creates the two providers and the demo client listed above, with services,
+weekly availability, a holiday block, an extra Saturday opening and a few
+existing bookings — all dated relative to today, so the demo does not go stale.
+Safe to re-run: it removes only the rows it owns and recreates them.
+
 **The frontend**
 
-Clone [slotly-frontend](https://github.com/amitpaldevnco/slotly-frontend) in a
-second terminal and follow its README. It comes up on <http://localhost:5173>,
-which is the origin this API's default `FRONTEND_URL` allows.
+In a second terminal, `cd ../../slotly-frontend/slotly` and follow
+[its README](../../slotly-frontend/slotly/README.md). It comes up on
+<http://localhost:5173>, which is the origin this API's default `FRONTEND_URL`
+allows.
 
 **Run the tests**
 
 ```bash
 npm test
 ```
+
+115 tests, six suites. Four of them need the PostgreSQL configured above; they
+namespace their own fixtures and clean up after themselves.
 
 ---
 
@@ -108,6 +136,9 @@ Locally these live in `.env`. In production they are set in the host's dashboard
 | `GITHUB_CLIENT_SECRET` | for GitHub login | Matching secret. |
 | `GITHUB_CALLBACK_URL` | for GitHub login | Must match the OAuth app exactly. A GitHub OAuth app allows one callback URL, so development and production need separate apps. |
 | `NODE_ENV` | in production | Set to `production` when deployed. It switches the session cookie to `Secure; SameSite=None`, without which the browser will not send it to an API on a different host from the frontend. |
+| `CLOUDINARY_CLOUD_NAME` | **in production** | Object storage for uploaded images. All three must be set together; with any missing, uploads fall back to local disk and are lost on the next container restart. See [File uploads](#file-uploads). |
+| `CLOUDINARY_API_KEY` | **in production** | |
+| `CLOUDINARY_API_SECRET` | **in production** | |
 
 No secrets are committed. `.env` is gitignored; `.env.example` lists every key
 with placeholder values.
@@ -128,10 +159,15 @@ summary and the reasoning.
 | Setting | Value |
 |---|---|
 | Runtime | Node |
-| Root directory | *repository root* |
+| Root directory | `slotly-backend/server` |
 | Build command | `npm ci` |
 | Start command | `npm start` |
 | Health check path | `/api/health` |
+
+The root directory matters: this is one repository holding both halves, so
+Render has to be pointed at the folder containing *this* `package.json` rather
+than at the repository root. Vercel is pointed at `slotly-frontend/slotly` for
+the same reason, and neither builds the other.
 
 The `render.yaml` blueprint in this repository declares the same thing, with
 every secret as `sync: false` so no value is stored in the repo. The database is
@@ -200,6 +236,7 @@ slotly-backend/                     Express API — no views, no templates
 ├── docs/openapi.js                 the OpenAPI document and the docs page
 ├── tests/                          Vitest
 ├── scripts/initDb.js               applies the schema on its own (npm run db:init)
+├── scripts/seed.js                 demo providers, services, availability (npm run db:seed)
 ├── index.js                        boot: connect, apply schema, listen
 ├── server.js                       the Express app, exported without listening
 ├── render.yaml                     deployment blueprint (no secrets)
@@ -502,8 +539,36 @@ client sent reaches the filesystem, which rules out path traversal and null-byte
 tricks by construction. Deletions are additionally confined to the uploads
 directory by resolving and comparing the path first.
 
-Files are stored on disk outside the database, under `uploads/`, and served
-read-only from `/api/uploads` with directory listing disabled.
+### Where the bytes end up
+
+Validation decides whether a file is *acceptable*; `services/imageStorage.js`
+decides where an acceptable file *lives*. The two are separate modules so the
+storage backend can change without touching the security-critical half — which
+is exactly what happened.
+
+**With `CLOUDINARY_*` set, images go to Cloudinary** and the database stores the
+returned `https` URL. **Without them, they go to local disk** under `uploads/`,
+served read-only from `/api/uploads` with directory listing disabled. Either
+way the file is outside the database. The choice is made by whether the
+credentials exist, never by `NODE_ENV` — a missing credential is the honest
+signal that object storage was not configured — and the process prints which
+backend it picked on every boot.
+
+**Why not just disk, which the brief permits.** It was disk, and on the deployed
+host that was wrong in a way that is easy to miss. Render's free tier rebuilds a
+container's filesystem from the image whenever the service restarts, and a free
+service restarts every time it wakes from its idle sleep — not only when it is
+redeployed. An avatar uploaded at 10:00 was genuinely gone by 10:30. The bytes
+were never corrupted; the disk they were on stopped existing. Disk remains the
+local-development path, because it needs no account, no network and no
+credentials.
+
+`deleteImage` understands both forms, so rows written before the switch — which
+still hold `/uploads/...` paths — remain deletable. An absolute URL that is
+neither, such as an OAuth provider's avatar on `googleusercontent.com`, is left
+alone: the app did not put it there and has no business removing it. Remote
+deletes are additionally restricted to objects under this app's own `slotly/`
+folder prefix.
 
 ---
 
@@ -513,10 +578,10 @@ read-only from `/api/uploads` with directory listing disabled.
 npm test
 ```
 
-96 tests, Vitest. `npm run test:watch` for watch mode.
+**115 tests across 6 suites, Vitest.** `npm run test:watch` for watch mode.
 
-Two of the four suites talk to a real PostgreSQL — the same one the app uses,
-read from `.env`. That is deliberate rather than lazy: the double-booking
+Four of the six suites talk to a real PostgreSQL — the same one the app uses,
+read from `.env`, or any database named by `DATABASE_URL`. That is deliberate rather than lazy: the double-booking
 guarantee *is* a database constraint and the account-linking guarantee *is* a
 unique index, so mocking either would leave the actual mechanism untested. Both
 suites create their own fixtures under a namespaced email prefix

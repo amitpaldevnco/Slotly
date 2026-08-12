@@ -1,31 +1,41 @@
 # Deploying Slotly
 
-The whole stack runs on free tiers, at ₹0:
+The live deployment:
+
+| | |
+|---|---|
+| App | <https://slotly-navy.vercel.app> |
+| API | <https://slotly-backend-p2r5.onrender.com/api> |
+| API reference | <https://slotly-backend-p2r5.onrender.com/api/docs> |
+
+Four free services, each doing one thing:
 
 ```
 Vercel (React SPA)  →  Render (Express API)  →  Neon (PostgreSQL)
+                              ↓
+                       Cloudinary (uploaded images)
 ```
 
-Two repositories, deployed independently:
+This is the runbook for reproducing that from scratch. Everything here is free
+tier and needs no card.
 
-- [slotly-frontend](https://github.com/amitpaldevnco/slotly-frontend) → Vercel
-- [slotly-backend](https://github.com/amitpaldevnco/slotly-backend) → Render
-
-**Do the steps in this order.** Each one produces a URL or a credential the next
-one needs, and the two that people usually get wrong — CORS and OAuth — can only
-be finished once the first two URLs exist.
-
----
+> **One repository, two build roots.** The frontend and backend live in one Git
+> repository as sibling folders. Vercel and Render are each pointed at their own
+> subfolder, so a push builds both without either seeing the other's
+> `package.json`. That "root directory" setting is the single most common thing
+> to get wrong — if a build fails complaining it cannot find a `package.json` or
+> a build script, check it first.
 
 ## Contents
 
 - [Step 1 — GitHub](#step-1--github)
-- [Step 2 — Neon](#step-2--neon)
-- [Step 3 — Render](#step-3--render)
-- [Step 4 — Vercel](#step-4--vercel)
-- [Step 5 — CORS](#step-5--cors)
-- [Step 6 — OAuth](#step-6--oauth)
-- [Step 7 — Testing](#step-7--testing)
+- [Step 2 — Neon (database)](#step-2--neon-database)
+- [Step 3 — Cloudinary (image storage)](#step-3--cloudinary-image-storage)
+- [Step 4 — Render (API)](#step-4--render-api)
+- [Step 5 — Vercel (frontend)](#step-5--vercel-frontend)
+- [Step 6 — CORS and cookies](#step-6--cors-and-cookies)
+- [Step 7 — OAuth](#step-7--oauth)
+- [Step 8 — Seed and verify](#step-8--seed-and-verify)
 - [Troubleshooting](#troubleshooting)
 - [Checklist](#checklist)
 
@@ -33,418 +43,252 @@ be finished once the first two URLs exist.
 
 ## Step 1 — GitHub
 
-Each app folder is its own repository root, so Render and Vercel both need no
-"root directory" setting.
+Push the whole project as one repository:
 
-**Before the first push,** confirm what is about to be committed:
-
-```bash
-git status
 ```
-
-You should see `.env.example` and **not** `.env`. If you see `.env`,
-`node_modules`, `dist`, or `uploads`, stop and check `.gitignore` before
-committing.
-
-**Frontend** — from the frontend project folder:
-
-```bash
-git init -b main
-```
-```bash
-git add -A
-```
-```bash
-git commit -m "Slotly frontend: React SPA with deployment configuration"
-```
-```bash
-git remote add origin https://github.com/amitpaldevnco/slotly-frontend.git
-```
-```bash
-git pull --rebase origin main
-```
-If that reports a conflict in `.gitignore`, keep your own version — during a
-rebase, `--theirs` means the commit being replayed, which is yours:
-```bash
-git checkout --theirs .gitignore
-```
-```bash
-git add .gitignore
-```
-```bash
-git rebase --continue
-```
-```bash
-git push -u origin main
+Slotly/
+├── slotly-backend/server/     ← Render builds this
+├── slotly-frontend/slotly/    ← Vercel builds this
+├── .gitignore
+└── README.md
 ```
 
-**Backend** — from the backend project folder, the same sequence with the other
-remote:
+Before the first push, confirm nothing sensitive is staged:
 
 ```bash
-git init -b main
+git status --short
 ```
-```bash
-git add -A
-```
-```bash
-git commit -m "Slotly API: Express/PostgreSQL backend with deployment configuration"
-```
-```bash
-git remote add origin https://github.com/amitpaldevnco/slotly-backend.git
-```
-```bash
-git pull --rebase origin main
-```
-```bash
-git push -u origin main
-```
+
+If you see `.env`, `node_modules`, `dist` or `uploads`, stop and check
+`.gitignore` — the root one covers all four. `.env.example` is the one file of
+that family that **is** tracked, and it carries only placeholders.
 
 ---
 
-## Step 2 — Neon
+## Step 2 — Neon (database)
 
-Neon hosts the PostgreSQL database. Nothing about the schema is manual — the API
-applies it itself.
-
-1. Sign up at [neon.tech](https://neon.tech) with GitHub. The free plan needs no
-   card.
-2. **Create a project.** Name it `slotly`. Pick the region closest to where you
-   will run Render — keeping the API and the database in the same part of the
-   world removes a round trip from every query.
-3. **PostgreSQL version:** 15 or later. The schema needs `TIMESTAMPTZ`, range
-   types, and the `btree_gist` extension, all of which have been standard for
-   years — any version Neon offers today is fine.
-4. **Copy the connection string.** Dashboard → **Connect** → *Connection string*.
-   It looks like:
+1. Create a project at <https://neon.tech>. Pick the region closest to your
+   Render region — every query pays that round trip.
+2. Copy the connection string from the dashboard. It looks like:
 
    ```
-   postgresql://user:password@ep-something-123456.ap-southeast-1.aws.neon.tech/neondb?sslmode=require
+   postgresql://user:password@ep-xxx.region.aws.neon.tech/dbname?sslmode=require
    ```
 
-   This is a **secret** — it contains the database password. Paste it only into
-   Render's environment settings. Do not put it in any file in either repository.
+3. That whole string becomes `DATABASE_URL` in Render. Do not put it in a file.
 
-5. **Create the schema.** You do not need to run any SQL by hand, and you do not
-   need to create tables one at a time. There are two ways:
+**No migration step is needed.** `initSchema()` runs on every boot and is written
+entirely as `CREATE ... IF NOT EXISTS` / `ADD COLUMN IF NOT EXISTS`, so pointing
+the API at an empty Neon database is the entire setup. If you would rather watch
+it happen outside a deploy log, run `npm run db:init` locally with `DATABASE_URL`
+set to the Neon string.
 
-   **Either** let Render do it — the API calls `initSchema()` on every boot, so
-   the first successful deploy in Step 3 creates every table, index, and
-   constraint. This is the simplest path; skip ahead.
+---
 
-   **Or** do it now from your machine, which is useful if you want to see the
-   result before deploying anything:
+## Step 3 — Cloudinary (image storage)
 
-   ```bash
-   DATABASE_URL="paste-your-neon-connection-string" npm run db:init
-   ```
+**Required in production.** Skipping this is not a cosmetic compromise — it is
+why uploaded images used to disappear.
 
-   It prints `Connected.` then `Schema applied.` and exits. Running it a second
-   time is harmless.
+Render's free tier gives the container an ephemeral filesystem: it is rebuilt
+from the image every time the service restarts, and a free service restarts
+whenever it wakes from its idle sleep, not only when you redeploy. Anything
+written to `uploads/` is therefore gone within the hour.
 
-6. **Verify** in the Neon console → **Tables**. You should see seven:
-   `users`, `services`, `availability_rules`, `availability_exceptions`,
-   `bookings`, `booking_events`, `booking_messages`, and `reviews`.
+1. Sign up at <https://cloudinary.com> (free tier, no card).
+2. **Dashboard → API Keys.** Copy three values:
+   - Cloud name
+   - API key
+   - API secret
+3. They become `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY` and
+   `CLOUDINARY_API_SECRET` in Render.
 
-**Why this needs no migration tool.** `config/schema.js` is written entirely as
-`CREATE TABLE IF NOT EXISTS`, `CREATE INDEX IF NOT EXISTS`, and
-`ADD COLUMN IF NOT EXISTS`, with the two exclusion constraints wrapped in
-`DO $$ ... EXCEPTION WHEN duplicate_object THEN NULL` blocks. It is therefore
-idempotent: safe on an empty database, safe on a populated one, and safe to run
-repeatedly. Nothing in it drops a table or deletes a row.
+All three must be set together. With any of them missing the app silently falls
+back to disk — deliberately, so local development needs no account — and the
+boot log says which backend it chose:
 
-**What it creates**, and why each piece matters:
+```
+Image storage: Cloudinary (cloud "your-cloud") — uploads persist across restarts.
+```
 
-| Object | Purpose |
+Nothing about upload *validation* changes. The magic-byte type check and the
+`fs.stat` size check still run first, on the bytes as they landed; only a file
+that passes is ever sent onward.
+
+---
+
+## Step 4 — Render (API)
+
+**New → Web Service**, connect the `Slotly` repository, then:
+
+| Setting | Value |
 |---|---|
-| Extension `btree_gist` | Required by both exclusion constraints — it lets an equality column and a range column sit in the same GiST index. |
-| `bookings_no_overlap_per_provider` | **The double-booking guarantee.** An `EXCLUDE USING gist` constraint over `provider_id` and `tstzrange(blocked_from, blocked_to)`, partial on `status <> 'cancelled'`. This is the mechanism, not a backup for application code. |
-| `availability_rules_no_overlap` | Stops a provider defining two overlapping windows on the same weekday for the same service. |
-| Check constraints | Wall-clock minutes stay in `0–1440`, windows are ordered, ratings are 1–5, message bodies are not pure whitespace, exception date ranges are ordered. |
-| Foreign keys | `ON DELETE CASCADE` throughout, except `bookings.service_id`, which is `RESTRICT` — a service with booking history is retired (`is_active = false`), never deleted out from under an appointment. |
-| Partial indexes | Provider discovery, unread message badges, and active services each get an index that skips the rows they can never match. |
+| Name | `slotly-backend` |
+| Runtime | Node |
+| **Root directory** | **`slotly-backend/server`** |
+| Build command | `npm ci` |
+| Start command | `npm start` |
+| Health check path | `/api/health` |
+| Plan | Free |
 
-There are no triggers and no stored functions; `updated_at` is set explicitly by
-the queries that change a row. Nothing here is timezone-dependent — every instant
-is `TIMESTAMPTZ` in UTC and Luxon converts at the edges, so the schema behaves
-identically whatever Neon's server timezone is.
+The root directory is the part that is specific to this being a monorepo. Left
+at the repository root, Render finds no `package.json` and the build fails
+immediately.
 
-**Free-tier limits to know:** 0.5 GB storage, one project, and compute that
-scales to zero when idle — so the first query after a quiet spell takes a few
-seconds. There is no fixed expiry date.
+Then set these under **Environment**:
 
----
+| Key | Value |
+|---|---|
+| `NODE_ENV` | `production` |
+| `DATABASE_URL` | the Neon string from step 2 |
+| `JWT_SECRET` | a long random string — `node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"` |
+| `FRONTEND_URL` | your Vercel URL, no trailing slash (step 5) |
+| `CLOUDINARY_CLOUD_NAME` | from step 3 |
+| `CLOUDINARY_API_KEY` | from step 3 |
+| `CLOUDINARY_API_SECRET` | from step 3 |
+| `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` | step 7 |
+| `GITHUB_CLIENT_ID` / `GITHUB_CLIENT_SECRET` / `GITHUB_CALLBACK_URL` | step 7 |
 
-## Step 3 — Render
+**Do not set `PORT`.** Render assigns one and the app must use what it is given.
 
-1. [render.com](https://render.com) → sign up with GitHub → **New +** →
-   **Web Service** → connect `amitpaldevnco/slotly-backend`.
-2. Settings:
+`render.yaml` in this folder declares the same configuration, with every secret
+as `sync: false` so no value is ever stored in the repository.
 
-   | Field | Value |
-   |---|---|
-   | Name | `slotly-backend` |
-   | Language / Runtime | **Node** |
-   | Region | the one nearest your Neon region |
-   | Branch | `main` |
-   | **Root Directory** | *leave empty* |
-   | **Build Command** | `npm ci` |
-   | **Start Command** | `npm start` |
-   | Instance Type | **Free** |
-   | **Health Check Path** | `/api/health` |
+Verify:
 
-   Node version is pinned by `"engines": { "node": ">=20" }` in `package.json`,
-   so there is nothing to set. If you want an exact version, add a `NODE_VERSION`
-   environment variable.
-
-3. **Environment variables.** Add these under *Environment*:
-
-   | Key | Value |
-   |---|---|
-   | `NODE_ENV` | `production` |
-   | `DATABASE_URL` | your Neon connection string from Step 2 |
-   | `JWT_SECRET` | a fresh long random string — see below |
-   | `FRONTEND_URL` | leave as `http://localhost:5173` for now; corrected in Step 5 |
-   | `GOOGLE_CLIENT_ID` | from Google Cloud console |
-   | `GOOGLE_CLIENT_SECRET` | from Google Cloud console |
-   | `GITHUB_CLIENT_ID` | from your production GitHub OAuth app (Step 6) |
-   | `GITHUB_CLIENT_SECRET` | from the same app |
-   | `GITHUB_CALLBACK_URL` | `https://<your-render-url>/api/auth/github/callback` |
-
-   **Do not set `PORT`.** Render assigns it and the code already reads
-   `process.env.PORT`. Setting it yourself will stop the service from being
-   reachable.
-
-   Generate the JWT secret locally — use a different value from your local one:
-
-   ```bash
-   node -e "console.log(require('crypto').randomBytes(48).toString('hex'))"
-   ```
-
-   `NODE_ENV=production` is not optional. It is what switches the session cookie
-   to `Secure; SameSite=None`, and without it nobody can stay signed in.
-
-4. **Deploy**, then read the log. A healthy first boot prints:
-
-   ```
-   Connected to Database via DATABASE_URL
-   Database connected successfully.
-   Schema initialized.
-   Server running on port 10000
-   ```
-
-5. **Verify.** Replace the host with your own:
-
-   ```bash
-   curl https://slotly-backend-xxxx.onrender.com/api/health
-   ```
-
-   Expect `{"status":"ok","success":true,...}`. Then check the database link:
-
-   ```bash
-   curl https://slotly-backend-xxxx.onrender.com/api/health/db
-   ```
-
-   Expect `{"status":"ok","database":"connected"}`. A `503` means the API is
-   running but cannot reach Neon — check `DATABASE_URL`.
-
-6. **Write down the Render URL.** Steps 4, 5, and 6 all need it.
-
-**Free-tier behaviour:** the service spins down after 15 minutes without traffic
-and takes about a minute to wake. The first request after a quiet period will feel
-slow, and so will the first one after that if Neon also has to wake. This is
-normal, not a fault.
-
----
-
-## Step 4 — Vercel
-
-1. [vercel.com](https://vercel.com) → sign up with GitHub → **Add New** →
-   **Project** → import `amitpaldevnco/slotly-frontend`.
-2. Settings — Vercel detects almost all of it:
-
-   | Field | Value |
-   |---|---|
-   | **Framework Preset** | **Vite** (auto-detected) |
-   | **Root Directory** | *leave as the repository root* |
-   | **Build Command** | `npm run build` (auto-detected) |
-   | **Output Directory** | `dist` (auto-detected) |
-   | Install Command | `npm install` (auto-detected) |
-
-3. **Environment variables**, before the first deploy:
-
-   | Key | Value |
-   |---|---|
-   | `VITE_API_BASE_URL` | `https://<your-render-url>/api` |
-   | `VITE_GOOGLE_CLIENT_ID` | the same client ID the backend uses |
-
-   Two things to get right. **Include the `/api` suffix** — the frontend appends
-   paths like `/auth/me` to this value, and omitting it makes every call 404.
-   **No trailing slash.** And note that Vite inlines these at *build* time, so
-   changing one later requires a redeploy, not just a restart.
-
-4. **Deploy.** `vercel.json` in the repository supplies the SPA rewrite, so deep
-   links work with no extra configuration.
-5. **Write down the Vercel URL** — something like `https://slotly-frontend.vercel.app`.
-
-At this point the site loads but nothing works: the API is still rejecting it.
-That is Step 5.
-
----
-
-## Step 5 — CORS
-
-The API allows only the origins named in `FRONTEND_URL`. It has to be told about
-Vercel.
-
-1. Render → your service → **Environment** → edit `FRONTEND_URL`:
-
-   ```
-   https://slotly-frontend.vercel.app
-   ```
-
-2. Save. Render redeploys automatically.
-
-**Three rules for this value:**
-
-- **No trailing slash.** `https://x.vercel.app/` will not match the browser's
-  `Origin` header. (The code strips one defensively, but do not rely on it.)
-- **Scheme included**, and it must be `https`.
-- **The first entry is special.** `FRONTEND_URL` accepts a comma-separated list,
-  and the first entry is also where the GitHub OAuth callback sends the browser
-  when it finishes. Put production first.
-
-To keep local development working against the deployed API as well:
-
-```
-https://slotly-frontend.vercel.app,http://localhost:5173
+```bash
+curl https://<your-service>.onrender.com/api/health
+curl https://<your-service>.onrender.com/api/health/db
 ```
 
-Never use `origin: "*"`. The session is a cookie, so the API sends credentials,
-and browsers reject a wildcard origin on a credentialed response outright — it
-would break authentication rather than loosen it.
-
-**Vercel preview deployments** get their own generated hostnames, none of which
-are in this list, so API calls from a preview URL will be blocked. Add a specific
-preview origin when you need one, or treat previews as build checks only.
+The second one proves the pool can reach Neon. The first request after a period
+of inactivity takes 20–50 seconds while the free instance wakes.
 
 ---
 
-## Step 6 — OAuth
+## Step 5 — Vercel (frontend)
 
-Both providers need their production URLs registered. Do this after Steps 3 and 4,
-because both need the real domains.
+**Add New → Project**, import the same `Slotly` repository, then:
+
+| Setting | Value |
+|---|---|
+| Framework preset | Vite |
+| **Root directory** | **`slotly-frontend/slotly`** |
+| Build command | `npm run build` (default) |
+| Output directory | `dist` (default) |
+
+Environment variables:
+
+| Key | Value |
+|---|---|
+| `VITE_API_BASE_URL` | `https://<your-service>.onrender.com/api` — **including `/api`, no trailing slash** |
+| `VITE_GOOGLE_CLIENT_ID` | the same client ID the backend uses |
+
+Both are baked into the bundle at build time, so **changing either requires a
+redeploy** — the built files are already compiled.
+
+`vercel.json` rewrites every path to `index.html`, which is what makes a deep
+link like `/bookings/12` work on a client-side router instead of 404-ing.
+
+---
+
+## Step 6 — CORS and cookies
+
+These two travel together and cause the same symptom when either is wrong: you
+sign in, it appears to work, and the next request is a 401.
+
+**CORS.** Set `FRONTEND_URL` on Render to the exact Vercel origin:
+
+```
+https://slotly-navy.vercel.app
+```
+
+- **No trailing slash.** `https://x.vercel.app/` never matches the browser's
+  `Origin` header, which has none.
+- Several origins are allowed, comma-separated — useful for keeping
+  `http://localhost:5173` working against the deployed API. The **first** entry
+  is also where the GitHub OAuth callback redirects back to, so put the real
+  frontend first.
+- A wildcard is not an option: the API sends credentials, and browsers forbid
+  `Access-Control-Allow-Origin: *` on a credentialed request.
+
+**Cookies.** `NODE_ENV=production` switches the session cookie to
+`Secure; SameSite=None`. This is mandatory, not a hardening nicety: Vercel and
+Render are different *sites*, not merely different origins — `onrender.com` is
+on the Public Suffix List — so a `SameSite=Lax` cookie would be set once and
+then never sent again. Browsers only accept `SameSite=None` together with
+`Secure`, which is why the two move as a pair.
+
+---
+
+## Step 7 — OAuth
 
 ### Google
 
-Google Cloud console → **APIs & Services** → **Credentials** → your OAuth 2.0
-Client ID.
-
-**Authorized JavaScript origins** — add your Vercel origin:
-
-```
-https://slotly-frontend.vercel.app
-```
-
-**Authorized redirect URIs** — nothing to add. Slotly's Google flow uses Google
-Identity Services in the browser: the frontend receives an ID token and POSTs it
-to `/api/auth/google`, where the backend verifies it against `GOOGLE_CLIENT_ID`.
-There is no browser redirect back to Google, so no redirect URI is involved.
-
-Keep the existing `http://localhost:5173` origin so local development keeps
-working. Changes can take a few minutes to propagate.
-
-The **client ID** is public and is deliberately in the frontend bundle. The
-**client secret** stays on Render and must never appear in the frontend, in
-either repository, or in `.env.example`.
-
-### GitHub
-
-GitHub's OAuth flow *is* a redirect, and **a GitHub OAuth app accepts only one
-callback URL**. You therefore need a second app for production rather than
-editing the one you use locally.
-
-GitHub → **Settings** → **Developer settings** → **OAuth Apps** → **New OAuth App**:
+<https://console.cloud.google.com> → **APIs & Services → Credentials → OAuth
+client ID → Web application**.
 
 | Field | Value |
 |---|---|
-| Application name | `Slotly (production)` |
-| Homepage URL | `https://slotly-frontend.vercel.app` |
-| **Authorization callback URL** | `https://<your-render-url>/api/auth/github/callback` |
+| Authorized JavaScript origins | `https://slotly-navy.vercel.app` |
+| Authorized redirect URIs | not needed — this app uses the ID-token flow, not a redirect |
 
-The callback points at **Render, not Vercel** — the backend owns this route,
-because completing the exchange requires the client secret. Copy the new app's
-client ID, generate a client secret, and put all three values into Render:
+The client ID must be identical in `GOOGLE_CLIENT_ID` (Render) and
+`VITE_GOOGLE_CLIENT_ID` (Vercel): the frontend requests a token for that client,
+and the backend verifies the token was issued for it. If the deployed origin is
+missing from the origins list, the button silently fails to load.
 
-- `GITHUB_CLIENT_ID`
-- `GITHUB_CLIENT_SECRET`
-- `GITHUB_CALLBACK_URL` — must match the registered URL character for character
+### GitHub
 
-The flow, so the URLs make sense: the frontend navigates to
-`GET /api/auth/github` on Render → Render redirects to GitHub → GitHub returns to
-`GITHUB_CALLBACK_URL` with a code → Render exchanges it for a token using the
-secret, sets the session cookie, and redirects the browser to the first entry of
-`FRONTEND_URL`. If that last value is wrong, sign-in succeeds and then dumps the
-user on the wrong domain with no session visible.
+<https://github.com/settings/developers> → **New OAuth App**.
+
+| Field | Value |
+|---|---|
+| Homepage URL | `https://slotly-navy.vercel.app` |
+| Authorization callback URL | `https://<your-service>.onrender.com/api/auth/github/callback` |
+
+The callback points at the **API**, not the frontend — GitHub returns the code
+to the server, which exchanges it using the client secret and then redirects the
+browser onward. Set `GITHUB_CALLBACK_URL` to that exact string; it is sent in
+the authorize request and GitHub rejects any mismatch.
+
+A GitHub OAuth app accepts only one callback URL, so **local development needs a
+second app**.
 
 ---
 
-## Step 7 — Testing
+## Step 8 — Seed and verify
 
-Test in this order — each step depends on the one before.
-
-**Before deploying anything**, locally:
+Seed the deployed database from your machine, pointing at Neon:
 
 ```bash
-npm test
-```
-```bash
-npm start
-```
-And in the frontend project:
-```bash
-npm run build
+cd slotly-backend/server
+DATABASE_URL="postgresql://…your neon string…" npm run db:seed
 ```
 
-**After deploying:**
+That creates two providers in different timezones, their services and
+availability, and a demo client — so a reviewer can book something within a
+minute of arriving. It is safe to re-run; it resets only its own rows.
 
-| # | Test | What proves it worked |
+Then walk the app:
+
+| # | Check | Expect |
 |---|---|---|
-| 1 | `GET /api/health` | The service is up. |
-| 2 | `GET /api/health/db` | Neon is reachable. |
-| 3 | Open the Vercel URL | The landing page renders and the browser console shows no CORS error. |
-| 4 | **Register** with email and password | You land on profile completion. A CORS failure here means Step 5 is wrong. |
-| 5 | Complete the profile as a **provider** | Timezone and business fields save. |
-| 6 | **Reload the page** | You are still signed in. **This is the cross-site cookie test** — if you are signed out, `NODE_ENV` is not `production` on Render. |
-| 7 | **Log out**, then log back in | The cookie is cleared and re-set correctly. |
-| 8 | **Google sign-in** | The button renders (origin registered) and sign-in completes. |
-| 9 | **GitHub sign-in** | You return to the app signed in, on the right domain. |
-| 10 | Create a **service** | Price, duration, buffers, slot interval all save. |
-| 11 | Set **weekly availability** | Hours save; add a blocked date exception too. |
-| 12 | Register a second account as a **client**, in a different timezone | Use a private window so both sessions coexist. |
-| 13 | Open the provider's public page as the client | Services listed, slots generated. |
-| 14 | **Check the times** | Slots show in the client's timezone, and the provider's local time is also shown. This is the timezone test. |
-| 15 | **Book a slot** | Confirmation appears; the slot disappears from the list. |
-| 16 | Try to book the **same slot** again | Rejected with a "slot taken" message — the exclusion constraint is live on Neon. |
-| 17 | **Message** on the booking, from both sides | Thread renders; unread badge clears. |
-| 18 | **Reschedule** the booking | New time takes; timeline records it. |
-| 19 | **Cancel** it | Status changes with a reason; the slot returns to the pool. |
-| 20 | Mark a past booking **completed**, then **review** it | Rating and comment save; the provider can reply. |
-| 21 | Check both **dashboards** | Provider calendar and client list both render in the right timezone. |
-| 22 | Upload a **profile photo** | It appears — then see the caveat below. |
+| 1 | `GET /api/health` | 200 |
+| 2 | `GET /api/health/db` | `database: connected` |
+| 3 | Open the Vercel URL | Landing page, no console errors |
+| 4 | Sign in as `casey.client@slotly.demo` / `SlotlyDemo123!` | Dashboard |
+| 5 | Reload the page | **Still signed in** — this is the cookie test |
+| 6 | Browse a London provider's slots | Times in New York, provider's time beside them |
+| 7 | Book one | Confirmation shows both timezones |
+| 8 | Sign in as the provider | Same appointment, correct London time |
+| 9 | Upload a profile photo | Appears |
+| 10 | Wait for the instance to sleep, reload | **Photo still there** — this is the Cloudinary test |
+| 11 | Cancel a booking as the client | Slot returns to the list |
+| 12 | Google and GitHub sign-in | Land on the dashboard |
 
-**About uploads.** Images are written to `uploads/` on the Render container's
-local disk, and Render's free tier has no persistent disk. Uploaded avatars and
-cover images will disappear on every deploy and restart, while the database rows
-pointing at them survive, so images fall back to placeholders. Nothing else
-breaks.
-
-This is a hosting limitation, not a bug, and fixing it properly means moving file
-storage off the container to something like Cloudinary's or Supabase Storage's
-free tier. That is a contained change — the storage layer is confined to
-`utils/fileValidation.js` and `middleware/uploadMiddleware.js` — but it is a real
-change, so it has deliberately not been made. Decide whether you need it. For a
-portfolio deployment, re-uploading a photo after a redeploy is usually acceptable.
+Steps 5 and 10 are the two that catch the failures which look fine on first
+glance.
 
 ---
 
@@ -452,38 +296,31 @@ portfolio deployment, re-uploading a photo after a redeploy is usually acceptabl
 
 | Symptom | Cause |
 |---|---|
-| Login succeeds, next request is 401; reload signs you out | `NODE_ENV` is not `production` on Render, so the cookie is `SameSite=Lax` and never sent cross-site. |
-| CORS error in the console | `FRONTEND_URL` does not match the Vercel origin exactly — usually a trailing slash, `http` instead of `https`, or a preview URL. |
-| Every API call 404s | `VITE_API_BASE_URL` is missing the `/api` suffix. |
-| "Cannot reach the server" on every call | `VITE_API_BASE_URL` was not set in Vercel, so the build fell back to `localhost`. Set it and redeploy. |
-| Reloading `/dashboard` gives 404 | `vercel.json` is missing from the deployed commit. |
-| GitHub sign-in ends on the wrong domain | The first entry of `FRONTEND_URL` is not the Vercel URL. |
-| GitHub returns a redirect-URI mismatch | `GITHUB_CALLBACK_URL` and the registered callback differ. |
-| Google button does not render | The Vercel origin is not in *Authorized JavaScript origins*. |
-| First request takes ~60s | Render free-tier cold start. Expected. |
-| Deploy log: `Failed to start server` | `DATABASE_URL` is wrong or the Neon project is paused. Check `/api/health/db`. |
-| Profile photos vanished after a deploy | Ephemeral disk. See *About uploads* above. |
+| Build fails: no `package.json` | Root directory not set to the subfolder. See steps 4 and 5. |
+| Every API call fails with a CORS error | `FRONTEND_URL` missing, wrong, or has a trailing slash. |
+| Sign-in works, next request is 401 | `NODE_ENV` is not `production`, so the cookie is `SameSite=Lax` and never sent cross-site. |
+| API calls go to `localhost` | `VITE_API_BASE_URL` was not set at **build** time. Set it and redeploy. |
+| First request takes ~30s | Free instance waking. Expected. |
+| Profile photos vanish after a while | Cloudinary variables not set, so the app fell back to disk. Check the boot log line. |
+| GitHub login returns `redirect_uri_mismatch` | `GITHUB_CALLBACK_URL` differs from the OAuth app, including scheme and port. |
+| Google button does not render | Deployed origin missing from Authorized JavaScript origins. |
+| `SELF_SIGNED_CERT_IN_CHAIN` | TLS disabled for a managed host. `DATABASE_URL` enables it automatically; do not set `DB_SSL=false`. |
 
 ---
 
 ## Checklist
 
-- [ ] GitHub repository ready
-- [ ] Neon database created
-- [ ] Database schema migrated
-- [ ] Backend deployed to Render
-- [ ] Render environment variables configured
-- [ ] `/api/health` working
-- [ ] Frontend deployed to Vercel
-- [ ] `VITE_API_BASE_URL` configured
-- [ ] CORS configured
-- [ ] JWT authentication tested
-- [ ] Cookies tested
-- [ ] Google OAuth configured
-- [ ] GitHub OAuth configured
-- [ ] Booking tested
-- [ ] Availability tested
-- [ ] Timezone conversion tested
-- [ ] Messaging tested
-- [ ] Reviews tested
-- [ ] No secrets committed to GitHub
+- [ ] One repository pushed, `.env` not in it
+- [ ] Neon project created, connection string copied
+- [ ] Cloudinary account created, three values copied
+- [ ] Render root directory is `slotly-backend/server`
+- [ ] `NODE_ENV=production` on Render
+- [ ] `DATABASE_URL`, `JWT_SECRET`, `FRONTEND_URL` set
+- [ ] All three `CLOUDINARY_*` set
+- [ ] Vercel root directory is `slotly-frontend/slotly`
+- [ ] `VITE_API_BASE_URL` ends in `/api`, no trailing slash
+- [ ] `FRONTEND_URL` matches the Vercel origin exactly, no trailing slash
+- [ ] Google origins and GitHub callback registered
+- [ ] Database seeded
+- [ ] Session survives a page reload
+- [ ] An uploaded image survives a restart

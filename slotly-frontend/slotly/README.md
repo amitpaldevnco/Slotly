@@ -5,32 +5,32 @@ publishes the services they offer and the hours they work; a client picks an ope
 slot and books it. Every time on screen is rendered in the local time of whoever
 is looking at it.
 
-This repository is the **SPA only**. It talks to the Slotly API over HTTP with a
-cookie-based session and holds no business logic of its own —
-[slotly-backend](https://github.com/amitpaldevnco/slotly-backend) owns the data
-model, the slot engine, and the full design write-up.
+This folder is the **SPA only**. It talks to the Slotly API over HTTP with a
+cookie-based session and holds no business logic of its own — the
+[API](../../slotly-backend/server) owns the data model, the slot engine, and the
+full design write-up.
+
+**Start at the [repository README](../../README.md)** for the live URLs, the demo
+accounts and the one-minute tour.
 
 **Built with** React 19, Vite, React Router, Tailwind CSS, Luxon,
 `react-big-calendar`.
 
+| | |
+|---|---|
+| App | <https://slotly-navy.vercel.app> |
+| API | <https://slotly-backend-p2r5.onrender.com/api> |
+| API reference | <https://slotly-backend-p2r5.onrender.com/api/docs> |
+
 ---
-
-Frontend:
-https://slotly-navy.vercel.app/
-
-Backend:
-https://your-backend.onrender.com/
-
-API Documentation:
-https://your-backend.onrender.com/api/docs
-
 
 ## Running it locally
 
-**Prerequisites:** Node 20+, and the API running on <http://localhost:5000>.
+**Prerequisites:** Node 20+, and the API running on <http://localhost:5000>
+(see [its README](../../slotly-backend/server/README.md)).
 
 ```bash
-git clone https://github.com/amitpaldevnco/slotly-frontend.git && cd slotly-frontend
+git clone https://github.com/amitpaldevnco/Slotly.git && cd Slotly/slotly-frontend/slotly
 ```
 
 ```bash
@@ -82,13 +82,18 @@ Render. `npm run build` produces `dist/`, which Vercel serves from its CDN.
 | Setting | Value |
 |---|---|
 | Framework preset | Vite (auto-detected) |
-| Root directory | *repository root* |
+| **Root directory** | **`slotly-frontend/slotly`** |
 | Build command | `npm run build` (auto-detected) |
 | Output directory | `dist` (auto-detected) |
 
-Everything except the environment variables is detected automatically. The full
-walkthrough, including Neon and Render, is in
-[DEPLOYMENT.md](https://github.com/amitpaldevnco/slotly-backend/blob/main/DEPLOYMENT.md).
+The root directory has to be set explicitly. This is one repository holding both
+halves of the app, so left at the repository root Vercel finds no `package.json`
+and the build fails before it starts. Render is pointed at
+`slotly-backend/server` for the same reason, and neither builds the other.
+
+Everything else except the environment variables is detected automatically. The
+full walkthrough, including Neon, Render and Cloudinary, is in
+[DEPLOYMENT.md](../../slotly-backend/server/DEPLOYMENT.md).
 
 **[vercel.json](vercel.json) is not optional.** The app uses `BrowserRouter`, so
 every route is a real URL with no file behind it. Vercel does not add an SPA

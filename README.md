@@ -1,12 +1,34 @@
 # Slotly
 
-> **Note:** this is the local workspace copy of the documentation, kept for
-> convenience. It is not tracked by either repository. The published docs live in
-> each one: [slotly-backend](https://github.com/amitpaldevnco/slotly-backend)
-> carries the full system write-up plus the deployment and environment-variable
-> reference, and
-> [slotly-frontend](https://github.com/amitpaldevnco/slotly-frontend) documents
-> the SPA. Prefer those two when they disagree with this file.
+**An appointment booking platform.** Live, deployed, and seeded — you can book a
+real appointment across three timezones in under a minute.
+
+| | |
+|---|---|
+| **App** | <https://slotly-navy.vercel.app> |
+| **API** | <https://slotly-backend-p2r5.onrender.com/api> |
+| **API reference** | <https://slotly-backend-p2r5.onrender.com/api/docs> |
+
+> The API is on Render's free tier and sleeps after 15 minutes of inactivity.
+> **The first request after a nap takes 20–50 seconds** while the container wakes
+> — open the API link above first and let it answer, then use the app normally.
+
+### Demo accounts
+
+Password for all three: **`SlotlyDemo123!`**
+
+| Role | Email | Timezone | Why this one |
+|---|---|---|---|
+| Provider | `priya.provider@slotly.demo` | `Europe/London` | **Observes DST** — her 09:00–17:00 stays 09:00–17:00 across the clock change while the UTC instant moves |
+| Provider | `arjun.provider@slotly.demo` | `Asia/Kolkata` | **Never observes DST**, and sits on a **+05:30** half-hour offset |
+| Client | `casey.client@slotly.demo` | `America/New_York` | A third zone, behind both providers, so every screen does a real conversion |
+
+**A one-minute tour:** sign in as Casey, open *Find providers* → *Priya Raman* →
+*Initial Assessment*. Every slot is labelled in New York time with Priya's London
+time beside it. Book one; the confirmation shows both zones. Now sign in as Priya
+and the same appointment appears on her calendar at the correct London time.
+
+---
 
 An appointment booking platform. A provider publishes the services they offer and
 the hours they work; a client picks an open slot and books it. The provider gets a
@@ -26,6 +48,7 @@ them:
 
 ## Contents
 
+- [Repository layout](#repository-layout)
 - [Running it locally](#running-it-locally)
 - [Environment variables](#environment-variables)
 - [Architecture](#architecture)
@@ -42,13 +65,33 @@ them:
 
 ---
 
+## Repository layout
+
+One repository, two folders. The frontend and backend are genuinely separate
+services that happen to be versioned together — React talks to the API over
+HTTP and CORS, and the API renders no HTML except its own docs page.
+
+```
+Slotly/
+├── slotly-backend/server/     Express + PostgreSQL API   → deployed to Render
+├── slotly-frontend/slotly/    React SPA (Vite)           → deployed to Vercel
+├── .gitignore
+└── README.md                  ← you are here
+```
+
+Each folder has its own `package.json` and its own README covering the detail
+specific to it. Both deployment targets are pointed at their subfolder as a root
+directory, so neither builds the other.
+
+---
+
 ## Running it locally
 
 **Prerequisites:** Node 20+, PostgreSQL 14+ (15 recommended), and a database the
 app can connect to. The app creates the database itself if it does not exist.
 
 ```bash
-git clone <your-repo-url> && cd Slotly
+git clone https://github.com/amitpaldevnco/Slotly.git && cd Slotly
 ```
 
 **1. Backend**
@@ -67,7 +110,22 @@ The API comes up on <http://localhost:5000>. The schema is created automatically
 on first boot — every statement in `config/schema.js` is `IF NOT EXISTS`, so
 starting the server is the only setup step a database needs.
 
-**2. Frontend**
+**2. Seed the demo data**
+
+```bash
+npm run db:seed
+```
+
+This creates the two providers and the demo client listed at the top of this
+file, with services, weekly availability, a holiday block, an extra Saturday
+opening, and a few existing bookings. It is safe to re-run: it removes only the
+rows it owns (matched by the three `@slotly.demo` addresses) and recreates them,
+so it resets the demo without touching any other account.
+
+Availability is generated relative to *today* rather than hardcoded, so the demo
+does not go stale.
+
+**3. Frontend**
 
 In a second terminal:
 
@@ -77,7 +135,11 @@ cd slotly-frontend/slotly && npm install && cp .env.example .env && npm run dev
 
 The app comes up on <http://localhost:5173>.
 
-**3. Run the tests**
+> The backend's CORS allow-list is `FRONTEND_URL`, which defaults to
+> `http://localhost:5173`. If Vite falls back to another port because 5173 is
+> busy, sign-in will fail — free the port or add the new one to `FRONTEND_URL`.
+
+**4. Run the tests**
 
 ```bash
 cd slotly-backend/server && npm test
@@ -105,6 +167,10 @@ cd slotly-backend/server && npm test
 | `GITHUB_CLIENT_SECRET` | for GitHub login | Matching secret. |
 | `GITHUB_CALLBACK_URL` | for GitHub login | e.g. `http://localhost:5000/api/auth/github/callback`. |
 | `NODE_ENV` | no | Set to `production` in a deployed environment. Enables `Secure` cookies. |
+| `DATABASE_URL` | in production | Managed-Postgres connection string. Overrides the `DB_*` values when set. |
+| `CLOUDINARY_CLOUD_NAME` | **in production** | Object storage for uploaded images. Without all three, uploads fall back to local disk — see [File uploads](#file-uploads). |
+| `CLOUDINARY_API_KEY` | **in production** | |
+| `CLOUDINARY_API_SECRET` | **in production** | |
 
 ### `slotly-frontend/slotly/.env`
 
@@ -436,8 +502,32 @@ client sent reaches the filesystem, which rules out path traversal and null-byte
 tricks by construction. Deletions are additionally confined to the uploads
 directory by resolving and comparing the path first.
 
-Files are stored on disk outside the database, under `server/uploads/`, and served
-read-only from `/api/uploads` with directory listing disabled.
+### Where the bytes end up
+
+Validation decides whether a file is *acceptable*; `services/imageStorage.js`
+decides where an acceptable file *lives*. The two are separate so the storage
+backend can change without touching the security-critical half — which is
+exactly what happened.
+
+**With `CLOUDINARY_*` set, images go to Cloudinary** and the database stores the
+returned `https` URL. **Without them, they go to local disk** under
+`server/uploads/`, served read-only from `/api/uploads` with directory listing
+disabled. The choice is made by whether the credentials exist, never by
+`NODE_ENV`, and the backend prints which one it picked on every boot.
+
+**Why this is not just disk, which the brief permits.** It was disk, and on the
+deployed host that was wrong in a way that is easy to miss. Render's free tier
+rebuilds a container's filesystem from the image whenever the service restarts —
+and a free service restarts every time it wakes from its idle sleep, not only
+when it is redeployed. An avatar uploaded at 10:00 was genuinely gone by 10:30.
+The bytes were never corrupted; the disk they were on stopped existing. Disk
+remains the local-development path because it needs no account, no network and
+no credentials.
+
+`deleteImage` understands both forms, so rows written before the switch — which
+still hold `/uploads/...` paths — stay deletable. An absolute URL that is neither
+(an OAuth provider's avatar on `googleusercontent.com`) is left alone: the app
+did not put it there and has no business removing it.
 
 ---
 
@@ -447,15 +537,16 @@ read-only from `/api/uploads` with directory listing disabled.
 cd slotly-backend/server && npm test
 ```
 
-96 tests, Vitest. `npm run test:watch` for watch mode.
+**115 tests across 6 suites, Vitest.** `npm run test:watch` for watch mode.
 
-Two of the four suites talk to a real PostgreSQL — the same one the app uses,
-read from `.env`. That is deliberate rather than lazy: the double-booking
-guarantee *is* a database constraint and the account-linking guarantee *is* a
-unique index, so mocking either would leave the actual mechanism untested. Both
+Four of the six suites talk to a real PostgreSQL — the same one the app uses,
+read from `.env`, or any database named by `DATABASE_URL`. That is deliberate
+rather than lazy: the double-booking guarantee *is* a database constraint and
+the one-review-per-booking and one-user-per-email guarantees *are* unique
+indexes, so mocking any of them would leave the actual mechanism untested. Those
 suites create their own fixtures under a namespaced email prefix
-(`slotly_test_…@test.invalid`) and remove them afterwards, so neither depends on
-nor disturbs whatever else is in the database.
+(`slotly_test_…@test.invalid`) and remove them afterwards, so they neither
+depend on nor disturb whatever else is in the database.
 
 | File | Covers |
 |---|---|
@@ -463,6 +554,8 @@ nor disturbs whatever else is in the database.
 | `tests/bookingRules.test.js` | The **cancellation cutoff at its exact boundary** — one second before, exactly on, one second after; the snapshot rule in both directions; a zero-hour cutoff; provider transitions; two-zone rendering including a date-line crossing and a DST offset change. |
 | `tests/booking.concurrency.test.js` | The **double-booking guard against a real database**: two simultaneous attempts, ten simultaneous attempts, partial overlap, buffer-only overlap, legal back-to-back, release on cancellation, retention on completion and no-show, provider isolation, and the reschedule path — including two reschedules racing for one slot. |
 | `tests/accountLinking.test.js` | **One user per email address**, against a real database: a password account signing in with Google for the first time, both social providers on one address in either order, and the profile, role and password surviving the link. |
+| `tests/bookingTimezone.test.js` | A **stored instant never moves**: changing a user's timezone rewrites nothing in `bookings`, the appointment re-reads correctly in the new zone, can land on a different calendar date for the viewer, and the booking-time snapshot survives untouched as history. |
+| `tests/messagesAndReviews.test.js` | **One review per booking** under two racing submissions, rating bounds at the database level, whitespace-only messages rejected by a CHECK constraint, unread counting, and cascade behaviour when a booking is deleted. |
 
 Every time-dependent test injects `now` explicitly, so the suite cannot start
 failing in six months.
@@ -471,7 +564,11 @@ failing in six months.
 
 ## API documentation
 
-With the server running: **<http://localhost:5000/api/docs>**
+**Live: <https://slotly-backend-p2r5.onrender.com/api/docs>** — or with the
+server running locally, <http://localhost:5000/api/docs>.
+
+Every one of the 35 paths the app serves is documented with its method, auth
+requirement, request body, response shape and error cases.
 
 The raw OpenAPI 3.1 document is at `/api/docs/openapi.json`, and its source is
 `server/docs/openapi.js`. Every endpoint is listed with its method, path, auth
@@ -575,10 +672,10 @@ push start times onto ragged numbers. See
   but does not poll or hold a socket open — a deliberate choice, explained above.
 - **No rate limiting.** The login and registration endpoints would need it before
   facing the public internet.
-- **Uploads go to local disk.** Fine for a single instance; multiple instances
-  behind a load balancer would need object storage. The storage layer is confined
-  to `utils/fileValidation.js` and the upload middleware, so swapping it is
-  contained.
+- **Roles cannot be changed after signup.** Choosing provider or client is a
+  one-way decision, enforced server-side — see `completeProfile`. Deliberate,
+  but it means a genuine change of mind needs a new account rather than a
+  setting.
 - **Images are stored as uploaded** — no resizing or re-encoding, so a 5 MB photo
   is served at 5 MB.
 - **Cancellation, not deletion, for services** means a provider cannot fully
