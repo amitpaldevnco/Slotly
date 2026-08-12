@@ -17,7 +17,7 @@
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from "vitest";
 import dotenv from "dotenv";
-import pg from "pg";
+import { createTestPool } from "./testDatabase.js";
 import { query } from "../config/dbConfig.js";
 
 dotenv.config({ quiet: true });
@@ -48,14 +48,8 @@ async function makeBooking(status, startsAt) {
 beforeAll(async () => {
   await query("SELECT 1");
 
-  pool = new pg.Pool({
-    host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT || 5432),
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    max: 5,
-  });
+  // Only the racing-review test needs more than one connection at a time.
+  pool = createTestPool({ max: 5 });
 
   const mkUser = async (label, role) =>
     (

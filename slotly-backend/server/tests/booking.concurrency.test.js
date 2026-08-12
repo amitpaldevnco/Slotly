@@ -26,13 +26,14 @@
  *
  * ## Requirements
  *
- * A running PostgreSQL — the same one the app uses, configured through `.env`.
- * Fixtures are namespaced under a per-run email prefix and removed afterwards,
- * so the suite neither depends on nor disturbs anything else in the database.
+ * A running PostgreSQL — the same one the app uses, configured through `.env`,
+ * or any database named by `DATABASE_URL`. Fixtures are namespaced under a
+ * per-run email prefix and removed afterwards, so the suite neither depends on
+ * nor disturbs anything else in the database.
  */
 import { describe, it, expect, beforeAll, afterAll } from "vitest";
-import pg from "pg";
 import dotenv from "dotenv";
+import { createTestPool } from "./testDatabase.js";
 
 dotenv.config({ quiet: true });
 
@@ -133,17 +134,11 @@ async function clearBookings() {
 }
 
 beforeAll(async () => {
-  pool = new pg.Pool({
-    host: process.env.DB_HOST,
-    port: Number(process.env.DB_PORT || 5432),
-    user: process.env.DB_USER,
-    password: process.env.DB_PASSWORD,
-    database: process.env.DB_NAME,
-    // Comfortably more than the ten simultaneous attempts the busiest test makes,
-    // so a blocked transaction never waits on the *pool* instead of on the
-    // constraint — which would make the test pass for the wrong reason.
-    max: 15,
-  });
+  // `max: 15` is comfortably more than the ten simultaneous attempts the
+  // busiest test makes, so a blocked transaction never waits on the *pool*
+  // instead of on the constraint — which would make the test pass for the wrong
+  // reason. See tests/testDatabase.js for how the connection is resolved.
+  pool = createTestPool({ max: 15 });
 
   // Fail loudly and early if the database is not reachable, rather than letting
   // every assertion below fail with an unrelated message.
