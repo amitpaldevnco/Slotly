@@ -1,0 +1,44 @@
+# Render Blueprint for the Slotly API.
+#
+# Optional: everything here can equally be filled in by hand when creating the
+# service in the dashboard. Its value is that the configuration is version
+# controlled and reproducible.
+#
+# The database is *not* declared here. It is hosted on Neon, outside Render, so
+# DATABASE_URL is supplied as an ordinary environment variable like any other
+# secret.
+#
+# No secret appears in this file. Every sensitive variable is declared with
+# `sync: false`, which tells Render to prompt for the value and store it in the
+# service's environment instead of reading it from the repository.
+
+services:
+  - type: web
+    name: slotly-backend
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: npm ci
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # Prompted for on first deploy, then stored by Render. DATABASE_URL is the
+      # Neon connection string; the rest are the app's own secrets.
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
+      - key: FRONTEND_URL
+        sync: false
+      - key: GOOGLE_CLIENT_ID
+        sync: false
+      - key: GOOGLE_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_CLIENT_ID
+        sync: false
+      - key: GITHUB_CLIENT_SECRET
+        sync: false
+      - key: GITHUB_CALLBACK_URL
+        sync: false

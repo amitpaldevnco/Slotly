@@ -1,0 +1,280 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans:
+    "Inter", "Inter var", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
+    Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-serif: var(--font-sans);
+  --font-mono:
+    "JetBrains Mono", ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas,
+    monospace;
+
+  --color-canvas: #e7e2d8; /* page background — cream */
+  --color-surface: #ffffff; /* cards, header, dropdowns */
+  --color-subtle: #f2eee6; /* quiet panels inside white surfaces */
+  --color-line: #c3b9a4; /* card and input edges          1.51 on canvas */
+  --color-line-soft: #e0d9ca; /* dividers *inside* a card — deliberately quieter */
+
+  --color-ink: #1c1b17; /* primary        13.4:1 on canvas */
+  --color-ink-2: #5c574c; /* secondary       5.6:1 */
+  --color-ink-3: #6b6454; /* muted           4.6:1 (was 2.6:1) */
+
+  --color-brand: #8a3f24; /* terracotta      5.8:1 on canvas; white on it 7.5:1 */
+  --color-brand-strong: #6e3119; /* hover / pressed */
+  --color-brand-soft: #f1e0d5; /* tinted background */
+  --color-brand-line: #e3c7b2; /* border on a tint */
+  --color-brand-ink: #6e3119; /* text on a tint  7.7:1 on brand-soft */
+
+  --color-dark: #1c1b17;
+  --color-dark-line: #332f27;
+  --color-dark-ink: #f2eee6;
+  --color-dark-2: #d6d0c2; /* 11.2:1 on dark */
+  --color-dark-3: #a89f8c; /* 6.6:1 */
+  --color-dark-accent: #c99b7c; /* lightened terracotta, for the dark panel */
+
+  --color-danger: #b32338; /* white on it 6.5:1 */
+  --color-danger-ink: #9a1c2f; /* 7.2:1 on danger-soft */
+  --color-danger-soft: #fcedef;
+  --color-danger-line: #f0c4cb;
+
+  --color-warn-ink: #845a0c; /* 5.4:1 on warn-soft (was 4.15 — under AA) */
+  --color-warn-soft: #fbf1e0;
+  --color-warn-line: #e9ce9c;
+
+  --color-info-ink: #2a6e62; /* muted teal, sits well against warm cream */
+  --color-info-soft: #eaf3f0;
+  --color-info-line: #b9d8d0;
+
+  --color-accent-ink: #54480f; /* 7.7:1 on accent-soft */
+  --color-accent-soft: #efede0;
+  --color-accent-line: #d3cfb0;
+
+  --color-star: #b5791e; /* 3.7:1 on white — non-text, so 3:1 is the bar */
+
+  --color-highlight: #f7d3bc;
+  --color-highlight-ink: #6e3119; /* 7.1:1 on highlight */
+  --color-highlight-line: #e8ae8a;
+
+  --color-status-booked: #8a3f24; /* brand      7.5:1 */
+  --color-status-rescheduled: #9c6b12; /* 4.6:1 */
+  --color-status-cancelled: #6e6858; /* 5.6:1 (was 3.3:1) — muted, it is history */
+  --color-status-completed: #2a6e62; /* 6.0:1 */
+  --color-status-no_show: #6d4c7d; /* 7.1:1 */
+
+  --color-olive: #2a3419;
+
+  --radius-md: 0.5rem;
+  --radius-lg: 0.625rem;
+  --radius-xl: 0.875rem;
+
+  --shadow-raise:
+    0 1px 2px 0 rgb(28 27 23 / 0.06), 0 1px 3px 0 rgb(28 27 23 / 0.08);
+  --shadow-float:
+    0 10px 15px -3px rgb(28 27 23 / 0.14), 0 4px 6px -4px rgb(28 27 23 / 0.1);
+}
+
+@layer base {
+  html {
+    background-color: var(--color-canvas);
+    color: var(--color-ink);
+    scroll-behavior: smooth;
+
+    scrollbar-gutter: stable;
+
+    font-variant-numeric: tabular-nums;
+  }
+
+  body {
+    background-color: var(--color-canvas);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+  h1,
+  h2,
+  h3,
+  h4 {
+    font-weight: 600;
+    letter-spacing: -0.011em;
+    text-wrap: balance;
+  }
+
+  p,
+  li {
+    text-wrap: pretty;
+  }
+
+  ::selection {
+    background-color: var(--color-highlight);
+    color: var(--color-ink);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-brand);
+    outline-offset: 2px;
+  }
+
+  input[type="checkbox"],
+  input[type="radio"],
+  progress {
+    accent-color: var(--color-brand);
+  }
+
+  input:-webkit-autofill,
+  input:-webkit-autofill:hover,
+  input:-webkit-autofill:focus,
+  textarea:-webkit-autofill,
+  select:-webkit-autofill {
+    -webkit-box-shadow: 0 0 0 1000px var(--color-surface) inset;
+    -webkit-text-fill-color: var(--color-ink);
+    caret-color: var(--color-ink);
+    transition: background-color 5000s ease-in-out 0s;
+  }
+
+  @supports (scrollbar-color: auto) {
+    html {
+      scrollbar-color: var(--color-line) transparent;
+    }
+  }
+
+  /* The date and time pickers' calendar glyph is a mid-blue by default in
+     Chrome, which is the only blue left in the app. */
+  input[type="date"]::-webkit-calendar-picker-indicator,
+  input[type="time"]::-webkit-calendar-picker-indicator {
+    cursor: pointer;
+    opacity: 0.55;
+  }
+
+  input[type="date"]::-webkit-calendar-picker-indicator:hover,
+  input[type="time"]::-webkit-calendar-picker-indicator:hover {
+    opacity: 1;
+  }
+}
+
+@utility animate-fade-in {
+  animation: slotly-fade-in 0.24s ease-out both;
+}
+
+@keyframes slotly-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+@utility no-scrollbar {
+  scrollbar-width: none;
+  -ms-overflow-style: none;
+  &::-webkit-scrollbar {
+    display: none;
+  }
+}
+
+/*  react-big-calendar */
+.rbc-calendar {
+  font-family: inherit;
+  color: var(--color-ink);
+}
+
+/* The toolbar  */
+.rbc-toolbar {
+  display: none;
+}
+
+.rbc-header {
+  border-bottom-color: var(--color-line);
+  color: var(--color-ink-3);
+  font-size: 0.75rem;
+  font-weight: 500;
+  padding: 0.5rem 0.25rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.rbc-time-view,
+.rbc-time-header-content,
+.rbc-time-content,
+.rbc-day-slot .rbc-time-slot,
+.rbc-timeslot-group,
+.rbc-time-gutter .rbc-timeslot-group,
+.rbc-day-bg + .rbc-day-bg,
+.rbc-header + .rbc-header {
+  border-color: var(--color-line-soft);
+}
+
+.rbc-time-view {
+  border-color: var(--color-line);
+  border-radius: var(--radius-lg);
+  overflow: hidden;
+}
+
+.rbc-time-content {
+  border-top-color: var(--color-line);
+}
+
+/* Today's column.  */
+.rbc-today {
+  background-color: var(--color-brand-soft);
+}
+
+.rbc-off-range-bg {
+  background-color: var(--color-subtle);
+}
+
+.rbc-label {
+  color: var(--color-ink-3);
+  font-size: 0.6875rem;
+}
+
+.rbc-time-gutter .rbc-timeslot-group {
+  border-bottom-color: var(--color-line);
+}
+
+.rbc-current-time-indicator {
+  background-color: var(--color-brand);
+  height: 2px;
+}
+
+.rbc-event {
+  box-shadow: none;
+}
+
+.rbc-event:focus-visible {
+  outline: 2px solid var(--color-ink);
+  outline-offset: 1px;
+}
+
+.rbc-event,
+.rbc-event-content {
+  overflow: hidden;
+}
+
+.rbc-event-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The overlay shown when a day holds more events than fit. */
+.rbc-overlay {
+  border-color: var(--color-line);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-float);
+  padding: 0.625rem;
+}
+
+.rbc-overlay-header {
+  border-bottom-color: var(--color-line);
+  color: var(--color-ink);
+  font-size: 0.8125rem;
+  font-weight: 600;
+}
