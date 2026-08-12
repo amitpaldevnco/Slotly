@@ -48,6 +48,8 @@ export const openApiDocument = {
     { name: "Availability", description: "Recurring hours and one-off exceptions" },
     { name: "Slots", description: "Derived bookable times" },
     { name: "Bookings", description: "Creating and managing appointments" },
+    { name: "Messages", description: "The conversation about one appointment" },
+    { name: "Reviews", description: "Client feedback on a completed appointment" },
   ],
 
   components: {
@@ -203,8 +205,24 @@ export const openApiDocument = {
       get: {
         tags: ["Auth"],
         summary: "Liveness check",
+        description:
+          "Touches nothing external on purpose: this is the endpoint the host polls, and a database round trip on every poll would hold a scale-to-zero database permanently awake.",
         security: [],
         responses: { 200: { description: "Server is up" } },
+      },
+    },
+
+    "/health/db": {
+      get: {
+        tags: ["Auth"],
+        summary: "Readiness check — can the pool reach PostgreSQL?",
+        description:
+          "On a separate path from `/health` so it is called deliberately rather than on a timer. Reports reachability and nothing else — no version, host or connection detail, which would hand a stranger a map of the infrastructure.",
+        security: [],
+        responses: {
+          200: { description: "`{ status: \"ok\", database: \"connected\" }`" },
+          503: { description: "Database unreachable" },
+        },
       },
     },
 
@@ -315,6 +333,46 @@ export const openApiDocument = {
         summary: "The signed-in user",
         description: bearerNote,
         responses: { 200: { description: "Current user" }, 401: errorRef("No session") },
+      },
+    },
+
+    "/auth/complete-profile": {
+      patch: {
+        tags: ["Auth"],
+        summary: "Choose a role and finish setting up a new account",
+        description:
+          `${bearerNote} Runs **once per account**. A social sign-up arrives with \`role\` still NULL, ` +
+          "and this is the only endpoint that ever writes it.\n\n" +
+          "Calling it again on an account that already has a role returns **409 `INVALID_TRANSITION`**. " +
+          "Role is the axis every authorization decision turns on — `requireProviderRole`, the client-only " +
+          "check on booking creation, and the provider/client split in the booking queries all read it — so " +
+          "a user who could rewrite it could grant themselves provider access. It is refused in the other " +
+          "direction too: a provider who flipped to `client` would keep their bookings while losing every " +
+          "endpoint able to act on one.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["role", "phoneNumber", "timezone"],
+                properties: {
+                  role: { type: "string", enum: ["client", "provider"] },
+                  phoneNumber: { type: "string" },
+                  timezone: { type: "string", description: "IANA name; rejected if Luxon cannot resolve it" },
+                  businessName: { type: "string", description: "Required when role is provider" },
+                  businessType: { type: "string", description: "Required when role is provider" },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: "Profile completed; returns the user" },
+          400: errorRef("VALIDATION_FAILED — bad role, missing phone, unknown timezone, or a provider without business details"),
+          401: errorRef("No session"),
+          409: errorRef("INVALID_TRANSITION — a role has already been chosen for this account"),
+        },
       },
     },
 
@@ -790,6 +848,220 @@ export const openApiDocument = {
           400: errorRef("INVALID_TRANSITION — use /cancel to cancel"),
           403: errorRef("Not the provider"),
           409: errorRef("APPOINTMENT_NOT_STARTED or BOOKING_NOT_ACTIVE"),
+        },
+      },
+    },
+
+    "/bookings/summary": {
+      get: {
+        tags: ["Bookings"],
+        summary: "Headline counts and lifetime earnings for the dashboard",
+        description:
+          `${bearerNote} Provider only. Computed in SQL rather than by summing a fetched list, so the ` +
+          "figures stay correct however much history exists — the booking list caps at 500 rows, which is " +
+          "fine for a page of cards and wrong for a total. Earnings count only `completed` bookings: an " +
+          "appointment that has not happened yet was not delivered, and a cancelled one was never paid for.",
+        responses: {
+          200: {
+            description: "`{ totalEarnings, completedBookings, upcomingBookings, cancelledBookings, totalBookings }`",
+          },
+          401: errorRef("No session"),
+          403: errorRef("FORBIDDEN — client accounts have no summary"),
+        },
+      },
+    },
+
+    "/bookings/unread-count": {
+      get: {
+        tags: ["Messages"],
+        summary: "How many unread messages the caller has across all their bookings",
+        description: `${bearerNote} Counts only messages on the caller's own bookings that they did not send and have not read. Drives the navbar badge.`,
+        responses: {
+          200: { description: "`{ unreadCount }`" },
+          401: errorRef("No session"),
+        },
+      },
+    },
+
+    "/bookings/{id}/messages": {
+      get: {
+        tags: ["Messages"],
+        summary: "Read the conversation about one appointment",
+        description:
+          `${bearerNote} Readable by the booking's two parties only. Anyone else gets **404, not 403** — ` +
+          "confirming a booking exists to an unrelated caller would leak that the provider had an " +
+          "appointment at that id. Loading the thread marks the *other* party's messages as read.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        responses: {
+          200: { description: "`{ viewerRole, messages: [{ id, body, senderRole, createdAt, readAt }] }`" },
+          401: errorRef("No session"),
+          404: errorRef("NOT_FOUND — no such booking, or the caller is not a party to it"),
+        },
+      },
+      post: {
+        tags: ["Messages"],
+        summary: "Send a message on one appointment",
+        description: `${bearerNote} Either party. A body of pure whitespace is rejected by a CHECK constraint in the database, not only here.`,
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["body"],
+                properties: { body: { type: "string", maxLength: 2000 } },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: "Message sent" },
+          400: errorRef("VALIDATION_FAILED — empty, whitespace-only or over-long body"),
+          401: errorRef("No session"),
+          404: errorRef("NOT_FOUND — not a party to this booking"),
+        },
+      },
+    },
+
+    "/bookings/{id}/review": {
+      get: {
+        tags: ["Reviews"],
+        summary: "The review left on one appointment, if any",
+        description: `${bearerNote} Readable by both parties. \`isMine\` marks the caller's own review so the UI can offer to edit it.`,
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        responses: {
+          200: { description: "The review, or null when none has been left" },
+          401: errorRef("No session"),
+          404: errorRef("NOT_FOUND — not a party to this booking"),
+        },
+      },
+      post: {
+        tags: ["Reviews"],
+        summary: "Leave a review on a completed appointment",
+        description:
+          `${bearerNote} **Client only, and only on a booking with status \`completed\`** — a provider ` +
+          "cannot review themselves, and an appointment that was cancelled or has not happened yet has " +
+          "nothing to rate. One review per booking is enforced by a UNIQUE constraint on `booking_id`, so " +
+          "two simultaneous submissions resolve to one row rather than racing past an application check. " +
+          "Changing your mind is a PATCH of your own row, not a second review.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["rating"],
+                properties: {
+                  rating: { type: "integer", minimum: 1, maximum: 5 },
+                  comment: { type: "string", maxLength: 1000 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          201: { description: "Review created" },
+          400: errorRef("VALIDATION_FAILED — rating outside 1–5, or an over-long comment"),
+          403: errorRef("FORBIDDEN — a provider cannot review their own booking"),
+          404: errorRef("NOT_FOUND — not a party to this booking"),
+          409: errorRef("CONFLICT — the appointment is not completed, or it has already been reviewed"),
+        },
+      },
+    },
+
+    "/providers/{id}/reviews": {
+      get: {
+        tags: ["Reviews"],
+        summary: "Every published review for one provider",
+        description:
+          "Public — reviews are published feedback and appear on the provider's page before anyone signs in. " +
+          "A signed-in client's own review comes back flagged with `isMine`.",
+        security: [],
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        responses: {
+          200: { description: "`{ averageRating, count, reviews: [...] }`" },
+          404: errorRef("NOT_FOUND — no such provider"),
+        },
+      },
+    },
+
+    "/reviews/{id}": {
+      patch: {
+        tags: ["Reviews"],
+        summary: "Edit your own review",
+        description:
+          `${bearerNote} The author only, checked against the booking's \`client_id\`. Anyone else gets ` +
+          "404 rather than 403, matching the convention used everywhere a resource's existence is itself " +
+          "worth not disclosing.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                properties: {
+                  rating: { type: "integer", minimum: 1, maximum: 5 },
+                  comment: { type: "string", maxLength: 1000 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: "Updated" },
+          400: errorRef("VALIDATION_FAILED"),
+          404: errorRef("NOT_FOUND — no such review, or not yours"),
+        },
+      },
+    },
+
+    "/reviews/{id}/reply": {
+      post: {
+        tags: ["Reviews"],
+        summary: "Reply to a review of your own service",
+        description:
+          `${bearerNote} Ownership is checked against \`reviews.provider_id\`, not merely that the caller ` +
+          "is *a* provider — being this review's provider is the question, and only the handler can answer it. " +
+          "A review has at most one reply.",
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["reply"],
+                properties: { reply: { type: "string", maxLength: 1000 } },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: "Reply saved" },
+          400: errorRef("VALIDATION_FAILED — empty or over-long reply"),
+          403: errorRef("FORBIDDEN — not the reviewed provider"),
+          404: errorRef("NOT_FOUND — no such review"),
+        },
+      },
+    },
+
+    "/availability/rules/service/{serviceId}": {
+      delete: {
+        tags: ["Availability"],
+        summary: "Drop a service's dedicated hours so it inherits the provider's defaults",
+        description:
+          `${bearerNote} Provider only, and only for their own service. Removes that service's own weekly ` +
+          "rules and exceptions and clears `has_custom_availability`, after which the service follows the " +
+          "provider's default schedule again.",
+        parameters: [{ name: "serviceId", in: "path", required: true, schema: { type: "integer" } }],
+        responses: {
+          200: { description: "`{ serviceId }` — the service now follows the default hours" },
+          401: errorRef("No session"),
+          403: errorRef("FORBIDDEN — not a provider"),
+          404: errorRef("NOT_FOUND — no such service, or not yours"),
         },
       },
     },
