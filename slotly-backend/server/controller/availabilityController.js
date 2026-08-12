@@ -462,7 +462,3 @@ export const updateAvailabilitySettings = async (req, res) => {
     return errorResponse(res, "Could not save booking settings", 500);
   }
 };
-
-// Exported for the slot controller, which needs the same "HH:MM" parsing when
-// it validates query parameters, and for the tests.
-export { parseTimeToMinutes, formatMinutes, isValidIsoDate };

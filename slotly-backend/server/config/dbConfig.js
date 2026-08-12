@@ -1,3 +1,25 @@
+/**
+ * The PostgreSQL connection pool, and the three helpers everything else uses to
+ * talk to it.
+ *
+ * Nothing in the app constructs its own client: every read goes through
+ * `query`, every schema statement through `exec`, and every multi-statement
+ * write through `transaction`. Keeping that funnel narrow is what makes two
+ * guarantees checkable by reading one file — that every value reaching SQL is a
+ * bound parameter rather than string-concatenated, and that a write which fails
+ * half way leaves nothing behind.
+ *
+ * ## Two ways to be configured, and why both exist
+ *
+ * A managed host — Neon, Render, Supabase, Heroku — hands out a single
+ * `DATABASE_URL`. A local install is five discrete values. Supporting both
+ * means the same code runs in both places with no branch anywhere else, and the
+ * connection string wins when set so a deployed environment cannot accidentally
+ * be pointed at leftover `DB_*` values.
+ *
+ * TLS follows from that: on with a connection string, off without one, with
+ * `DB_SSL` able to override either way.
+ */
 import pg from "pg";
 import dotenv from "dotenv";
 
@@ -99,25 +121,60 @@ async function initPostgresConnection() {
 await initPostgresConnection();
 
 
-// Executes a SQL query using the PostgreSQL connection pool.
-// Supports parameterized queries to help prevent SQL injection.
-// Returns the query result rows and the number of affected rows.
+/**
+ * Runs one parameterised statement on a pooled connection.
+ *
+ * `params` are always sent separately from `text` — PostgreSQL never sees a
+ * value spliced into the SQL, which is what makes injection impossible rather
+ * than merely unlikely. The one place a name is interpolated instead is
+ * `services/accountLinking.js`, and it is chosen from a hardcoded allow-list
+ * there for exactly this reason.
+ *
+ * @param {string} text SQL with $1-style placeholders.
+ * @param {Array} [params] Values for those placeholders.
+ * @returns {Promise<{rows: Array, count: number}>} `count` is the number of
+ *   rows affected, which is what callers use to distinguish "updated nothing"
+ *   from "updated something" without a second read.
+ * @throws {Error} node-postgres errors pass through untouched, `code` and all,
+ *   because callers branch on SQLSTATE — 23P01 becoming a 409 SLOT_TAKEN is the
+ *   whole double-booking contract.
+ */
 export async function query(text, params = []) {
     const res = await pgPool.query(text, params);
     return { rows: res.rows, count: res.rowCount };
 }
 
-// Executes a raw SQL statement.
-// Mainly used for schema operations such as
-// CREATE TABLE, ALTER TABLE, or DROP TABLE.
+/**
+ * Runs a statement that takes no parameters, for schema work.
+ *
+ * Separate from `query` so that DDL — which cannot be parameterised, and which
+ * is the only SQL in the codebase written as a literal string — is visibly a
+ * different kind of call. Every caller is in `config/schema.js`.
+ *
+ * @param {string} sql One or more statements.
+ * @returns {Promise<void>}
+ */
 export async function exec(sql) {
     await pgPool.query(sql);
 }
 
-// Executes multiple database operations inside a transaction.
-// If every query succeeds, the transaction is committed.
-// If any query fails, all changes are rolled back to
-// keep the database consistent.
+/**
+ * Runs several statements atomically on one connection.
+ *
+ * The callback receives a handle whose `query` is bound to that single client,
+ * which is the point: a pooled `query()` call inside a transaction would take a
+ * *different* connection and run outside it, committing independently. Every
+ * multi-statement write in the app — booking creation and its audit event,
+ * cancellation, reschedule, replacing a week of availability — goes through
+ * here so a partial failure can never leave a booking without its timeline row.
+ *
+ * @param {(tx: {query: Function}) => Promise<T>} callback Receives the handle.
+ *   Anything it returns is returned from `transaction`.
+ * @returns {Promise<T>} The callback's result, after COMMIT.
+ * @throws {Error} Rethrows whatever the callback threw, after ROLLBACK. The
+ *   connection is released either way.
+ * @template T
+ */
 export async function transaction(callback) {
     const client = await pgPool.connect();
     try {
