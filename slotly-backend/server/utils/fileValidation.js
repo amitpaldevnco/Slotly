@@ -17,12 +17,16 @@
  * but purely as a cheap early reject while the request streams — they check the
  * client's claims, so they cannot be the last word. These functions are.
  *
+ * This module decides whether a file is *acceptable*. Where an acceptable file
+ * then goes — object storage or local disk — is `services/imageStorage.js`, and
+ * the two are kept apart so the storage backend can change without anyone
+ * touching the security-critical half.
+ *
  * Accepted formats and size cap (also stated in the README):
  *   profile photos  — JPEG, PNG            max 5 MB
  *   service covers  — JPEG, PNG, WebP      max 5 MB
  */
 import fs from "fs/promises";
-import path from "path";
 import { fileTypeFromFile } from "file-type";
 
 export const MAX_FILE_SIZE_BYTES = 5 * 1024 * 1024;
@@ -96,39 +100,13 @@ export async function validateUploadedImage(file, kind) {
  * survive into the path.
  *
  * @param {number} ownerId
- * @param {string} extension Canonical extension from validateUploadedImage.
+ * @param {string} extension Canonical extension from validateUploadedImage. Pass
+ *   an empty string for a backend that derives the format itself, as Cloudinary
+ *   does from the bytes.
  * @returns {string} e.g. "7_1717171717171.jpg"
  */
 export function buildStoredFileName(ownerId, extension) {
   return `${Number(ownerId)}_${Date.now()}${extension}`;
-}
-
-/**
- * Deletes a file the app previously stored, ignoring "already gone".
- *
- * Only paths under the app's own uploads directory are touched, so a corrupted
- * or hostile database value cannot make this delete something else. Absolute
- * URLs (an OAuth provider's avatar) are skipped entirely.
- *
- * @param {string|null|undefined} storedPath A value from a cover_image or
- *   avatar_url column, e.g. "/uploads/avatars/7_123.jpg".
- */
-export async function deleteStoredFile(storedPath) {
-  if (!storedPath || typeof storedPath !== "string") return;
-  if (!storedPath.startsWith("/uploads/")) return;
-
-  const uploadsRoot = path.resolve(process.cwd(), "uploads");
-  const absolute = path.resolve(process.cwd(), `.${storedPath}`);
-
-  // Resolve before comparing: "/uploads/../../secrets" normalises to a path
-  // outside uploadsRoot and is rejected here rather than acted on.
-  if (!absolute.startsWith(uploadsRoot + path.sep)) return;
-
-  try {
-    await fs.unlink(absolute);
-  } catch (err) {
-    if (err.code !== "ENOENT") console.error("Could not delete stored file:", err.message);
-  }
 }
 
 /** Removes a rejected upload from the temp location multer wrote it to. */

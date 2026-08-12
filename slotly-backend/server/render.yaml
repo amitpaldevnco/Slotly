@@ -18,6 +18,9 @@ services:
     runtime: node
     plan: free
     region: singapore
+    # The API is one folder inside the monorepo, so Render has to be pointed at
+    # the directory holding its package.json rather than the repository root.
+    rootDir: slotly-backend/server
     buildCommand: npm ci
     startCommand: npm start
     healthCheckPath: /api/health
@@ -41,4 +44,13 @@ services:
       - key: GITHUB_CLIENT_SECRET
         sync: false
       - key: GITHUB_CALLBACK_URL
+        sync: false
+      # Object storage for uploaded images. Required here specifically because
+      # this instance has an ephemeral filesystem: without these three the app
+      # falls back to local disk and every upload is lost on the next restart.
+      - key: CLOUDINARY_CLOUD_NAME
+        sync: false
+      - key: CLOUDINARY_API_KEY
+        sync: false
+      - key: CLOUDINARY_API_SECRET
         sync: false

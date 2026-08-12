@@ -2,6 +2,7 @@ import "dotenv/config";
 import app from "./server.js";
 import { query } from "./config/dbConfig.js";
 import { initSchema } from "./config/schema.js";
+import { describeBackend } from "./services/imageStorage.js";
 
 // The host assigns the port in a deployed environment; 5000 is only the local
 // default. `listen` with no host binds every interface, which is what a
@@ -32,6 +33,10 @@ async function startServer() {
 
     await initSchema();
     console.log("Schema initialized.");
+
+    // Printed on every boot because "why did my image disappear?" is far easier
+    // to answer when the deploy log already says which storage was chosen.
+    console.log(describeBackend());
 
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);

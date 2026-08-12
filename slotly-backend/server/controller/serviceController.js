@@ -15,8 +15,6 @@
  * failure. A service nobody has ever booked is deleted properly — there is no
  * history to protect.
  */
-import fs from "fs/promises";
-import path from "path";
 import { query } from "../config/dbConfig.js";
 import {
   successResponse,
@@ -24,12 +22,8 @@ import {
   validationErrorResponse,
   ERROR_CODES,
 } from "../responseController/responseHandler.js";
-import {
-  validateUploadedImage,
-  buildStoredFileName,
-  deleteStoredFile,
-  discardUpload,
-} from "../utils/fileValidation.js";
+import { validateUploadedImage, discardUpload } from "../utils/fileValidation.js";
+import { storeImage, deleteImage } from "../services/imageStorage.js";
 import { ACTIVE_STATUSES } from "../services/bookingRules.js";
 
 /** Longest appointment the app accepts, in minutes. A day is plenty. */
@@ -130,8 +124,15 @@ function validateServiceFields(body, { partial }) {
 }
 
 /**
- * Validates an uploaded cover image and moves it to its final name.
+ * Validates an uploaded cover image and hands it to the storage layer.
  *
+ * Validation and storage are two steps on purpose: the file's real type is
+ * decided here by sniffing its header, and only a file that passed reaches
+ * `storeImage`, which is the only thing that knows whether it ends up in object
+ * storage or on disk.
+ *
+ * @param {{path: string}} file The multer file.
+ * @param {number} providerId Owner, used to name the stored object.
  * @returns {Promise<{ok: true, storedPath: string}|{ok: false, message: string}>}
  *   On failure the temporary file has already been removed.
  */
@@ -142,10 +143,14 @@ async function storeCoverImage(file, providerId) {
     return { ok: false, message: check.error };
   }
 
-  const fileName = buildStoredFileName(providerId, check.extension);
-  await fs.rename(file.path, path.join(path.dirname(file.path), fileName));
+  const storedPath = await storeImage({
+    file,
+    kind: "service",
+    extension: check.extension,
+    ownerId: providerId,
+  });
 
-  return { ok: true, storedPath: `/uploads/services/${fileName}` };
+  return { ok: true, storedPath };
 }
 
 /** POST /api/services — verifyToken, requireProviderRole, uploadServiceImage. */
@@ -228,7 +233,7 @@ export const updateService = async (req, res) => {
       }
       // The old file is removed only once the new one is safely in place, so a
       // failure part-way through leaves the service with an image, not none.
-      await deleteStoredFile(service.cover_image);
+      await deleteImage(service.cover_image);
       updateData.cover_image = stored.storedPath;
     }
 
@@ -285,7 +290,7 @@ export const deleteService = async (req, res) => {
 
     if (total === 0) {
       await query("DELETE FROM services WHERE id = $1", [service.id]);
-      await deleteStoredFile(service.cover_image);
+      await deleteImage(service.cover_image);
       return successResponse(res, "Service deleted", { id: service.id, deleted: true, retired: false });
     }
 
