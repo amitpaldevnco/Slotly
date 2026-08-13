@@ -75,10 +75,17 @@ export function Textarea({ className = "", ...rest }) {
  * The native arrow differs in shape and weight on every OS, so it is suppressed
  * and redrawn. `pointer-events-none` on the icon keeps the whole control
  * clickable, which is what a hand-drawn chevron usually breaks.
+ *
+ * `wrapperClassName` exists because the chevron is positioned against this
+ * wrapper, not against the `<select>`. Inside a flex row the wrapper is the flex
+ * item, so unless the caller can size *it* the two can end up different widths —
+ * and the chevron then floats away from the control it belongs to and over
+ * whatever sits next to it. Callers that put a Select in a flex layout should
+ * size the wrapper here rather than only the select.
  */
-export function Select({ className = "", children, ...rest }) {
+export function Select({ className = "", wrapperClassName = "", children, ...rest }) {
   return (
-    <div className="relative">
+    <div className={`relative ${wrapperClassName}`}>
       <select className={`${selectClasses} ${className}`} {...rest}>
         {children}
       </select>

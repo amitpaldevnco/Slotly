@@ -3,6 +3,7 @@
 import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { container } from "../lib/ui";
+import { DISCOVERY_ROUTE, DISCOVERY_LABEL } from "../lib/discovery";
 
 const API_DOCS = `${import.meta.env.VITE_API_BASE_URL}/docs`;
 
@@ -46,7 +47,7 @@ export default function Footer() {
             <FooterColumn
               title="Product"
               links={[
-                { to: "/providers", label: "Find a provider" },
+                { to: DISCOVERY_ROUTE, label: DISCOVERY_LABEL },
                 { to: "/login", label: "For providers" },
               ]}
             />

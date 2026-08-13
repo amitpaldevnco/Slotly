@@ -100,8 +100,12 @@ export default function ProvidersPage() {
         description="Browse who is available, pick a service, and choose a time. Every time you see is shown in your own timezone."
       />
 
-      <Toolbar className="mb-3">
-        <div className="relative min-w-0 flex-1 sm:max-w-sm">
+      {/* Stacked below `sm`: the search box and two dropdowns together want more
+          width than a 320px phone has, and letting them wrap produced controls
+          of three different widths with the chevrons drifting over their
+          neighbours. Above `sm` this is the original single row. */}
+      <Toolbar stack className="mb-3">
+        <div className="relative w-full min-w-0 sm:flex-1 sm:max-w-sm">
           <label htmlFor="provider-search" className="sr-only">
             Search providers
           </label>
@@ -125,7 +129,8 @@ export default function ProvidersPage() {
             aria-label="Filter by category"
             value={category}
             onChange={(e) => setCategory(e.target.value)}
-            className="w-auto min-w-[11rem]"
+            wrapperClassName="w-full sm:w-auto"
+            className="w-full sm:min-w-[11rem]"
           >
             <option value="">All categories</option>
             {categories.map(([name, count]) => (
@@ -140,7 +145,8 @@ export default function ProvidersPage() {
           aria-label="Sort providers"
           value={sort}
           onChange={(e) => setSort(e.target.value)}
-          className="w-auto min-w-[9.5rem]"
+          wrapperClassName="w-full sm:w-auto"
+          className="w-full sm:min-w-[9.5rem]"
         >
           {SORT_OPTIONS.map((option) => (
             <option key={option.value} value={option.value}>
@@ -150,7 +156,14 @@ export default function ProvidersPage() {
         </Select>
 
         {hasFilters && (
-          <button type="button" onClick={clearAll} className={`${ghostButton} ${buttonSm} ml-auto`}>
+          // `ml-auto` only once the toolbar is actually a row — in the stacked
+          // column it would do nothing useful, and the button reads better
+          // full-width alongside the controls it clears.
+          <button
+            type="button"
+            onClick={clearAll}
+            className={`${ghostButton} ${buttonSm} w-full justify-center sm:ml-auto sm:w-auto`}
+          >
             <Icon name="close" size={14} />
             Clear
           </button>

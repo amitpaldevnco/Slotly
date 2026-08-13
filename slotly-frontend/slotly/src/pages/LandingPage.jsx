@@ -4,6 +4,7 @@
 import { Link } from "react-router-dom";
 import Icon from "../components/ui/Icon";
 import { container, primaryButton, secondaryButton, buttonLg, eyebrow } from "../lib/ui";
+import { DISCOVERY_ROUTE, DISCOVERY_LABEL } from "../lib/discovery";
 
 const ROLE_COLUMNS = [
   {
@@ -65,9 +66,11 @@ export default function LandingPage() {
               <Link to="/login" className={`${primaryButton} ${buttonLg}`}>
                 Get started free
               </Link>
-              <Link to="/providers" className={`${secondaryButton} ${buttonLg}`}>
+              {/* Was "Browse providers" — the same destination the navbar and
+                  footer call "Find a provider". One name for one page. */}
+              <Link to={DISCOVERY_ROUTE} className={`${secondaryButton} ${buttonLg}`}>
                 <Icon name="search" size={16} />
-                Browse providers
+                {DISCOVERY_LABEL}
               </Link>
             </div>
 
@@ -143,11 +146,20 @@ export default function LandingPage() {
             Whichever side you are on, start here.
           </h2>
           <p className="mx-auto mt-2 max-w-sm text-sm text-ink-2">
-            Sign in and pick client or provider on the next step.
+            Sign in and pick client or provider on the next step — or look around first.
           </p>
-          <Link to="/login" className={`mt-6 ${primaryButton} ${buttonLg}`}>
-            Get started free
-          </Link>
+          {/* The closing section previously offered only "Get started free", so
+              the one thing a visitor can do without an account disappeared after
+              the hero. Both routes are offered here, matching the hero pair. */}
+          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+            <Link to="/login" className={`${primaryButton} ${buttonLg}`}>
+              Get started free
+            </Link>
+            <Link to={DISCOVERY_ROUTE} className={`${secondaryButton} ${buttonLg}`}>
+              <Icon name="search" size={16} />
+              {DISCOVERY_LABEL}
+            </Link>
+          </div>
         </div>
       </section>
     </div>

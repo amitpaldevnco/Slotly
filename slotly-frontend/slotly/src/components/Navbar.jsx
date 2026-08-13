@@ -5,12 +5,20 @@ import { useAuth } from "../context/AuthContext";
 import Avatar from "./ui/Avatar";
 import Logo from "./ui/Logo";
 import Icon from "./ui/Icon";
-import { container, primaryButton, buttonSm, iconButtonTouch, zoneName } from "../lib/ui";
+import {
+  container,
+  primaryButton,
+  secondaryButton,
+  buttonSm,
+  iconButtonTouch,
+  zoneName,
+} from "../lib/ui";
+import { DISCOVERY_ROUTE, DISCOVERY_LABEL, DISCOVERY_SHORT_LABEL } from "../lib/discovery";
 
 
 function linksFor(user) {
   if (!user?.role) {
-    return [{ to: "/providers", label: "Find a provider", icon: "search", end: true }];
+    return [{ to: DISCOVERY_ROUTE, label: DISCOVERY_LABEL, icon: "search", end: true }];
   }
 
   if (user.role === "provider") {
@@ -23,11 +31,17 @@ function linksFor(user) {
 
   return [
     { to: "/dashboard", label: "My bookings", icon: "calendarCheck" },
-    { to: "/providers", label: "Find a provider", icon: "search", end: true },
+    { to: DISCOVERY_ROUTE, label: DISCOVERY_LABEL, icon: "search", end: true },
   ];
 }
 
-/** The one action the header offers, which is not the same one for both roles. */
+/**
+ * The one action the header offers, which is not the same one for both roles.
+ *
+ * Signed-out visitors get nothing here — their one action is discovery, and that
+ * sits in the header bar itself rather than inside the mobile sheet. See the
+ * standalone link in the header below for why.
+ */
 function primaryActionFor(user) {
   if (user?.role === "provider") {
     return { to: "/services?new=1", label: "New service", icon: "plus" };
@@ -96,6 +110,25 @@ export default function Navbar() {
           ))}
         </nav>
 
+        {/* Discovery, in the bar itself, for anyone not signed in.
+
+            Below `md` the nav above is hidden and everything it holds moves into
+            the hamburger sheet — which meant the only thing a signed-out visitor
+            can actually do without an account was invisible until they opened a
+            menu, while "Get started" sat in the open. Someone who has not
+            committed to an account yet should not have to go looking for the
+            browse route. `md:hidden` because the full nav already carries the
+            same link at wider widths. */}
+        {!loading && !user && (
+          <Link
+            to={DISCOVERY_ROUTE}
+            className={`${secondaryButton} ${buttonSm} shrink-0 md:hidden`}
+          >
+            <Icon name="search" size={15} />
+            {DISCOVERY_SHORT_LABEL}
+          </Link>
+        )}
+
         <div className="ml-auto flex items-center gap-1.5 md:ml-0">
           {loading ? (
             // A placeholder rather than "Sign in": showing the signed-out state
@@ -126,25 +159,40 @@ export default function Navbar() {
               >
                 Sign in
               </Link>
+              {/* "Sign up" on the narrowest screens purely for width: at 320px
+                  the bar also has to hold the logo and the discovery link, and
+                  "Get started" is the widest of the three. Same destination —
+                  /login offers both modes. */}
               <Link to="/login" className={`${primaryButton} ${buttonSm}`}>
-                Get started
+                <span className="sm:hidden">Sign up</span>
+                <span className="hidden sm:inline">Get started</span>
               </Link>
             </>
           )}
 
-          <button
-            type="button"
-            onClick={() => setMenuOpen((open) => !open)}
-            aria-expanded={menuOpen}
-            aria-label="Toggle menu"
-            className={`${iconButtonTouch} md:hidden`}
-          >
-            <Icon name={menuOpen ? "close" : "menu"} size={19} />
-          </button>
+          {/* Signed-out visitors get no hamburger. Once discovery moved into the
+              bar the sheet had one row left — "Sign in" — pointing at /login,
+              which is where the button beside it already goes. A menu toggle
+              that opens a duplicate of its neighbour is worth less than the
+              44px it costs, and that width is exactly what the bar needs at
+              320px to fit the logo, discovery and sign-up without overflowing. */}
+          {user && (
+            <button
+              type="button"
+              onClick={() => setMenuOpen((open) => !open)}
+              aria-expanded={menuOpen}
+              aria-label="Toggle menu"
+              className={`${iconButtonTouch} md:hidden`}
+            >
+              <Icon name={menuOpen ? "close" : "menu"} size={19} />
+            </button>
+          )}
         </div>
       </div>
 
-      {menuOpen && <MobileMenu links={links} action={action} user={user} onLogout={handleLogout} />}
+      {menuOpen && user && (
+        <MobileMenu links={links} action={action} user={user} onLogout={handleLogout} />
+      )}
     </header>
   );
 }
@@ -261,6 +309,12 @@ function MenuLink({ to, icon, label }) {
  * destination.
  */
 function MobileMenu({ links, action, user, onLogout }) {
+  // The action and the navigation can point at the same page — a client's "Book
+  // an appointment" and their "Find a provider" are both the discovery route,
+  // and so is a signed-out visitor's CTA. Listing it twice, once as a button and
+  // once as a row, reads as two destinations. The button wins; the row goes.
+  const rows = links.filter((link) => link.to !== action?.to);
+
   return (
     <nav className="border-t border-line bg-canvas md:hidden" aria-label="Mobile">
       <div className={`${container} space-y-1 py-2.5`}>
@@ -271,7 +325,7 @@ function MobileMenu({ links, action, user, onLogout }) {
           </Link>
         )}
 
-        {links.map((link) => (
+        {rows.map((link) => (
           <NavLink
             key={link.to}
             to={link.to}
