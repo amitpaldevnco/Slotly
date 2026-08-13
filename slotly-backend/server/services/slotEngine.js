@@ -51,6 +51,9 @@ import { DateTime } from "luxon";
 /** Widest date range the engine will expand in one call, in days. */
 export const MAX_RANGE_DAYS = 62;
 
+/** One minute in milliseconds — the unit every interval in this module uses. */
+const MINUTE_MS = 60_000;
+
 /** Grid spacing used when a service does not specify its own. */
 export const DEFAULT_SLOT_INTERVAL = 30;
 
@@ -378,7 +381,7 @@ export function generateSlots({
     }))
     .sort((a, b) => a.start - b.start);
 
-  const minute = 60_000;
+  const minute = MINUTE_MS;
   const slots = [];
 
   // Computed once per call, not once per candidate slot: neither `now` nor
@@ -388,19 +391,16 @@ export function generateSlots({
   const earliestBookableMs = earliestBookableInstant(now, timezone, minNoticeDays).toMillis();
 
   for (const window of windows) {
-    const earliestStart = window.start + bufferBefore * minute;
-    const latestStart = window.end - (bufferAfter + duration) * minute;
-
-    // The grid is anchored at the window's start, so a 09:00–17:00 window on a
-    // 30-minute interval offers 09:00, 09:30, 10:00 … regardless of the
-    // service's buffers. Skipping whole grid steps — rather than starting at
-    // `earliestStart` — is what keeps those times round: with a 5-minute
-    // buffer-before, 09:00 does not fit and the first offered start is 09:30,
-    // not 09:05.
-    const stepsToSkip = Math.ceil((earliestStart - window.start) / (step * minute));
-    const firstStart = window.start + Math.max(0, stepsToSkip) * step * minute;
-
-    for (let startMs = firstStart; startMs <= latestStart; startMs += step * minute) {
+    // Candidate starts come from the shared helper rather than being computed
+    // inline, so the provider-facing "these settings produce no slots" warning
+    // in `diagnoseSlotFeasibility()` can never drift from what actually gets
+    // generated here. See `candidateStartsInWindow()` for the arithmetic.
+    for (const startMs of candidateStartsInWindow(window, {
+      duration,
+      bufferBefore,
+      bufferAfter,
+      step,
+    })) {
       // Two independent gates, both must pass:
       //
       //  1. The slot has not already happened for the provider. See
@@ -435,6 +435,290 @@ export function generateSlots({
   }
 
   return slots.sort((a, b) => a.startsAt.localeCompare(b.startsAt));
+}
+
+/**
+ * Every legal appointment start inside one open window, on the service's grid.
+ *
+ * This is the *only* place the "which starts are offered?" arithmetic lives.
+ * `generateSlots()` walks it to build real slots, and `diagnoseSlotFeasibility()`
+ * walks it to decide whether a provider's settings can yield anything at all —
+ * so a warning shown in the provider UI and an empty slot list shown to a client
+ * are always two readings of the same calculation, never two implementations
+ * that can disagree.
+ *
+ * Three constraints combine:
+ *
+ *   1. The appointment *and both buffers* must fit entirely inside the window,
+ *      so the legal band of starts is
+ *      `[window.start + bufferBefore, window.end - bufferAfter - duration]`.
+ *   2. Candidate starts sit on a `step`-minute grid **anchored at the window's
+ *      own start**, which is what keeps offered times round (09:00, 09:30, …)
+ *      instead of drifting to 09:05, 10:15 as soon as a buffer is non-zero.
+ *   3. A start is offered only where the band and the grid agree.
+ *
+ * Constraint 3 is why a window can be long enough for the appointment and still
+ * offer nothing: a 09:00–10:00 window with a 30-minute service, 10-minute
+ * buffers and a 30-minute grid has a legal band of 09:10–09:20 and a grid of
+ * 09:00 / 09:30, which never intersect. That is a real configuration mistake
+ * rather than a bug, and it is exactly what the diagnosis below exists to catch
+ * *before* a provider saves it.
+ *
+ * @param {{start:number,end:number}} window Epoch-millisecond open window.
+ * @param {{duration:number,bufferBefore:number,bufferAfter:number,step:number}} config
+ *   Minutes. `step` must already be resolved (>= 1).
+ * @returns {number[]} Ascending epoch-millisecond starts. Empty when nothing fits.
+ */
+export function candidateStartsInWindow(window, { duration, bufferBefore, bufferAfter, step }) {
+  const earliestStart = window.start + bufferBefore * MINUTE_MS;
+  const latestStart = window.end - (bufferAfter + duration) * MINUTE_MS;
+
+  // Skipping whole grid steps — rather than simply starting at `earliestStart` —
+  // is what keeps the offered times round: with a 5-minute buffer-before, 09:00
+  // does not fit and the first offered start is 09:30, not 09:05.
+  const stepsToSkip = Math.ceil((earliestStart - window.start) / (step * MINUTE_MS));
+  const firstStart = window.start + Math.max(0, stepsToSkip) * step * MINUTE_MS;
+
+  const starts = [];
+  for (let startMs = firstStart; startMs <= latestStart; startMs += step * MINUTE_MS) {
+    starts.push(startMs);
+  }
+  return starts;
+}
+
+/**
+ * The shortest open window, in minutes, that yields at least one slot.
+ *
+ * Inverts `candidateStartsInWindow()`. A start is offered when the first grid
+ * position at or after `bufferBefore` still leaves room for the appointment and
+ * its trailing buffer, i.e. when
+ *
+ *   ceil(bufferBefore / step) * step + duration + bufferAfter <= windowMinutes
+ *
+ * The `ceil(...) * step` term is the part providers find surprising: with a
+ * 10-minute leading buffer on a 30-minute grid, the first usable start is 30
+ * minutes into the window, not 10 — the other 20 minutes are unreachable because
+ * no grid position lands in them.
+ *
+ * @param {{duration:number,bufferBefore:number,bufferAfter:number,step:number}} config Minutes.
+ * @returns {number} Minutes of open time needed for one slot.
+ */
+export function minimumWindowMinutes({ duration, bufferBefore, bufferAfter, step }) {
+  return Math.ceil(bufferBefore / step) * step + duration + bufferAfter;
+}
+
+/**
+ * Decides whether a service's settings can produce any slot at all, and — when
+ * they cannot — works out what would actually fix it.
+ *
+ * This powers the provider-side warning. It deliberately answers a question
+ * about the *recurring weekly configuration*, not about any particular date:
+ * bookings, one-off blocks, the minimum-notice rule and "is it in the past" are
+ * all left out, because none of them are things the provider can fix by editing
+ * the settings in front of them. A day that is empty only because it is fully
+ * booked is not a misconfiguration and must not be reported as one.
+ *
+ * Windows are evaluated in wall-clock minutes rather than as instants. On a DST
+ * transition day a window's real length differs by an hour, but the provider is
+ * editing "Mondays, 09:00–10:00", and warning them about a configuration that
+ * works on 51 Mondays a year would be noise.
+ *
+ * @param {object} args
+ * @param {Array<{weekday:number,start_minute:number,end_minute:number}>} args.rules
+ *   The weekly pattern being validated — saved rows, or a draft the provider has
+ *   not committed yet.
+ * @param {{duration:number,buffer_before:number,buffer_after:number,slot_interval?:number}} args.service
+ * @param {number} [args.stepMinutes] Overrides the service's slot_interval.
+ * @returns {{
+ *   bookable: boolean,
+ *   totalSlotsPerWeek: number,
+ *   config: {duration:number,bufferBefore:number,bufferAfter:number,slotInterval:number},
+ *   minimumWindowMinutes: number,
+ *   days: Array<{weekday:number,windows:Array<object>,slotCount:number}>,
+ *   problemDays: Array<object>,
+ *   remedies: Array<{kind:string,value:number,summary:string}>
+ * }}
+ */
+export function diagnoseSlotFeasibility({ rules, service, stepMinutes }) {
+  const duration = Number(service.duration);
+  const bufferBefore = Number(service.buffer_before) || 0;
+  const bufferAfter = Number(service.buffer_after) || 0;
+  const step = Math.max(
+    1,
+    Number(stepMinutes) || Number(service.slot_interval) || DEFAULT_SLOT_INTERVAL
+  );
+
+  const config = { duration, bufferBefore, bufferAfter, slotInterval: step };
+  const required = minimumWindowMinutes({ duration, bufferBefore, bufferAfter, step });
+
+  // Merge each weekday's rules first: 09:00–12:00 and 12:00–17:00 are two rows
+  // but one continuous window, and a service longer than either half fits only
+  // in the merged one. This mirrors mergeIntervals() in minute space.
+  const days = [];
+  let totalSlotsPerWeek = 0;
+
+  for (let weekday = 0; weekday <= 6; weekday += 1) {
+    const dayRules = rules
+      .filter((r) => Number(r.weekday) === weekday)
+      .map((r) => ({ start: Number(r.start_minute), end: Number(r.end_minute) }));
+
+    if (dayRules.length === 0) continue;
+
+    const merged = mergeIntervals(dayRules);
+    const windows = merged.map((w) => {
+      // candidateStartsInWindow works in milliseconds; minutes-from-midnight
+      // scaled by MINUTE_MS is the same arithmetic on the same units, so the
+      // count here is exactly the count generateSlots() would produce.
+      const starts = candidateStartsInWindow(
+        { start: w.start * MINUTE_MS, end: w.end * MINUTE_MS },
+        { duration, bufferBefore, bufferAfter, step }
+      );
+
+      return {
+        startTime: formatMinutesOfDay(w.start),
+        endTime: formatMinutesOfDay(w.end),
+        lengthMinutes: w.end - w.start,
+        slotCount: starts.length,
+        firstSlotTime: starts.length ? formatMinutesOfDay(starts[0] / MINUTE_MS) : null,
+        // What the window would need to be to yield one slot, expressed as the
+        // end time the provider would have to move to — far more actionable
+        // than "you need 70 minutes".
+        suggestedEndTime: starts.length ? null : formatMinutesOfDay(w.start + required),
+      };
+    });
+
+    const slotCount = windows.reduce((sum, w) => sum + w.slotCount, 0);
+    totalSlotsPerWeek += slotCount;
+    days.push({ weekday, windows, slotCount });
+  }
+
+  const problemDays = days.filter((d) => d.slotCount === 0);
+
+  return {
+    bookable: totalSlotsPerWeek > 0,
+    totalSlotsPerWeek,
+    config,
+    minimumWindowMinutes: required,
+    days,
+    problemDays,
+    remedies: problemDays.length === 0 ? [] : suggestRemedies({ problemDays, config }),
+  };
+}
+
+/**
+ * Works out which concrete setting changes would actually produce slots.
+ *
+ * Every suggestion is *verified* against `minimumWindowMinutes()` rather than
+ * guessed, so the UI never tells a provider to "try a shorter buffer" when a
+ * shorter buffer would not help. Order matters — the first entry is the one the
+ * UI presents as the recommendation, and it is deliberately "make the day
+ * longer": that is the only remedy that leaves the service's duration and its
+ * buffers untouched, and buffers exist to protect the provider's real calendar,
+ * not to be traded away to make a warning disappear.
+ *
+ * @param {{problemDays:Array<object>, config:object}} args
+ * @returns {Array<{kind:string,value:number,summary:string}>}
+ */
+function suggestRemedies({ problemDays, config }) {
+  const { duration, bufferBefore, bufferAfter, slotInterval } = config;
+  const remedies = [];
+
+  // The tightest window among the broken days decides what a fix has to clear.
+  const shortest = problemDays
+    .flatMap((d) => d.windows)
+    .reduce((min, w) => (w.lengthMinutes < min.lengthMinutes ? w : min));
+
+  const required = minimumWindowMinutes({ duration, bufferBefore, bufferAfter, step: slotInterval });
+  const extraMinutes = required - shortest.lengthMinutes;
+
+  if (extraMinutes > 0) {
+    remedies.push({
+      kind: "extend-availability",
+      value: extraMinutes,
+      summary: `Add ${formatDuration(extraMinutes)} to that day — ending at ${shortest.suggestedEndTime} instead would fit.`,
+    });
+  } else {
+    // The window is already long enough in raw minutes; only the grid is in the
+    // way. Say so plainly rather than suggesting a longer day that is not the
+    // actual constraint.
+    remedies.push({
+      kind: "extend-availability",
+      value: slotInterval,
+      summary: `Add ${formatDuration(slotInterval)} to that day so a start time lands inside it.`,
+    });
+  }
+
+  // A shorter interval is often the smallest real fix, but only offer values
+  // that genuinely work — and among those, the *largest*. Several intervals
+  // usually qualify, and the smallest of them would scatter a provider's day
+  // across far more start times than the problem requires; the largest is the
+  // one that changes the least about how their calendar reads.
+  const workingInterval = [60, 45, 30, 20, 15, 10, 5]
+    .filter((candidate) => candidate < slotInterval)
+    .find(
+      (candidate) =>
+        minimumWindowMinutes({ duration, bufferBefore, bufferAfter, step: candidate }) <=
+        shortest.lengthMinutes
+    );
+
+  if (workingInterval) {
+    remedies.push({
+      kind: "slot-interval",
+      value: workingInterval,
+      summary: `Change the slot interval to ${workingInterval} minutes so start times land inside your available time.`,
+    });
+  }
+
+  // Trimming the leading buffer is the buffer change that helps most, because
+  // it is the one the grid rounds up. Only suggest it when it actually resolves
+  // the day, and never suggest removing protection that is doing no harm.
+  if (bufferBefore > 0) {
+    const trimmed = [15, 10, 5, 0].find(
+      (candidate) =>
+        candidate < bufferBefore &&
+        minimumWindowMinutes({ duration, bufferBefore: candidate, bufferAfter, step: slotInterval }) <=
+          shortest.lengthMinutes
+    );
+    if (trimmed !== undefined) {
+      remedies.push({
+        kind: "buffer-before",
+        value: trimmed,
+        summary:
+          trimmed === 0
+            ? "Remove the buffer before appointments for this service."
+            : `Reduce the buffer before appointments to ${trimmed} minutes.`,
+      });
+    }
+  }
+
+  const shorterDuration = shortest.lengthMinutes - Math.ceil(bufferBefore / slotInterval) * slotInterval - bufferAfter;
+  if (shorterDuration > 0 && shorterDuration < duration) {
+    remedies.push({
+      kind: "duration",
+      value: shorterDuration,
+      summary: `Shorten this service to ${formatDuration(shorterDuration)}.`,
+    });
+  }
+
+  return remedies;
+}
+
+/** Renders minutes-from-midnight as a 12-hour clock reading for provider-facing copy. */
+function formatMinutesOfDay(totalMinutes) {
+  const minutes = Math.round(totalMinutes);
+  const hour24 = Math.floor(minutes / 60);
+  const minute = minutes % 60;
+  const suffix = hour24 >= 12 && hour24 < 24 ? "PM" : "AM";
+  const hour12 = hour24 % 12 === 0 ? 12 : hour24 % 12;
+  return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
+}
+
+/** Renders a minute count the way a person would say it: "1 hr 10 min". */
+function formatDuration(minutes) {
+  if (minutes < 60) return `${minutes} min`;
+  const hours = Math.floor(minutes / 60);
+  const rest = minutes % 60;
+  return rest === 0 ? `${hours} hr` : `${hours} hr ${rest} min`;
 }
 
 /**

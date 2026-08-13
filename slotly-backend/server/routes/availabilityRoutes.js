@@ -15,6 +15,8 @@ import {
   deleteAvailabilityException,
   clearServiceAvailabilityOverride,
   updateAvailabilitySettings,
+  validateAvailabilityConfiguration,
+  getAvailabilityHealth,
 } from "../controller/availabilityController.js";
 import { verifyToken, requireProviderRole } from "../middleware/authMiddleware.js";
 
@@ -23,6 +25,12 @@ const router = express.Router();
 router.use(verifyToken, requireProviderRole);
 
 router.put("/rules", replaceAvailabilityRules);
+// A dry run of /rules: same validation, same slot arithmetic, no write. POST
+// rather than GET because the thing being checked is a draft in the request
+// body, not something already stored.
+router.post("/validate", validateAvailabilityConfiguration);
+// The same diagnosis against what is already saved, per service, for dashboards.
+router.get("/health", getAvailabilityHealth);
 router.delete("/rules/service/:serviceId", clearServiceAvailabilityOverride);
 router.post("/exceptions", createAvailabilityException);
 router.delete("/exceptions/:id", deleteAvailabilityException);

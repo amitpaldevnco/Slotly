@@ -33,6 +33,28 @@ export function PageHeader({ title, description, actions, meta, back, className 
 
 // A titled panel: the card-with-tinted-header pattern that five components had each implemented separately.
  
+/** Heading treatments a Section can take. Keyed by the `tone` prop. */
+const TONES = {
+  default: {
+    border: "border-line",
+    header: "border-line bg-subtle",
+    title: "text-ink",
+    description: "text-ink-3",
+  },
+  brand: {
+    border: "border-brand-line",
+    header: "border-brand-line bg-brand-soft",
+    title: "text-brand-ink",
+    description: "text-brand-ink/85",
+  },
+  warn: {
+    border: "border-warn-line",
+    header: "border-warn-line bg-warn-soft",
+    title: "text-warn-ink",
+    description: "text-warn-ink/85",
+  },
+};
+
 export function Section({
   title,
   description,
@@ -44,35 +66,29 @@ export function Section({
   headingId,
   ...rest
 }) {
-  const brand = tone === "brand";
+  // `warn` exists for panels that report something the user has to act on, so
+  // the heading carries the same colour language as an Alert rather than
+  // looking like one more neutral card among the others.
+  const toneStyles = TONES[tone] || TONES.default;
 
   return (
     <section
       aria-labelledby={headingId}
-      className={`overflow-hidden rounded-lg border bg-surface ${
-        brand ? "border-brand-line" : "border-line"
-      } ${className}`}
+      className={`overflow-hidden rounded-lg border bg-surface ${toneStyles.border} ${className}`}
       {...rest}
     >
       {(title || actions) && (
         <div
-          className={`flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b px-4 py-2.5 ${
-            brand ? "border-brand-line bg-brand-soft" : "border-line bg-subtle"
-          }`}
+          className={`flex flex-wrap items-center justify-between gap-x-3 gap-y-1.5 border-b px-4 py-2.5 ${toneStyles.header}`}
         >
           <div className="min-w-0">
             {title && (
-              <h2
-                id={headingId}
-                className={`text-sm font-semibold ${brand ? "text-brand-ink" : "text-ink"}`}
-              >
+              <h2 id={headingId} className={`text-sm font-semibold ${toneStyles.title}`}>
                 {title}
               </h2>
             )}
             {description && (
-              <p className={`mt-0.5 text-xs ${brand ? "text-brand-ink/85" : "text-ink-3"}`}>
-                {description}
-              </p>
+              <p className={`mt-0.5 text-xs ${toneStyles.description}`}>{description}</p>
             )}
           </div>
           {actions && <div className="flex shrink-0 items-center gap-2">{actions}</div>}
@@ -86,14 +102,25 @@ export function Section({
 
 /**
  * A horizontal strip of controls above a list or table — filters, a search box,
- * a view switch. Scrolls sideways on a phone rather than wrapping into a tall
- * stack that pushes the actual content off the screen.
+ * a view switch. Wraps onto more lines rather than overflowing sideways, so a
+ * narrow screen never gets a horizontal scrollbar.
+ *
+ * `stack` turns it into a single full-width column below `sm` and restores the
+ * row above it. Wrapping alone is enough when the controls are small, but a
+ * search box next to two dropdowns has more intrinsic width than a 320px phone
+ * has room for: the items then wrap to one per line anyway, at inconsistent
+ * widths, with the gaps landing in odd places. Stacking asks for that outcome
+ * deliberately and makes every control the same full width.
+ *
+ * @param {boolean} [stack] Stack vertically below the `sm` breakpoint.
  */
-export function Toolbar({ children, className = "" }) {
+export function Toolbar({ children, stack = false, className = "" }) {
+  const layout = stack
+    ? "flex flex-col items-stretch gap-2 sm:flex-row sm:flex-wrap sm:items-center"
+    : "flex flex-wrap items-center gap-2";
+
   return (
-    <div
-      className={`flex flex-wrap items-center gap-2 rounded-lg border border-line bg-surface px-3 py-2.5 ${className}`}
-    >
+    <div className={`${layout} rounded-lg border border-line bg-surface px-3 py-2.5 ${className}`}>
       {children}
     </div>
   );

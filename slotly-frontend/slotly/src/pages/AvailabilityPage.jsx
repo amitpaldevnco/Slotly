@@ -66,16 +66,31 @@ export default function AvailabilityPage() {
 
   const {
     data: availability,
+    // Every editor below reports what it saved through an `onSaved` callback that
+    // patches this state in place, so the screen updates from the server's own
+    // response instead of re-fetching. Leaving `setData` out of this destructure
+    // is what made a successful save look like a network failure: the callbacks
+    // referenced an undeclared `setAvailability` and threw inside the editor's
+    // try/catch, which then reported the throw as a failed request.
+    setData: setAvailability,
     loading,
     error: loadError,
     reload: load,
   } = useApiResource(
     ({ signal }) =>
-      providersApi.getAvailability(
-        user.id,
-        selectedServiceId ? { serviceId: selectedServiceId } : {},
-        { signal }
-      ),
+      providersApi
+        .getAvailability(
+          user.id,
+          selectedServiceId ? { serviceId: selectedServiceId } : {},
+          { signal }
+        )
+        // Stamp each response with the tab it was fetched for. A scope switch
+        // keeps the previous schedule on screen while the new one loads (see
+        // `initialLoading` below), which means that for a moment `availability`
+        // holds one scope's rules while `selectedServiceId` names another. The
+        // editors must not be handed that mismatch — it is how a service's hours
+        // ended up displayed, and then saved, as the provider's default.
+        .then((data) => ({ ...data, forServiceId: selectedServiceId ?? null })),
     {
       enabled: Boolean(user?.id),
       deps: [user?.id, selectedServiceId],
@@ -84,6 +99,9 @@ export default function AvailabilityPage() {
   );
 
   const selectedService = services.find((s) => s.id === selectedServiceId) || null;
+
+  /** True once the loaded availability actually belongs to the selected tab. */
+  const availabilityInSync = availability?.forServiceId === (selectedServiceId ?? null);
 
   const handleReset = async () => {
     if (!selectedServiceId) return;
@@ -243,28 +261,42 @@ export default function AvailabilityPage() {
             </>
           }
         >
-          <WeeklyHoursEditor
-            key={`rules-${selectedServiceId ?? "default"}`}
-            rules={availability.rules}
-            timezone={availability.timezone}
-            serviceId={selectedServiceId}
-            scopeLabel={selectedService?.service_name}
-            onSaved={(rules) => {
-              setAvailability((current) => ({
-                ...current,
-                rules,
-                scope: selectedServiceId ? "service" : "provider",
-              }));
-              if (selectedServiceId) {
-                setServices((current) =>
-                  current.map((s) =>
-                    s.id === selectedServiceId ? { ...s, has_custom_availability: true } : s
-                  )
-                );
-              }
-            }}
-          />
+          {/* Held back until the fetched scope matches the selected tab, so the
+              grid is never populated from the scope the provider just left. */}
+          {availabilityInSync && (
+            <WeeklyHoursEditor
+              key={`rules-${selectedServiceId ?? "default"}`}
+              rules={availability.rules}
+              timezone={availability.timezone}
+              serviceId={selectedServiceId}
+              scopeLabel={selectedService?.service_name}
+              onSaved={(rules) => {
+                setAvailability((current) => ({
+                  ...current,
+                  rules,
+                  // An empty week on a service is not a schedule of its own — it
+                  // means "follow my default hours", and the server clears the
+                  // override to match. See replaceAvailabilityRules.
+                  scope: selectedServiceId && rules.length > 0 ? "service" : "provider",
+                }));
+                if (selectedServiceId) {
+                  setServices((current) =>
+                    current.map((s) =>
+                      s.id === selectedServiceId
+                        ? { ...s, has_custom_availability: rules.length > 0 }
+                        : s
+                    )
+                  );
+                }
+                // Saving an empty week hands the service back to the default
+                // hours, so what is on screen is now the *provider's* schedule,
+                // not this service's. Re-fetch rather than guess at it.
+                if (selectedServiceId && rules.length === 0) load();
+              }}
+            />
+          )}
 
+          {availabilityInSync && (
           <ExceptionsEditor
             key={`exceptions-${selectedServiceId ?? "default"}`}
             exceptions={availability.exceptions}
@@ -281,6 +313,7 @@ export default function AvailabilityPage() {
               }
             }}
           />
+          )}
         </SplitLayout>
       </div>
     </Page>

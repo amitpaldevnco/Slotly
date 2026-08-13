@@ -5,6 +5,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { DateTime } from "luxon";
 import * as bookingsApi from "../../api/bookings";
 import * as providersApi from "../../api/providers";
+import * as availabilityApi from "../../api/availability";
 import { useApiResource } from "../../hooks/useApiResource";
 import { fromDisplayDate, toDisplayDate } from "../../lib/time";
 import ProviderCalendar from "./ProviderCalendar";
@@ -61,17 +62,21 @@ export default function ProviderDashboard({ user }) {
 
   const { data: overview, loading: overviewLoading } = useApiResource(
     async ({ signal }) => {
-      const [services, summary] = await Promise.all([
+      const [services, summary, health] = await Promise.all([
         providersApi.listServices(user.id, { signal }).catch(() => []),
         bookingsApi.summary({ signal }).catch(() => null),
+        // Non-fatal: the "needs attention" panel is an extra, and the dashboard
+        // must still render its schedule if this one call fails.
+        availabilityApi.getHealth({ signal }).catch(() => null),
       ]);
-      return { services, summary };
+      return { services, summary, health };
     },
     { deps: [user.id] }
   );
 
   const services = overview?.services ?? [];
   const summary = overview?.summary ?? null;
+  const health = overview?.health ?? null;
 
   const [calendarDate, setCalendarDate] = useState(() => toDisplayDate(new Date(), timezone));
   const [calendarView, setCalendarView] = useState(initialCalendarView);
@@ -215,6 +220,15 @@ export default function ProviderDashboard({ user }) {
           <SplitLayout
             aside={
               <>
+                {/* First in the sidebar: these are the things stopping bookings
+                    from happening at all, so they outrank today's schedule and
+                    the running totals. */}
+                <NeedsAttentionPanel
+                  health={health}
+                  user={user}
+                  services={services}
+                  loading={overviewLoading}
+                />
                 <TodaySchedule
                   bookings={todayBookings}
                   timezone={timezone}
@@ -344,6 +358,96 @@ export default function ProviderDashboard({ user }) {
         )}
       </div>
     </Page>
+  );
+}
+
+/**
+ * The one place that says "something here needs you".
+ *
+ * These warnings were previously either nowhere (an incomplete profile) or
+ * buried on the screen that causes them (a service whose hours cannot yield a
+ * slot, which only appears once you open Availability and pick that service's
+ * tab). Both share a property that makes a dashboard the right home: a provider
+ * has no reason to go looking for them, because from where they are standing
+ * nothing looks wrong — the calendar is simply empty.
+ *
+ * Each entry is one sentence and one link to the screen that fixes it. The full
+ * explanation — which day, which buffer, what to change — stays on the
+ * Availability page, where the controls are. Repeating it here would turn a
+ * glance into a read, and the panel is meant to be glanceable.
+ *
+ * Renders nothing when there is nothing wrong, rather than an empty "all good"
+ * card: a permanent panel that is usually blank stops being looked at.
+ */
+function NeedsAttentionPanel({ health, user, services, loading }) {
+  if (loading) return null;
+
+  const items = [];
+
+  // Ordered by how badly each one blocks a booking, most blocking first.
+  if (services.length > 0 && services.every((s) => s.is_active === false)) {
+    items.push({
+      icon: "tag",
+      text: "None of your services are active, so nothing can be booked.",
+      to: "/services",
+      action: "Manage services",
+    });
+  }
+
+  for (const name of health?.servicesWithoutHours ?? []) {
+    items.push({
+      icon: "clock",
+      text: `${name} has no hours set, so clients cannot book it.`,
+      to: "/availability",
+      action: "Set hours",
+    });
+  }
+
+  for (const service of health?.misconfiguredServices ?? []) {
+    const day = service.problemDays[0];
+    items.push({
+      icon: "alert",
+      // Deliberately short. The provider needs to know *that* it is broken and
+      // where to go; the Availability page tells them why and what to change.
+      text: day
+        ? `${service.serviceName} offers no times — your ${day.weekdayName} hours are too short for it once buffers are counted.`
+        : `${service.serviceName} offers no bookable times with its current hours.`,
+      to: "/availability",
+      action: "Fix hours",
+    });
+  }
+
+  if (!user.bio?.trim()) {
+    items.push({
+      icon: "user",
+      text: "Your profile has no bio yet — clients see it when choosing a provider.",
+      to: "/profile",
+      action: "Add a bio",
+    });
+  }
+
+  if (items.length === 0) return null;
+
+  return (
+    <Section title="Needs attention" tone="warn" flush>
+      <ul className="divide-y divide-line-soft">
+        {items.map((item) => (
+          <li key={item.text} className="px-3 py-2.5">
+            <p className="flex gap-2 text-[0.8125rem] leading-relaxed text-ink-2">
+              <Icon name={item.icon} size={14} className="mt-0.5 shrink-0 text-warn-ink" />
+              <span>{item.text}</span>
+            </p>
+            <Link
+              to={item.to}
+              className="mt-1 ml-6 inline-flex items-center gap-1 text-xs font-medium text-brand transition hover:text-brand-strong"
+            >
+              {item.action}
+              <Icon name="arrowRight" size={13} />
+            </Link>
+          </li>
+        ))}
+      </ul>
+    </Section>
   );
 }
 

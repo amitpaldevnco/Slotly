@@ -28,6 +28,8 @@ import {
   earliestBookableInstant,
   mergeIntervals,
   subtractIntervals,
+  diagnoseSlotFeasibility,
+  minimumWindowMinutes,
   MAX_RANGE_DAYS,
 } from "../services/slotEngine.js";
 
@@ -864,5 +866,212 @@ describe("performance", () => {
 
     expect(slots.length).toBeGreaterThan(0);
     expect(elapsed).toBeLessThan(100);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Configuration feasibility — the provider-facing "these settings produce no
+// slots" warning.
+//
+// The point of these tests is not just that the diagnosis returns the right
+// booleans, but that it returns *the same* answer generateSlots() does. Several
+// of them assert both together on purpose: the warning exists to predict the
+// engine, so a test that only checked the warning could pass while the two
+// drifted apart, which is the exact failure the shared helper prevents.
+// ---------------------------------------------------------------------------
+describe("diagnoseSlotFeasibility", () => {
+  const zone = "Asia/Qatar";
+
+  /** Runs the real engine over one week so a diagnosis can be checked against it. */
+  function actualWeeklySlotCount(rules, svc) {
+    return generateSlots({
+      rules,
+      exceptions: [],
+      timezone: zone,
+      service: svc,
+      ...localDays("2025-06-02", zone, 7), // Monday-to-Sunday, no DST in this zone.
+      busy: [],
+      now: NOW,
+      minNoticeDays: 0,
+    }).length;
+  }
+
+  it("Case A: a two-hour window with 30m duration, 30m grid and 10m buffers is bookable", () => {
+    const rules = [rule(MONDAY, 540, 660)]; // 09:00–11:00
+    const svc = service({ duration: 30, buffer_before: 10, buffer_after: 10, slot_interval: 30 });
+
+    const report = diagnoseSlotFeasibility({ rules, service: svc });
+
+    expect(report.bookable).toBe(true);
+    expect(report.problemDays).toHaveLength(0);
+    expect(report.remedies).toHaveLength(0);
+    // 09:30 and 10:00 fit; 09:00 loses to the leading buffer and 10:30 would
+    // overrun the trailing one.
+    expect(report.totalSlotsPerWeek).toBe(2);
+    expect(report.days[0].windows[0].firstSlotTime).toBe("9:30 AM");
+    expect(actualWeeklySlotCount(rules, svc)).toBe(report.totalSlotsPerWeek);
+  });
+
+  it("Case B: the reported edge case — 09:00–10:00, 30m, 30m grid, 10m buffers — yields nothing", () => {
+    const rules = [rule(MONDAY, 540, 600)]; // 09:00–10:00
+    const svc = service({ duration: 30, buffer_before: 10, buffer_after: 10, slot_interval: 30 });
+
+    const report = diagnoseSlotFeasibility({ rules, service: svc });
+
+    expect(report.bookable).toBe(false);
+    expect(report.totalSlotsPerWeek).toBe(0);
+    // The engine really does produce nothing — the warning is not a false alarm.
+    expect(actualWeeklySlotCount(rules, svc)).toBe(0);
+
+    expect(report.problemDays).toHaveLength(1);
+    expect(report.problemDays[0].weekday).toBe(MONDAY);
+
+    // ceil(10/30)*30 + 30 + 10 = 70 minutes of open time needed, so the day has
+    // to run to 10:10 rather than 10:00.
+    expect(report.minimumWindowMinutes).toBe(70);
+    expect(report.problemDays[0].windows[0].suggestedEndTime).toBe("10:10 AM");
+  });
+
+  it("recommends extending the day first, and only offers remedies that actually work", () => {
+    const rules = [rule(MONDAY, 540, 600)];
+    const svc = service({ duration: 30, buffer_before: 10, buffer_after: 10, slot_interval: 30 });
+
+    const { remedies } = diagnoseSlotFeasibility({ rules, service: svc });
+
+    // Buffers protect the provider's real calendar, so the recommendation that
+    // leads is the one that keeps them.
+    expect(remedies[0].kind).toBe("extend-availability");
+    expect(remedies[0].value).toBe(10);
+
+    // Every alternative is verified rather than guessed: applying it must make
+    // the very same diagnosis come back clean.
+    for (const remedy of remedies) {
+      const patched = { ...svc };
+      const patchedRules = [...rules];
+
+      if (remedy.kind === "slot-interval") patched.slot_interval = remedy.value;
+      if (remedy.kind === "buffer-before") patched.buffer_before = remedy.value;
+      if (remedy.kind === "duration") patched.duration = remedy.value;
+      if (remedy.kind === "extend-availability") {
+        patchedRules[0] = rule(MONDAY, 540, 600 + remedy.value);
+      }
+
+      const after = diagnoseSlotFeasibility({ rules: patchedRules, service: patched });
+      expect(after.bookable, `remedy "${remedy.kind}" should fix the day`).toBe(true);
+      expect(actualWeeklySlotCount(patchedRules, patched)).toBeGreaterThan(0);
+    }
+  });
+
+  it("merges adjacent windows on one day before judging them", () => {
+    // 09:00–09:40 and 09:40–10:20 are each too short on their own, but together
+    // they are one continuous 80-minute window that comfortably fits.
+    const rules = [rule(MONDAY, 540, 580), rule(MONDAY, 580, 620)];
+    const svc = service({ duration: 30, buffer_before: 10, buffer_after: 10, slot_interval: 30 });
+
+    const report = diagnoseSlotFeasibility({ rules, service: svc });
+
+    expect(report.days[0].windows).toHaveLength(1);
+    expect(report.days[0].windows[0].lengthMinutes).toBe(80);
+    expect(report.bookable).toBe(true);
+    expect(report.totalSlotsPerWeek).toBe(actualWeeklySlotCount(rules, svc));
+  });
+
+  it("flags only the days that cannot yield a slot, not the whole week", () => {
+    const rules = [rule(MONDAY, 540, 600), rule(2, 540, 720)]; // short Monday, roomy Tuesday
+    const svc = service({ duration: 30, buffer_before: 10, buffer_after: 10, slot_interval: 30 });
+
+    const report = diagnoseSlotFeasibility({ rules, service: svc });
+
+    expect(report.bookable).toBe(true); // the week as a whole still works
+    expect(report.problemDays).toHaveLength(1);
+    expect(report.problemDays[0].weekday).toBe(MONDAY);
+  });
+
+  it("reports an empty week as unbookable without inventing a remedy", () => {
+    const report = diagnoseSlotFeasibility({ rules: [], service: service() });
+
+    expect(report.bookable).toBe(false);
+    expect(report.days).toHaveLength(0);
+    expect(report.problemDays).toHaveLength(0);
+    expect(report.remedies).toHaveLength(0);
+  });
+
+  it("does not blame the configuration for a day that is merely fully booked", () => {
+    // Case D's shape: the settings are fine, the calendar is just full. A
+    // provider must never be told to change their hours because of this.
+    const rules = [rule(MONDAY, 540, 600)];
+    const svc = service({ duration: 30, buffer_before: 0, buffer_after: 0, slot_interval: 30 });
+
+    expect(diagnoseSlotFeasibility({ rules, service: svc }).bookable).toBe(true);
+
+    const busy = [
+      {
+        blocked_from: DateTime.fromISO("2025-06-02T09:00", { zone }).toJSDate(),
+        blocked_to: DateTime.fromISO("2025-06-02T10:00", { zone }).toJSDate(),
+      },
+    ];
+    const slots = generateSlots({
+      rules,
+      exceptions: [],
+      timezone: zone,
+      service: svc,
+      ...localDay("2025-06-02", zone),
+      busy,
+      now: NOW,
+      minNoticeDays: 0,
+    });
+
+    expect(slots).toHaveLength(0);
+    // Still reported as a sound configuration, because it is one.
+    expect(diagnoseSlotFeasibility({ rules, service: svc }).bookable).toBe(true);
+  });
+
+  it("Case D: booking one slot removes its neighbour through the buffer", () => {
+    // A window with genuine room for two adjacent appointments, so the only
+    // thing under test is the buffer collision — not the grid.
+    const rules = [rule(MONDAY, 540, 660)]; // 09:00–11:00
+    const svc = service({ duration: 30, buffer_before: 10, buffer_after: 10, slot_interval: 30 });
+    const day = localDay("2025-06-02", zone);
+
+    const before = generateSlots({
+      rules,
+      exceptions: [],
+      timezone: zone,
+      service: svc,
+      ...day,
+      busy: [],
+      now: NOW,
+      minNoticeDays: 0,
+    });
+    expect(before.map((s) => clockIn(s.startsAt, zone))).toEqual(["09:30", "10:00"]);
+
+    // Book 09:30. Its occupied span carries the buffers: 09:20–10:10.
+    const booked = computeBookingSpan(before[0].startsAt, svc);
+    expect(clockIn(booked.blockedFrom.toISOString(), zone)).toBe("09:20");
+    expect(clockIn(booked.blockedTo.toISOString(), zone)).toBe("10:10");
+
+    const after = generateSlots({
+      rules,
+      exceptions: [],
+      timezone: zone,
+      service: svc,
+      ...day,
+      busy: [{ blocked_from: booked.blockedFrom, blocked_to: booked.blockedTo }],
+      now: NOW,
+      minNoticeDays: 0,
+    });
+
+    // 10:00 would need 09:50–10:40, which runs into the booked span's trailing
+    // buffer, so it disappears — buffers doing exactly the job they exist for.
+    expect(after).toHaveLength(0);
+  });
+
+  it("minimumWindowMinutes rounds the leading buffer up to a whole grid step", () => {
+    // The surprising part for providers: a 10-minute leading buffer on a
+    // 30-minute grid costs 30 minutes of the window, not 10, because no grid
+    // position lands in the other 20.
+    expect(minimumWindowMinutes({ duration: 30, bufferBefore: 10, bufferAfter: 10, step: 30 })).toBe(70);
+    expect(minimumWindowMinutes({ duration: 30, bufferBefore: 0, bufferAfter: 10, step: 30 })).toBe(40);
+    expect(minimumWindowMinutes({ duration: 30, bufferBefore: 10, bufferAfter: 10, step: 10 })).toBe(50);
   });
 });

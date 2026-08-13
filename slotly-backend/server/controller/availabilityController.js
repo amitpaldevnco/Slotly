@@ -10,6 +10,7 @@ import {
   ERROR_CODES,
 } from "../responseController/responseHandler.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
+import { diagnoseSlotFeasibility } from "../services/slotEngine.js";
 
 /**
  * Confirms a service belongs to this provider before letting them scope a
@@ -152,6 +153,67 @@ function todayIso() {
 }
 
 /**
+ * Validates and normalises a submitted weekly pattern.
+ *
+ * Shared by the save endpoint and the dry-run validation endpoint so a draft the
+ * provider is still editing is judged by exactly the same rules as the one they
+ * eventually commit — a warning that appeared while typing can never turn out to
+ * be wrong at save time, or vice versa.
+ *
+ * @param {Array<{weekday:*,startTime:*,endTime:*}>} rules Raw request rows.
+ * @returns {{parsed: Array<{weekday:number,startMinute:number,endMinute:number,index:number}>,
+ *            errors: Array<{field:string,message:string}>}}
+ */
+function parseWeeklyRules(rules) {
+  const errors = [];
+  const parsed = [];
+
+  rules.forEach((rule, index) => {
+    const weekday = Number(rule.weekday);
+    const startMinute = parseTimeToMinutes(rule.startTime);
+    const endMinute = parseTimeToMinutes(rule.endTime);
+
+    if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
+      errors.push({ field: `rules[${index}].weekday`, message: "Weekday must be 0 (Sunday) to 6 (Saturday)" });
+      return;
+    }
+    if (startMinute === null) {
+      errors.push({ field: `rules[${index}].startTime`, message: "Start time must be HH:MM" });
+      return;
+    }
+    if (endMinute === null) {
+      errors.push({ field: `rules[${index}].endTime`, message: "End time must be HH:MM" });
+      return;
+    }
+    if (endMinute <= startMinute) {
+      errors.push({
+        field: `rules[${index}].endTime`,
+        message: `${WEEKDAY_NAMES[weekday]}: end time must be after start time`,
+      });
+      return;
+    }
+
+    parsed.push({ weekday, startMinute, endMinute, index });
+  });
+
+  // Overlap check, per weekday. Sorting by start makes it a single linear pass
+  // instead of comparing every pair.
+  for (let weekday = 0; weekday <= 6; weekday += 1) {
+    const day = parsed.filter((r) => r.weekday === weekday).sort((a, b) => a.startMinute - b.startMinute);
+    for (let i = 1; i < day.length; i += 1) {
+      if (day[i].startMinute < day[i - 1].endMinute) {
+        errors.push({
+          field: `rules[${day[i].index}].startTime`,
+          message: `${WEEKDAY_NAMES[weekday]}: this window overlaps another one`,
+        });
+      }
+    }
+  }
+
+  return { parsed, errors };
+}
+
+/**
  * PUT /api/availability/rules — provider only.
  *
  * Body: { rules: [{ weekday, startTime, endTime }] }
@@ -187,50 +249,7 @@ export const replaceAvailabilityRules = async (req, res) => {
       ]);
     }
 
-    const errors = [];
-    const parsed = [];
-
-    rules.forEach((rule, index) => {
-      const weekday = Number(rule.weekday);
-      const startMinute = parseTimeToMinutes(rule.startTime);
-      const endMinute = parseTimeToMinutes(rule.endTime);
-
-      if (!Number.isInteger(weekday) || weekday < 0 || weekday > 6) {
-        errors.push({ field: `rules[${index}].weekday`, message: "Weekday must be 0 (Sunday) to 6 (Saturday)" });
-        return;
-      }
-      if (startMinute === null) {
-        errors.push({ field: `rules[${index}].startTime`, message: "Start time must be HH:MM" });
-        return;
-      }
-      if (endMinute === null) {
-        errors.push({ field: `rules[${index}].endTime`, message: "End time must be HH:MM" });
-        return;
-      }
-      if (endMinute <= startMinute) {
-        errors.push({
-          field: `rules[${index}].endTime`,
-          message: `${WEEKDAY_NAMES[weekday]}: end time must be after start time`,
-        });
-        return;
-      }
-
-      parsed.push({ weekday, startMinute, endMinute, index });
-    });
-
-    // Overlap check, per weekday. Sorting by start makes it a single linear pass
-    // instead of comparing every pair.
-    for (let weekday = 0; weekday <= 6; weekday += 1) {
-      const day = parsed.filter((r) => r.weekday === weekday).sort((a, b) => a.startMinute - b.startMinute);
-      for (let i = 1; i < day.length; i += 1) {
-        if (day[i].startMinute < day[i - 1].endMinute) {
-          errors.push({
-            field: `rules[${day[i].index}].startTime`,
-            message: `${WEEKDAY_NAMES[weekday]}: this window overlaps another one`,
-          });
-        }
-      }
-    }
+    const { parsed, errors } = parseWeeklyRules(rules);
 
     if (errors.length > 0) {
       return validationErrorResponse(res, "Please fix the errors below", errors);
@@ -250,11 +269,27 @@ export const replaceAvailabilityRules = async (req, res) => {
         );
       }
 
-      // Saving rules for a service is what turns its custom schedule on — even
-      // an empty list, which means "this service is deliberately closed" rather
-      // than "no override configured".
+      // Saving rules for a service is what turns its own schedule on — but only
+      // if there are actually rules. Clearing every day is how a provider says
+      // "stop treating this service specially", so it hands the service back to
+      // the default hours instead of leaving it with a schedule of no hours.
+      //
+      // The alternative reading — an empty week meaning "this service is
+      // deliberately closed" — is what this used to do, and it is the worse of
+      // the two. It is indistinguishable on screen from inheriting (both render
+      // as an empty grid), it silently makes the service unbookable forever,
+      // and it leaves no way back except the separate "Reset to default"
+      // button. Deactivating the service is the clear way to close it.
+      //
+      // Service-scoped exceptions are left in place rather than deleted: they
+      // are ignored while the service inherits, and come back if the provider
+      // gives it hours again. Losing them to a save that says nothing about
+      // exceptions would be a surprise. "Reset to default" still removes both.
       if (serviceId) {
-        await tx.query("UPDATE services SET has_custom_availability = TRUE WHERE id = $1", [serviceId]);
+        await tx.query("UPDATE services SET has_custom_availability = $2 WHERE id = $1", [
+          serviceId,
+          parsed.length > 0,
+        ]);
       }
 
       const result = await tx.query(
@@ -265,7 +300,19 @@ export const replaceAvailabilityRules = async (req, res) => {
       return result.rows;
     });
 
-    return successResponse(res, "Weekly availability saved", { rules: saved.map(serialiseRule) });
+    const inheritsDefault = Boolean(serviceId) && parsed.length === 0;
+
+    return successResponse(
+      res,
+      inheritsDefault ? "This service now follows your default hours" : "Weekly availability saved",
+      {
+        rules: saved.map(serialiseRule),
+        // Lets the client tell "saved a schedule" from "handed this service back
+        // to the default hours" without re-deriving it from an empty array.
+        scope: serviceId && !inheritsDefault ? "service" : "provider",
+        inheritsDefault,
+      }
+    );
   } catch (err) {
     // The exclusion constraint firing here means the overlap check above missed
     // something; surface it as a conflict rather than a 500.
@@ -279,6 +326,174 @@ export const replaceAvailabilityRules = async (req, res) => {
     }
     console.error("replaceAvailabilityRules error:", err.message);
     return errorResponse(res, "Could not save availability", 500);
+  }
+};
+
+/**
+ * POST /api/availability/validate — provider only.
+ *
+ * Body: { rules: [{ weekday, startTime, endTime }], serviceId? }
+ *
+ * A dry run: works out whether a weekly pattern would actually produce bookable
+ * slots, and writes nothing. The provider UI calls this as the grid is edited so
+ * a configuration that can only ever yield an empty calendar is caught *before*
+ * it is saved, rather than being discovered later by a client who finds no times
+ * to pick from.
+ *
+ * The reason this lives on the server rather than in the editor is that the
+ * answer has to be the same answer. Slot generation is a real calculation —
+ * a grid anchored at the window start, a legal band narrowed by both buffers,
+ * and the interaction between them — and a second implementation in the browser
+ * would be a second thing to keep in step. Here it delegates to
+ * `diagnoseSlotFeasibility()`, which shares `candidateStartsInWindow()` with
+ * `generateSlots()` itself, so "the provider was warned" and "the client sees
+ * nothing" are guaranteed to agree.
+ *
+ * Which services are checked depends on scope, because that is what the saved
+ * rules would govern:
+ *   - `serviceId` given → just that service, which is getting its own hours.
+ *   - omitted → every active service that inherits the default hours. A service
+ *     with `has_custom_availability` is unaffected by the default pattern and
+ *     reporting it here would be a false alarm.
+ */
+export const validateAvailabilityConfiguration = async (req, res) => {
+  try {
+    const { rules } = req.body;
+    const serviceId = req.body.serviceId ? Number(req.body.serviceId) : null;
+
+    if (!Array.isArray(rules)) {
+      return validationErrorResponse(res, "Please fix the errors below", [
+        { field: "rules", message: "rules must be an array" },
+      ]);
+    }
+    if (rules.length > 50) {
+      return validationErrorResponse(res, "Too many availability windows", [
+        { field: "rules", message: "A week cannot have more than 50 windows" },
+      ]);
+    }
+    if (serviceId && !(await ownsService(serviceId, req.user.userId))) {
+      return errorResponse(res, "Service not found", 404, ERROR_CODES.NOT_FOUND);
+    }
+
+    const { parsed, errors } = parseWeeklyRules(rules);
+
+    // A pattern that does not even parse cannot be diagnosed for slot yield, and
+    // saying "these hours produce no slots" about times that are simply typed
+    // wrong would be misleading. Report it as not-yet-checkable and let the
+    // field-level errors the save endpoint returns do that job.
+    if (errors.length > 0) {
+      return successResponse(res, "Availability could not be checked yet", {
+        checked: false,
+        services: [],
+      });
+    }
+
+    const engineRules = parsed.map((r) => ({
+      weekday: r.weekday,
+      start_minute: r.startMinute,
+      end_minute: r.endMinute,
+    }));
+
+    const services = await query(
+      `SELECT id, service_name, duration, buffer_before, buffer_after, slot_interval
+       FROM services
+       WHERE provider_id = $1 AND is_active
+         ${serviceId ? "AND id = $2" : "AND NOT has_custom_availability"}
+       ORDER BY service_name`,
+      serviceId ? [req.user.userId, serviceId] : [req.user.userId]
+    );
+
+    const diagnosed = services.rows.map((service) => {
+      const report = diagnoseSlotFeasibility({ rules: engineRules, service });
+      return {
+        serviceId: service.id,
+        serviceName: service.service_name,
+        ...report,
+        problemDays: report.problemDays.map((day) => ({
+          ...day,
+          weekdayName: WEEKDAY_NAMES[day.weekday],
+        })),
+      };
+    });
+
+    return successResponse(res, "Availability checked", {
+      checked: true,
+      hasRules: engineRules.length > 0,
+      services: diagnosed,
+    });
+  } catch (err) {
+    console.error("validateAvailabilityConfiguration error:", err.message);
+    return errorResponse(res, "Could not check this availability", 500);
+  }
+};
+
+/**
+ * GET /api/availability/health — provider only.
+ *
+ * The saved-state counterpart to `/validate`. That endpoint answers "would this
+ * draft work?" while the provider is editing; this one answers "is what I have
+ * saved right now actually working?", which is the question a dashboard needs.
+ *
+ * The difference that matters is scope resolution. `/validate` judges one
+ * submitted weekly pattern, so every service it reports on is being measured
+ * against the same rules. Here each service is measured against the rules that
+ * genuinely apply to *it* — its own, if it has them, otherwise the provider's
+ * default — because a provider whose default hours are fine can still have one
+ * service quietly bookable-by-nobody, and that is exactly the case worth
+ * surfacing.
+ *
+ * Only active services are considered. A retired service producing no slots is
+ * not a problem to solve.
+ */
+export const getAvailabilityHealth = async (req, res) => {
+  try {
+    const providerId = req.user.userId;
+
+    const services = await query(
+      `SELECT id, service_name, duration, buffer_before, buffer_after, slot_interval
+       FROM services
+       WHERE provider_id = $1 AND is_active
+       ORDER BY service_name`,
+      [providerId]
+    );
+
+    // Sequential rather than parallel: this runs on a dashboard load, the row
+    // count is a provider's service list rather than anything unbounded, and
+    // each iteration is two indexed reads. Fanning out would add pool pressure
+    // for no gain a provider could perceive.
+    const reports = [];
+    for (const service of services.rows) {
+      const { rules, scope } = await getEffectiveAvailability({ providerId, serviceId: service.id });
+      const report = diagnoseSlotFeasibility({ rules, service });
+
+      reports.push({
+        serviceId: service.id,
+        serviceName: service.service_name,
+        scope,
+        hasRules: rules.length > 0,
+        bookable: report.bookable,
+        totalSlotsPerWeek: report.totalSlotsPerWeek,
+        config: report.config,
+        minimumWindowMinutes: report.minimumWindowMinutes,
+        problemDays: report.problemDays.map((day) => ({
+          ...day,
+          weekdayName: WEEKDAY_NAMES[day.weekday],
+        })),
+        remedies: report.remedies,
+      });
+    }
+
+    return successResponse(res, "Availability health checked", {
+      services: reports,
+      // Split apart because the two need different words. A service with no
+      // hours anywhere needs "set your hours"; one with hours that cannot yield
+      // a slot needs "your day is too short for this service".
+      servicesWithoutHours: reports.filter((r) => !r.hasRules).map((r) => r.serviceName),
+      misconfiguredServices: reports.filter((r) => r.hasRules && !r.bookable),
+    });
+  } catch (err) {
+    console.error("getAvailabilityHealth error:", err.message);
+    return errorResponse(res, "Could not check your availability", 500);
   }
 };
 
