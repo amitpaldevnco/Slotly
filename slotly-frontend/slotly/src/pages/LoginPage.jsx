@@ -10,10 +10,7 @@ import Field, { Input } from "../components/ui/Field";
 import { Alert } from "../components/ui/Feedback";
 import Icon from "../components/ui/Icon";
 import Logo from "../components/ui/Logo";
-import { primaryButton, buttonBlock, buttonLg, secondaryButton } from "../lib/ui";
-
-const HOURS = ["9", "10", "11", "12", "1", "2", "3", "4", "5"];
-const HIGHLIGHT_INDEX = 3;
+import { primaryButton, buttonBlock, buttonLg, secondaryButton, cardClasses } from "../lib/ui";
 
 function GoogleMark() {
   return (
@@ -56,12 +53,12 @@ function GoogleButton({ onSuccess, onError }) {
       <div
         aria-hidden="true"
         className={`${secondaryButton} ${buttonBlock} ${buttonLg} pointer-events-none
-          group-hover:border-ink-3/40 group-hover:bg-canvas
+          group-hover:border-line-strong group-hover:bg-subtle
           group-focus-within:outline group-focus-within:outline-2
           group-focus-within:outline-offset-2 group-focus-within:outline-brand`}
       >
         <GoogleMark />
-        Continue with Google
+        Google
       </div>
 
       {/*
@@ -83,38 +80,6 @@ function GoogleButton({ onSuccess, onError }) {
           width="352"
         />
       </div>
-    </div>
-  );
-}
-
-function HourRail() {
-  return (
-    <div className="flex flex-col" aria-hidden="true">
-      {HOURS.map((hour, i) => {
-        const isHighlight = i === HIGHLIGHT_INDEX;
-
-        return (
-          <div key={hour} className="flex items-center gap-3 py-2">
-            <span
-              className={`w-5 shrink-0 text-right font-mono text-xs tabular-nums ${
-                isHighlight ? "text-dark-ink" : "text-dark-3"
-              }`}
-            >
-              {hour}
-            </span>
-            <div className="relative flex-1">
-              <div className={`h-px w-full ${isHighlight ? "bg-transparent" : "bg-dark-line"}`} />
-              {isHighlight && (
-                <div className="absolute inset-y-0 left-0 flex items-center gap-2.5">
-                  <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-dark-accent motion-safe:animate-pulse" />
-                  <span className="h-px w-8 bg-dark-accent" />
-                  <span className="text-xs font-medium text-dark-accent">2:30 PM · Confirmed</span>
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })}
     </div>
   );
 }
@@ -221,71 +186,37 @@ export default function LoginPage() {
   const isRegister = mode === "register";
 
   return (
-    <div className="flex flex-col lg:min-h-[calc(100dvh-3.5rem)] lg:flex-row">
-      {/* Left panel — desktop only */}
-      <div className="hidden w-[42%] flex-col justify-between bg-dark px-10 py-12 lg:flex">
-        <Logo size="md" className="text-dark-ink" />
-        <div>
-          <p className="mb-6 max-w-xs text-xl font-semibold leading-snug tracking-tight text-dark-ink">
-            Every appointment, exactly on time.
-          </p>
-          <HourRail />
-        </div>
+    <div className="flex min-h-[calc(100dvh-4rem)] items-center justify-center px-4 py-10 sm:px-6 sm:py-16">
+      {/* One centred card on the canvas, per the design. The form is the whole
+          page here — there is nothing else to look at and nothing else to do. */}
+      <div className="w-full max-w-[26rem] animate-fade-in motion-reduce:animate-none">
+        <div className={`${cardClasses} p-6 sm:p-10`}>
+          <div className="text-center">
+            <Logo size="lg" />
 
-        <p className="text-xs text-dark-3">Built for providers and the clients who book them.</p>
-      </div>
-
-      {/* Right panel — the form */}
-      <div className="flex flex-1 items-center justify-center px-4 py-10 sm:px-6 sm:py-14">
-        <div className="w-full max-w-[22rem] animate-fade-in motion-reduce:animate-none">
-          <h1 className="text-xl font-semibold tracking-tight text-ink sm:text-[1.375rem]">
-            {isRegister ? "Create your account" : "Welcome back"}
-          </h1>
-          <p className="mt-1 text-sm text-ink-2">
-            {isRegister
-              ? "Set a password, or continue with Google or GitHub."
-              : "Sign in to manage your appointments."}
-          </p>
-
-          <div className="mt-5 space-y-2">
-            <GoogleButton
-              onSuccess={handleGoogleSuccess}
-              onError={() => setError("Google sign-in was cancelled or failed")}
-            />
-
-            <button
-              type="button"
-              onClick={() => {
-                window.location.href = authApi.githubRedirectUrl();
-              }}
-              className={`${secondaryButton} ${buttonBlock} ${buttonLg}`}
-            >
-              <svg viewBox="0 0 16 16" className="h-4 w-4 fill-current" aria-hidden="true">
-                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" />
-              </svg>
-              Continue with GitHub
-            </button>
-          </div>
-
-          <div className="my-5 flex items-center gap-3">
-            <div className="h-px flex-1 bg-line" />
-            <span className="text-xs text-ink-3">or with email</span>
-            <div className="h-px flex-1 bg-line" />
+            <h1 className="mt-6 font-display text-3xl font-semibold tracking-[-0.02em] text-ink">
+              {isRegister ? "Create your account" : "Welcome back"}
+            </h1>
+            <p className="mt-2 text-[0.9375rem] text-ink-2">
+              {isRegister
+                ? "Set a password, or continue with Google or GitHub."
+                : "Log in to manage your appointments."}
+            </p>
           </div>
 
           {/* Account exists under a different sign-in method. */}
           {conflictNotice && (
-            <Alert tone="warn" className="mb-4">
+            <Alert tone="warn" className="mt-6">
               {conflictNotice.message}
-              {conflictNotice.provider === "google" && " Use the Google button above to continue."}
-              {conflictNotice.provider === "github" && " Use the GitHub button above to continue."}
+              {conflictNotice.provider === "google" && " Use the Google button below to continue."}
+              {conflictNotice.provider === "github" && " Use the GitHub button below to continue."}
               {conflictNotice.provider === "existing" && isRegister && (
                 <>
                   {" "}
                   <button
                     type="button"
                     onClick={() => switchMode("login")}
-                    className="font-medium underline"
+                    className="font-semibold underline"
                   >
                     Log in instead
                   </button>
@@ -294,9 +225,9 @@ export default function LoginPage() {
             </Alert>
           )}
 
-          <form onSubmit={handleEmailAuth} noValidate className="space-y-3.5">
+          <form onSubmit={handleEmailAuth} noValidate className="mt-8 space-y-5">
             {isRegister && (
-              <Field id="name" label="Name" error={fieldErrors.name}>
+              <Field id="name" label="Full name" error={fieldErrors.name}>
                 <Input
                   id="name"
                   type="text"
@@ -308,14 +239,14 @@ export default function LoginPage() {
               </Field>
             )}
 
-            <Field id="email" label="Email" error={fieldErrors.email}>
+            <Field id="email" label="Email address" error={fieldErrors.email}>
               <Input
                 id="email"
                 type="email"
                 autoComplete="email"
                 value={email}
                 onChange={(e) => setEmail(e.target.value)}
-                placeholder="you@example.com"
+                placeholder="name@company.com"
               />
             </Field>
 
@@ -340,32 +271,60 @@ export default function LoginPage() {
               disabled={loading}
               className={`${primaryButton} ${buttonBlock} ${buttonLg}`}
             >
-              {loading ? "Please wait…" : isRegister ? "Create account" : "Sign in"}
+              {loading ? "Please wait…" : isRegister ? "Create account" : "Log in"}
             </button>
           </form>
 
           {error && (
-            <Alert tone="error" className="mt-4">
+            <Alert tone="error" className="mt-5">
               {error}
             </Alert>
           )}
 
-          <p className="mt-4 text-center text-sm text-ink-2">
-            {isRegister ? "Already have an account? " : "New here? "}
+          <div className="my-7 flex items-center gap-4">
+            <div className="h-px flex-1 bg-line" />
+            <span className="text-[0.6875rem] font-semibold uppercase tracking-[0.08em] text-ink-3">
+              or continue with
+            </span>
+            <div className="h-px flex-1 bg-line" />
+          </div>
+
+          <div className="space-y-3">
+            <GoogleButton
+              onSuccess={handleGoogleSuccess}
+              onError={() => setError("Google sign-in was cancelled or failed")}
+            />
+
+            <button
+              type="button"
+              onClick={() => {
+                window.location.href = authApi.githubRedirectUrl();
+              }}
+              className={`${secondaryButton} ${buttonBlock} ${buttonLg}`}
+            >
+              <svg viewBox="0 0 16 16" className="h-4 w-4 fill-current" aria-hidden="true">
+                <path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z" />
+              </svg>
+              GitHub
+            </button>
+          </div>
+
+          <p className="mt-8 border-t border-line-soft pt-6 text-center text-sm text-ink-2">
+            {isRegister ? "Already have an account? " : "Don't have an account? "}
             <button
               type="button"
               onClick={() => switchMode(isRegister ? "login" : "register")}
-              className="font-medium text-brand underline decoration-brand/35 underline-offset-2 transition hover:decoration-brand"
+              className="font-semibold text-ink underline decoration-line-strong underline-offset-2 transition hover:decoration-ink"
             >
-              {isRegister ? "Sign in" : "Create an account"}
+              {isRegister ? "Log in" : "Create account"}
             </button>
           </p>
-
-          <p className="mt-8 flex items-start gap-1.5 text-xs leading-relaxed text-ink-3">
-            <Icon name="info" size={13} className="mt-px" />
-            <span>By continuing, you agree to Slotly&apos;s Terms of Service and Privacy Policy.</span>
-          </p>
         </div>
+
+        <p className="mt-6 flex items-start justify-center gap-1.5 text-xs leading-relaxed text-ink-3">
+          <Icon name="info" size={13} className="mt-px shrink-0" />
+          <span>By continuing, you agree to Slotly&apos;s Terms of Service and Privacy Policy.</span>
+        </p>
       </div>
     </div>
   );

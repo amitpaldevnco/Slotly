@@ -1,219 +1,146 @@
-
- // The public landing page.
+// The public landing page.
 
 import { Link } from "react-router-dom";
 import Icon from "../components/ui/Icon";
-import { container, primaryButton, secondaryButton, buttonLg, eyebrow } from "../lib/ui";
-import { DISCOVERY_ROUTE, DISCOVERY_LABEL } from "../lib/discovery";
+import {
+  container,
+  primaryButton,
+  secondaryButton,
+  buttonLg,
+} from "../lib/ui";
+import { DISCOVERY_ROUTE } from "../lib/discovery";
+import HERO_IMAGE  from "../assets/HERO_IMAGE.png";
+import CONSULTING_IMAGE  from "../assets/CONSULTING_IMAGE.jpg";
 
-const ROLE_COLUMNS = [
-  {
-    eyebrow: "For clients",
-    title: "Find a slot, book it, done.",
-    icon: "user",
-    points: [
-      "Sign in with Google or GitHub — no password to set or forget.",
-      "See a provider's open times already converted to your timezone.",
-      "Book a slot and it is locked immediately — no waiting for confirmation.",
-      "One dashboard for every appointment, across every provider.",
-    ],
-  },
-  {
-    eyebrow: "For providers",
-    title: "Run your schedule, not a spreadsheet.",
-    icon: "briefcase",
-    points: [
-      "Publish services with a duration, a price and their own buffers.",
-      "Set weekly hours once; clients always see them in their own zone.",
-      "Double-booking is rejected by the database, not just by the interface.",
-      "A day and week calendar, drawn in your timezone whatever device you use.",
-    ],
-  },
-];
+/**
+ * The two photographs the design places in the hero and in the large category
+ * tile. They are named here rather than inline so a swap to self-hosted files
+ * later is one edit in one place, and so the markup below stays readable.
+ */
 
-const STEPS = [
+/** The publications strip under the hero's call to action. */
+const PRESS = ["Secure Scheduling", "Easy Booking", "Built for Professionals"];
+
+/**
+ * The two small tiles in the bento grid. The large one is spelled out in the
+ * markup because it carries a photograph and an overlay rather than an icon.
+ */
+const CATEGORIES = [
   {
-    title: "Sign in",
-    body: "One click with Google or GitHub, or an email and a password. No verification email to wait on.",
+    icon: "stethoscope",
+    title: "Healthcare",
+    body: "Therapy, Nutrition & Wellness",
   },
   {
-    title: "Tell us who you are",
-    body: "Client or provider. Providers add a business name and category; both set a timezone.",
-  },
-  {
-    title: "Book, or get booked",
-    body: "Clients pick from times that are genuinely free. Providers manage what comes in.",
+    icon: "fitness_center",
+    title: "Fitness",
+    body: "Personal Training & Yoga",
   },
 ];
 
 export default function LandingPage() {
   return (
     <div>
+      {/* ---- Hero --------------------------------------------------------- */}
+      <section
+        className={`${container} grid grid-cols-1 items-center gap-12 py-16 lg:grid-cols-2 lg:py-24`}
+      >
+        <div className="space-y-8">
+          {/* The design's 64px display step. Stepped down twice on the way to a
+              phone, because 64px is half the width of a 375px screen. */}
+          <h1 className="max-w-2xl font-display text-h1-mobile text-primary sm:text-h1 lg:text-display">
+            Find the right professional. Book the right time.
+          </h1>
 
-      <section className={`${container} py-12 sm:py-16`}>
-        <div className="grid items-center gap-10 lg:grid-cols-[1.05fr_1fr]">
-          <div>
-            <p className={eyebrow}>Appointment booking, built for two sides</p>
-            <h1 className="mt-2.5 text-3xl font-semibold leading-[1.15] tracking-tight text-ink sm:text-4xl">
-              Every appointment, exactly on time.
-            </h1>
-            <p className="mt-4 max-w-md text-[0.9375rem] leading-relaxed text-ink-2">
-              Slotly has two sides: clients who need a slot, and providers who manage a schedule.
-              Sign in, tell us which one you are, and the rest is set up for you.
-            </p>
-
-            <div className="mt-7 flex flex-wrap items-center gap-3">
-              <Link to="/login" className={`${primaryButton} ${buttonLg}`}>
-                Get started free
-              </Link>
-              {/* Was "Browse providers" — the same destination the navbar and
-                  footer call "Find a provider". One name for one page. */}
-              <Link to={DISCOVERY_ROUTE} className={`${secondaryButton} ${buttonLg}`}>
-                <Icon name="search" size={16} />
-                {DISCOVERY_LABEL}
-              </Link>
-            </div>
-
-            <p className="mt-4 flex items-center gap-1.5 text-xs text-ink-3">
-              <Icon name="check" size={13} className="text-brand" />
-              Free to use · No card required
-            </p>
-          </div>
-
-          
-          <DayIllustration />
-        </div>
-      </section>
-
-      {/* ---- Two roles ---------------------------------------------------- */}
-      <section className="border-t border-line bg-surface">
-        <div className={`${container} py-14`}>
-          <h2 className="max-w-lg text-2xl font-semibold tracking-tight text-ink">
-            One app, two roles — each with what it actually needs.
-          </h2>
-
-          <div className="mt-8 grid gap-4 lg:grid-cols-2">
-            {ROLE_COLUMNS.map((column) => (
-              <div key={column.eyebrow} className="rounded-lg border border-line bg-canvas p-5">
-                <p className="flex items-center gap-1.5 text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-brand">
-                  <Icon name={column.icon} size={13} />
-                  {column.eyebrow}
-                </p>
-                <h3 className="mt-1.5 text-base font-semibold tracking-tight text-ink">
-                  {column.title}
-                </h3>
-
-                <ul className="mt-4 space-y-2.5">
-                  {column.points.map((point) => (
-                    <li key={point} className="flex gap-2.5 text-[0.8125rem] leading-relaxed text-ink-2">
-                      <Icon name="check" size={15} className="mt-0.5 text-brand" />
-                      {point}
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ))}
-          </div>
-        </div>
-      </section>
-
-      {/* ---- How it works ------------------------------------------------- */}
-      <section className="border-t border-line">
-        <div className={`${container} py-14`}>
-          <h2 className="text-2xl font-semibold tracking-tight text-ink">How it works</h2>
-
-          <ol className="mt-8 grid gap-6 sm:grid-cols-3">
-            {STEPS.map((step, index) => (
-              <li key={step.title}>
-                {/* The number is the only thing telling a reader these three are a
-                    sequence, so it uses the accent at full strength rather than a
-                    tint of it — a lighter green measured 2.8:1 here. */}
-                <span className="flex h-6 w-6 items-center justify-center rounded-full bg-brand text-xs font-semibold text-white">
-                  {index + 1}
-                </span>
-                <h3 className="mt-2.5 text-sm font-semibold text-ink">{step.title}</h3>
-                <p className="mt-1 text-[0.8125rem] leading-relaxed text-ink-2">{step.body}</p>
-              </li>
-            ))}
-          </ol>
-        </div>
-      </section>
-
-      {/* ---- Close -------------------------------------------------------- */}
-      <section className="border-t border-line bg-surface">
-        <div className={`${container} py-12 text-center`}>
-          <h2 className="text-xl font-semibold tracking-tight text-ink">
-            Whichever side you are on, start here.
-          </h2>
-          <p className="mx-auto mt-2 max-w-sm text-sm text-ink-2">
-            Sign in and pick client or provider on the next step — or look around first.
+          <p className="max-w-xl font-body-lg text-body-lg text-on-surface-variant">
+            Slotly connects you with top-tier professionals across healthcare, consulting, and
+            personal services. Experience frictionless scheduling designed for the modern world.
           </p>
-          {/* The closing section previously offered only "Get started free", so
-              the one thing a visitor can do without an account disappeared after
-              the hero. Both routes are offered here, matching the hero pair. */}
-          <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-            <Link to="/login" className={`${primaryButton} ${buttonLg}`}>
-              Get started free
+
+          <div className="flex flex-wrap gap-4">
+            <Link to={DISCOVERY_ROUTE} className={`${primaryButton} ${buttonLg}`}>
+              Find a Professional
+              <Icon name="arrowRight" size={20} />
             </Link>
-            <Link to={DISCOVERY_ROUTE} className={`${secondaryButton} ${buttonLg}`}>
-              <Icon name="search" size={16} />
-              {DISCOVERY_LABEL}
+            <Link to="/login" className={`${secondaryButton} ${buttonLg}`}>
+              Join as a Services Provider
             </Link>
           </div>
+
+          {/* Trust indicators. Greyscale and held back, so they read as a
+              footnote to the call to action rather than competing with it. */}
+          <div className="flex flex-wrap items-center gap-6 border-t border-outline-variant pt-8 opacity-70 grayscale sm:gap-8">
+            {PRESS.map((name) => (
+              <span key={name} className="font-h3 text-h3 text-on-surface-variant">
+                {name}
+              </span>
+            ))}
+          </div>
+        </div>
+
+        <div className="relative flex h-[320px] w-full items-center justify-center overflow-hidden rounded-xl border border-outline-variant bg-surface-container-low sm:h-[440px] lg:h-[600px]">
+          <img
+            src={HERO_IMAGE}
+            alt="Slotly's scheduling interface, showing a month of availability with one slot selected."
+            loading="eager"
+            className="h-full w-full object-cover"
+          />
         </div>
       </section>
-    </div>
-  );
-}
 
-
-function DayIllustration() {
-  const hours = ["9", "10", "11", "12", "1", "2", "3", "4"];
-  const highlight = 3;
-
-  return (
-    <div aria-hidden="true" className="relative rounded-xl bg-dark px-6 py-7 pb-14 sm:px-8">
-      <div className="flex flex-col">
-        {hours.map((hour, i) => {
-          const isHighlight = i === highlight;
-
-          return (
-            <div key={hour} className="flex items-center gap-3.5 py-2">
-              <span
-                
-                className={`w-5 shrink-0 text-right font-mono text-xs tabular-nums ${
-                  isHighlight ? "text-dark-ink" : "text-dark-3"
-                }`}
-              >
-                {hour}
-              </span>
-              <div className="relative flex-1">
-                <div className={`h-px w-full ${isHighlight ? "bg-transparent" : "bg-dark-line"}`} />
-                {isHighlight && (
-                  <div className="absolute inset-y-0 left-0 flex items-center gap-2.5">
-                    <span className="h-1.5 w-1.5 shrink-0 rounded-full bg-dark-accent motion-safe:animate-pulse" />
-                    <span className="h-px w-9 bg-dark-accent" />
-                    <span className="text-xs font-medium text-dark-accent">2:30 PM · Confirmed</span>
-                  </div>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
-      <div className="absolute -bottom-6 left-6 right-6 rounded-lg border border-line bg-surface p-4 shadow-float sm:left-8 sm:right-8">
-        <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-3">
-          Booked with
-        </p>
-        <p className="mt-0.5 text-sm font-semibold text-ink">Sharma Skin Clinic</p>
-        <div className="mt-2.5 flex items-center justify-between gap-3 text-xs">
-          <span className="text-ink-2">Tue, 12:00 PM · Asia/Kolkata</span>
-          <span className="rounded-full border border-brand-line bg-brand-soft px-2 py-0.5 font-medium text-brand-ink">
-            Confirmed
-          </span>
+      {/* ---- Categories (bento) ------------------------------------------- */}
+      <section className={`${container} py-16`}>
+        <div className="mb-12">
+          <h2 className="font-h2 text-h2 text-primary">Explore by Category</h2>
+          <p className="mt-2 font-body text-body text-on-surface-variant">
+            Discover curated professionals tailored to your specific needs.
+          </p>
         </div>
-      </div>
+
+        <div className="grid auto-rows-[240px] grid-cols-1 gap-6 md:grid-cols-3">
+          {/* The feature tile: two columns wide, two rows tall from `md`. */}
+          <Link
+            to={DISCOVERY_ROUTE}
+            className="group relative overflow-hidden rounded-xl border border-outline-variant focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:col-span-2 md:row-span-2"
+          >
+            <img
+              src={CONSULTING_IMAGE}
+              alt=""
+              className="absolute inset-0 h-full w-full object-cover transition-transform duration-700 group-hover:scale-105 motion-reduce:transition-none motion-reduce:group-hover:scale-100"
+            />
+            {/* The gradient is what keeps the label legible over a photograph
+                whose brightness is not ours to control. */}
+            <div className="absolute inset-0 bg-gradient-to-t from-primary/80 to-transparent" />
+
+            <div className="absolute bottom-0 left-0 w-full p-6 text-on-primary sm:p-8">
+              <Icon name="lightbulb" size={36} className="mb-2" />
+              <h3 className="mb-1 font-h3 text-h3 text-on-primary">Business Consulting</h3>
+              <p className="font-small text-small text-on-primary/80">
+                Strategy, Finance &amp; Operations
+              </p>
+            </div>
+          </Link>
+
+          {CATEGORIES.map((category) => (
+            <Link
+              key={category.title}
+              to={DISCOVERY_ROUTE}
+              className="group relative flex flex-col justify-between overflow-hidden rounded-xl border border-outline-variant bg-surface p-6 transition-colors hover:border-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+            >
+              <span className="flex h-12 w-12 items-center justify-center rounded-lg bg-surface-container-low text-primary transition-colors group-hover:bg-primary group-hover:text-on-primary">
+                <Icon name={category.icon} size={24} />
+              </span>
+
+              <div>
+                <h3 className="mb-1 font-h3 text-[20px] font-semibold leading-tight text-primary">
+                  {category.title}
+                </h3>
+                <p className="font-small text-small text-on-surface-variant">{category.body}</p>
+              </div>
+            </Link>
+          ))}
+        </div>
+      </section>
     </div>
   );
 }
