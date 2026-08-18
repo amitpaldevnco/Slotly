@@ -37,9 +37,18 @@ export const ERROR_CODES = {
   INVALID_CREDENTIALS: "INVALID_CREDENTIALS",
   UPLOAD_REJECTED: "UPLOAD_REJECTED",
   RANGE_TOO_WIDE: "RANGE_TOO_WIDE",
-  SERVICE_IN_USE: "SERVICE_IN_USE",
+  SERVICE_RETIRED: "SERVICE_RETIRED",
+  ALREADY_ACTIVE: "ALREADY_ACTIVE",
   SERVER_ERROR: "SERVER_ERROR",
 };
+
+// There was a SERVICE_IN_USE here, and the OpenAPI document advertised it, but
+// nothing ever emitted it — deleting a service that has bookings is not an
+// error, it retires the service and returns 200 with `retired: true`. A code
+// that cannot occur is worse than no code: a client written against the
+// published list branches on it and the branch is silently dead. Removed rather
+// than implemented, because the success path is the correct behaviour.
+// `tests/api.docs.test.js` now fails the build if this happens again.
 
 /**
  * @param {import('express').Response} res

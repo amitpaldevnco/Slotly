@@ -31,10 +31,77 @@ const MAX_DURATION_MINUTES = 1440;
 const MAX_BUFFER_MINUTES = 240;
 
 /**
+ * Shapes a `services` row for the API.
+ *
+ * Every other endpoint in this app speaks camelCase — `serviceId`, `startsAt`,
+ * `phoneNumber`, `startMinute` — while this one used to hand back the raw
+ * database row, so a client had to know that services alone were snake_case and
+ * that the slots endpoint would then describe the *same* service as
+ * `bufferBefore`. One entity, two spellings, decided by which URL you asked.
+ *
+ * Returning the row directly also published columns that are not part of any
+ * contract: `provider_id`, `has_custom_availability`, `updated_at`. Listing the
+ * fields explicitly, as `serialiseBooking()` already does, means adding a column
+ * to the table can never silently start sending it to the browser.
+ *
+ * @param {object} row A `services` row.
+ * @param {{includeStats?: boolean}} [options] `includeStats` adds the booking
+ *   counts and earnings, which only the owning provider's query selects — a
+ *   stranger must never see another provider's takings.
+ * @returns {object} The public shape of a service.
+ */
+export function serialiseService(row, { includeStats = false } = {}) {
+  const service = {
+    id: row.id,
+    providerId: row.provider_id,
+    name: row.service_name,
+    description: row.description,
+    price: row.price,
+    duration: row.duration,
+    bufferBefore: row.buffer_before,
+    bufferAfter: row.buffer_after,
+    slotInterval: row.slot_interval,
+    coverImage: row.cover_image,
+    isActive: row.is_active,
+    hasCustomAvailability: row.has_custom_availability,
+    createdAt: row.created_at,
+  };
+
+  if (includeStats) {
+    service.stats = {
+      totalBookings: row.total_bookings,
+      completedBookings: row.completed_bookings,
+      upcomingBookings: row.upcoming_bookings,
+      totalEarnings: row.total_earnings,
+    };
+  }
+
+  return service;
+}
+
+/**
+ * Reads a field that may arrive under either spelling.
+ *
+ * The endpoint historically took `service_name`, `buffer_before` and friends,
+ * and the React client sends those to this day. Accepting camelCase as well
+ * makes the API consistent with the rest of the app without breaking anything
+ * already deployed against it — snake_case wins only when camelCase is absent,
+ * so a client sending both gets the documented spelling honoured.
+ *
+ * @param {object} body Raw request body.
+ * @param {string} camel The camelCase name, e.g. "serviceName".
+ * @param {string} snake The legacy snake_case name, e.g. "service_name".
+ */
+function field(body, camel, snake) {
+  return body[camel] !== undefined ? body[camel] : body[snake];
+}
+
+/**
  * Validates the service fields on a create or update request.
  *
  * @param {object} body Raw request body. These requests are multipart/form-data,
  *   so every value arrives as a string and is coerced here rather than trusted.
+ *   Both camelCase and snake_case field names are accepted; see `field()`.
  * @param {{partial: boolean}} options `partial: true` for PUT, where an absent
  *   field means "leave it alone" rather than "it is missing".
  * @returns {{errors: Array<{field:string,message:string}>, values: object}}
@@ -44,13 +111,19 @@ const MAX_BUFFER_MINUTES = 240;
 function validateServiceFields(body, { partial }) {
   const errors = [];
   const values = {};
-  const { service_name, description, price, duration, buffer_before, buffer_after } = body;
+
+  const service_name = field(body, "serviceName", "service_name");
+  const description = field(body, "description", "description");
+  const price = body.price;
+  const duration = body.duration;
+  const buffer_before = field(body, "bufferBefore", "buffer_before");
+  const buffer_after = field(body, "bufferAfter", "buffer_after");
 
   if (!partial || service_name !== undefined) {
     if (!service_name || !String(service_name).trim()) {
-      errors.push({ field: "service_name", message: "Service name is required" });
+      errors.push({ field: "serviceName", message: "Service name is required" });
     } else if (String(service_name).trim().length > 255) {
-      errors.push({ field: "service_name", message: "Service name must be 255 characters or less" });
+      errors.push({ field: "serviceName", message: "Service name must be 255 characters or less" });
     } else {
       values.service_name = String(service_name).trim();
     }
@@ -92,11 +165,12 @@ function validateServiceFields(body, { partial }) {
 
   // How far apart the offered start times are. Independent of duration — see
   // the slot engine's comment on the candidate grid for why.
-  if (body.slot_interval !== undefined && body.slot_interval !== "") {
-    const parsed = Number.parseInt(body.slot_interval, 10);
+  const slotInterval = field(body, "slotInterval", "slot_interval");
+  if (slotInterval !== undefined && slotInterval !== "") {
+    const parsed = Number.parseInt(slotInterval, 10);
     if (!Number.isInteger(parsed) || parsed < 5 || parsed > 240) {
       errors.push({
-        field: "slot_interval",
+        field: "slotInterval",
         message: "Slot interval must be between 5 and 240 minutes",
       });
     } else {
@@ -104,17 +178,20 @@ function validateServiceFields(body, { partial }) {
     }
   }
 
-  for (const [column, raw] of [
-    ["buffer_before", buffer_before],
-    ["buffer_after", buffer_after],
+  // `column` is the database column; `apiField` is what the request called it,
+  // and what a field-level error has to be keyed by for the form to attach the
+  // message to the right input.
+  for (const [column, apiField, raw] of [
+    ["buffer_before", "bufferBefore", buffer_before],
+    ["buffer_after", "bufferAfter", buffer_after],
   ]) {
     if (raw === undefined || raw === "") continue;
 
     const parsed = Number.parseInt(raw, 10);
     if (!Number.isInteger(parsed) || parsed < 0) {
-      errors.push({ field: column, message: "Buffer must be zero or a positive number of minutes" });
+      errors.push({ field: apiField, message: "Buffer must be zero or a positive number of minutes" });
     } else if (parsed > MAX_BUFFER_MINUTES) {
-      errors.push({ field: column, message: "Buffer cannot exceed 4 hours" });
+      errors.push({ field: apiField, message: "Buffer cannot exceed 4 hours" });
     } else {
       values[column] = parsed;
     }
@@ -193,7 +270,7 @@ export const createService = async (req, res) => {
       ]
     );
 
-    return successResponse(res, "Service created", inserted.rows[0], 201);
+    return successResponse(res, "Service created", serialiseService(inserted.rows[0]), 201);
   } catch (err) {
     await discardUpload(req.file);
     console.error("createService error:", err.message);
@@ -214,6 +291,23 @@ export const updateService = async (req, res) => {
     if (service.provider_id !== req.user.userId) {
       await discardUpload(req.file);
       return errorResponse(res, "This is not your service", 403, ERROR_CODES.FORBIDDEN);
+    }
+
+    // A retired service is frozen. It is not on the public page and cannot be
+    // booked, but existing appointments still reference it and still display the
+    // name and price snapshotted onto them — so editing it now would change a
+    // row that only history reads, which is confusing rather than useful.
+    //
+    // The route out is `POST /api/services/:id/reactivate`, which is named in
+    // the error so the client knows what to offer instead of a dead form.
+    if (!service.is_active) {
+      await discardUpload(req.file);
+      return errorResponse(
+        res,
+        "This service is retired. Reactivate it before making changes.",
+        409,
+        ERROR_CODES.SERVICE_RETIRED
+      );
     }
 
     const { errors, values } = validateServiceFields(req.body, { partial: true });
@@ -252,7 +346,7 @@ export const updateService = async (req, res) => {
     // Editing duration or buffers changes future slots only. Existing bookings
     // keep the duration snapshotted onto them, so nobody's appointment silently
     // grows or shrinks under them.
-    return successResponse(res, "Service updated", updated.rows[0]);
+    return successResponse(res, "Service updated", serialiseService(updated.rows[0]));
   } catch (err) {
     await discardUpload(req.file);
     console.error("updateService error:", err.message);
@@ -310,6 +404,72 @@ export const deleteService = async (req, res) => {
 };
 
 /**
+ * POST /api/services/:id/reactivate — verifyToken, requireProviderRole.
+ *
+ * Brings a retired service back: it reappears on the public page, becomes
+ * bookable again, and can be edited again.
+ *
+ * Retiring was already reversible in the data — `is_active` is a boolean, and
+ * nothing is destroyed — but there was no way to reverse it from the app, so a
+ * provider who retired a service by mistake, or who stopped offering something
+ * for a season and wanted it back, had to recreate it. A recreated service is a
+ * *different row*, which detaches it from its own booking history and its
+ * reviews.
+ *
+ * Deliberately its own endpoint rather than `PUT /services/:id { isActive: true }`.
+ * Editing a retired service is refused (see `updateService`), so the reactivate
+ * path has to exist outside that rule; and a state transition with its own
+ * consequences — the service becomes publicly bookable again — reads better as
+ * its own verb than as a field buried in a partial update.
+ *
+ * @returns 200 with the reactivated service. 404 if it is not theirs or does not
+ *   exist, 409 SERVICE_RETIRED's inverse (`ALREADY_ACTIVE`) if it was never
+ *   retired — which is not an error a correct client can cause, but is worth
+ *   distinguishing from success so a double-click does not read as two
+ *   reactivations.
+ */
+export const reactivateService = async (req, res) => {
+  try {
+    const existing = await query("SELECT * FROM services WHERE id = $1", [req.params.id]);
+    if (existing.rows.length === 0) {
+      return errorResponse(res, "Service not found", 404, ERROR_CODES.NOT_FOUND);
+    }
+
+    const service = existing.rows[0];
+    if (service.provider_id !== req.user.userId) {
+      return errorResponse(res, "This is not your service", 403, ERROR_CODES.FORBIDDEN);
+    }
+
+    if (service.is_active) {
+      return errorResponse(res, "This service is already active", 409, ERROR_CODES.ALREADY_ACTIVE);
+    }
+
+    // `AND NOT is_active` inside the write, not only in the check above: two
+    // clicks arriving together would both pass the read, and only one can match
+    // this UPDATE.
+    const updated = await query(
+      `UPDATE services SET is_active = TRUE, updated_at = NOW()
+       WHERE id = $1 AND NOT is_active
+       RETURNING *`,
+      [service.id]
+    );
+
+    if (updated.rows.length === 0) {
+      return errorResponse(res, "This service is already active", 409, ERROR_CODES.ALREADY_ACTIVE);
+    }
+
+    return successResponse(
+      res,
+      "Service reactivated. It is bookable again and back on your public page.",
+      serialiseService(updated.rows[0])
+    );
+  } catch (err) {
+    console.error("reactivateService error:", err.message);
+    return errorResponse(res, "Could not reactivate service", 500);
+  }
+};
+
+/**
  * GET /api/providers/:id/services — public.
  *
  * Retired services are hidden from everyone except the owning provider, who
@@ -352,7 +512,7 @@ export const getServicesByProvider = async (req, res) => {
           [req.params.id]
         );
 
-    return successResponse(res, "Services fetched", result.rows);
+    return successResponse(res, "Services fetched", result.rows.map((row) => serialiseService(row, { includeStats: isOwner })));
   } catch (err) {
     console.error("getServicesByProvider error:", err.message);
     return errorResponse(res, "Could not fetch services", 500);
