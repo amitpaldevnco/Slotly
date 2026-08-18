@@ -1,22 +1,24 @@
 /**
- * The booking flow: pick a day, pick a time, confirm.
+ * The booking flow: pick a day on a month calendar, pick a time, confirm.
  *
- * ## The layout, and why it changed
+ * ## The layout
  *
- * This was a vertical scroll: a week's worth of days, each rendered as its own
- * full-width card with a heading and a wrapped grid of time buttons inside it. A
- * provider open six days a week produced six stacked cards, so choosing between
- * Tuesday at 2pm and Thursday at 10am meant scrolling between them and holding
- * both in your head. The page's own height also changed every time the week did.
+ * Transcribed from the reference: a "Booking Details" column on the left holding
+ * the provider and the service being bought, and beside it "Select Date & Time" —
+ * a month calendar with the day's free times in a column next to it, and Confirm
+ * Booking under them.
  *
- * It is now two panes: the days across the top (or down the side on a desktop),
- * and the times for the selected day beside them. One day's times are visible at
- * a time, the day strip shows at a glance which days have anything free, and the
- * page height is stable because only one column's worth of times ever renders.
+ * ## Why a month grid is affordable here
  *
- * The service summary moves into a sidebar, where it stays visible while the
- * client is choosing — it was a header that scrolled away exactly when they were
- * deciding whether the price was worth it.
+ * An earlier version of this screen used a seven-day strip on the grounds that a
+ * month grid would have five weeks of cells with no data behind them. That is not
+ * true of this API: `GET /providers/:id/slots` accepts any range up to
+ * `MAX_RANGE_DAYS` (62), so one request covers the whole visible month and every
+ * cell knows whether it has times. A day the provider is closed is drawn as
+ * closed because the response says so, not because nothing was asked.
+ *
+ * The response only contains dates that *have* slots, which is exactly the shape
+ * the calendar wants — presence in the map is availability.
  *
  * ## What happens when someone else takes the slot you are looking at
  *
@@ -42,38 +44,33 @@ import * as providersApi from "../api/providers";
 import { useApiResource } from "../hooks/useApiResource";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
-import Page, { PageHeader, Section, SplitLayout } from "../components/ui/Page";
+import Page from "../components/ui/Page";
+import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
-import Modal from "../components/ui/Modal";
 import Field, { Textarea, CharCount } from "../components/ui/Field";
 import EmptyState, { ErrorState, PageLoader, SkeletonRows } from "../components/ui/Feedback";
-import {
-  addDaysToDate,
-  browserTimezone,
-  formatTime,
-  friendlyDateHeading,
-  todayIn,
-} from "../lib/time";
+import { browserTimezone, formatTime, todayIn } from "../lib/time";
 import {
   primaryButton,
-  secondaryButton,
-  ghostButton,
   buttonSm,
   iconButton,
-  insetClasses,
-  metric,
-  metricLg,
   formatPrice,
   formatDuration,
-  metaLine,
   zoneName,
 } from "../lib/ui";
 
-/** How many days of slots to request at once. */
-const WINDOW_DAYS = 7;
-
 /** Longest a note may be, matching the API's own validation. */
 const MAX_NOTE = 500;
+
+/** The design's week starts on Sunday. */
+const WEEKDAY_INITIALS = ["S", "M", "T", "W", "T", "F", "S"];
+
+/**
+ * Cells in the month grid. Always six rows, so the calendar does not change
+ * height between a month that needs five and one that needs six — the times
+ * beside it would jump every time the client paged.
+ */
+const GRID_CELLS = 42;
 
 export default function BookServicePage() {
   const { providerId, serviceId } = useParams();
@@ -86,36 +83,65 @@ export default function BookServicePage() {
   // appointments in the zone they actually plan around.
   const viewerTimezone = user?.timezone || browserTimezone();
 
-  const [rangeStart, setRangeStart] = useState(() => todayIn(viewerTimezone));
+  const [monthStart, setMonthStart] = useState(() =>
+    DateTime.now().setZone(viewerTimezone).startOf("month").toFormat("yyyy-MM-dd")
+  );
 
-  // Which day's times are showing. Held as an ISO date rather than an index, so
-  // it survives a window change that returns a different number of days.
+  // Held as an ISO date rather than an index, so it survives a month change that
+  // returns a different set of days.
   const [selectedDate, setSelectedDate] = useState(null);
-
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [note, setNote] = useState("");
   const [booking, setBooking] = useState(false);
 
-  const rangeEnd = useMemo(() => addDaysToDate(rangeStart, WINDOW_DAYS - 1), [rangeStart]);
+  const monthEnd = useMemo(
+    () => DateTime.fromISO(monthStart).endOf("month").toFormat("yyyy-MM-dd"),
+    [monthStart]
+  );
 
-  // Paging to another week re-runs this. The hook aborts the previous request
+  /**
+   * Who the client is booking with, and the service's own description.
+   *
+   * Neither is on the slots endpoint, and neither is worth failing the page for —
+   * a booking can be completed without knowing the provider's business type. Both
+   * requests therefore swallow their own errors and the panel degrades to what it
+   * does have.
+   */
+  const { data: profile } = useApiResource(
+    async ({ signal }) => {
+      const [provider, services] = await Promise.all([
+        providersApi.get(providerId, { signal }).catch(() => null),
+        providersApi.listServices(providerId, { signal }).catch(() => []),
+      ]);
+      return { provider, services };
+    },
+    { deps: [providerId] }
+  );
+
+  const provider = profile?.provider ?? null;
+  const serviceDetail =
+    (profile?.services ?? []).find((item) => String(item.id) === String(serviceId)) ?? null;
+
+  // Paging to another month re-runs this. The hook aborts the previous request
   // first, so paging twice in quick succession cannot let the slower first
-  // response land last and display the wrong week's times.
+  // response land last and display the wrong month's times.
   const {
     data,
     loading,
+    refreshing,
     error,
     reload: loadSlots,
   } = useApiResource(
     ({ signal }) =>
       providersApi.getSlots(
         providerId,
-        { serviceId, from: rangeStart, to: rangeEnd, timezone: viewerTimezone },
+        { serviceId, from: monthStart, to: monthEnd, timezone: viewerTimezone },
         { signal }
       ),
     {
-      deps: [providerId, serviceId, rangeStart, rangeEnd, viewerTimezone],
+      deps: [providerId, serviceId, monthStart, monthEnd, viewerTimezone],
       fallback: "Could not load available times.",
+      keepPreviousData: true,
     }
   );
 
@@ -127,29 +153,64 @@ export default function BookServicePage() {
     if (data) setFetchedAt(new Date());
   }, [data]);
 
-  // Memoised on `data`, not derived inline: `data?.days ?? []` is a fresh array
-  // identity on every render, so the effect below — which depends on it — would
-  // re-run forever and fight the user's own day selection.
-  const days = useMemo(() => data?.days ?? [], [data]);
+  /**
+   * Date → its free slots.
+   *
+   * The endpoint only returns dates that have something free, so membership of
+   * this map *is* availability — a calendar cell needs no second question.
+   */
+  const slotsByDate = useMemo(() => {
+    const map = new Map();
+    for (const day of data?.days ?? []) map.set(day.date, day.slots);
+    return map;
+  }, [data]);
 
-  // Land on the first day that actually has times. Without this, a week whose
-  // Monday is closed opened on an empty pane and looked like a provider with no
+  const firstAvailable = data?.days?.[0]?.date ?? null;
+
+  // Land on the first day that actually has times. Without this, a month whose
+  // 1st is closed opens on an empty pane and looks like a provider with no
   // availability at all.
   useEffect(() => {
-    if (days.length === 0) {
-      setSelectedDate(null);
-      return;
-    }
-
     setSelectedDate((current) => {
-      // Keep the client's choice if the new window still contains it — a refresh
+      // Keep the client's choice if the new month still contains it — a refresh
       // after a lost race must not move them off the day they were looking at.
-      if (current && days.some((day) => day.date === current)) return current;
-      return days.find((day) => day.slots.length > 0)?.date ?? days[0].date;
+      if (current && slotsByDate.has(current)) return current;
+      return firstAvailable;
     });
-  }, [days]);
+  }, [slotsByDate, firstAvailable]);
 
-  const activeDay = days.find((day) => day.date === selectedDate) || null;
+  // A time chosen on Tuesday means nothing once the client is looking at Friday.
+  useEffect(() => {
+    setSelectedSlot(null);
+  }, [selectedDate]);
+
+  const daySlots = selectedDate ? (slotsByDate.get(selectedDate) ?? []) : [];
+
+  /** The six-row grid of dates for the month on screen. */
+  const monthCells = useMemo(() => {
+    const first = DateTime.fromISO(monthStart);
+    // Luxon numbers weekdays 1 (Monday) to 7 (Sunday); the grid starts on Sunday,
+    // so Sunday must map to a zero-length lead rather than a six-day one.
+    const lead = first.weekday % 7;
+    const gridStart = first.minus({ days: lead });
+
+    return Array.from({ length: GRID_CELLS }, (_, index) => gridStart.plus({ days: index }));
+  }, [monthStart]);
+
+  // `keepPreviousData` keeps the previous month on screen while the next one
+  // loads, which means `loading` is true only for the very first request. Every
+  // later fetch — a month change, a refresh after a lost race — reports itself
+  // through `refreshing`, so anything that dims or disables has to watch both.
+  const busy = loading || refreshing;
+
+  const monthLabel = DateTime.fromISO(monthStart).toFormat("LLLL yyyy");
+  const today = todayIn(viewerTimezone);
+  const isCurrentMonth =
+    monthStart === DateTime.now().setZone(viewerTimezone).startOf("month").toFormat("yyyy-MM-dd");
+
+  const shiftMonth = (delta) => {
+    setMonthStart(DateTime.fromISO(monthStart).plus({ months: delta }).toFormat("yyyy-MM-dd"));
+  };
 
   const handleConfirm = async () => {
     if (!selectedSlot) return;
@@ -216,240 +277,80 @@ export default function BookServicePage() {
   }
 
   const service = data?.service;
-  const isFirstWindow = rangeStart === todayIn(viewerTimezone);
-  const totalFree = days.reduce((sum, day) => sum + day.slots.length, 0);
+  const differentZones =
+    data?.clientTimezone && data?.providerTimezone && data.clientTimezone !== data.providerTimezone;
 
   return (
     <Page>
-      <PageHeader
-        back={
-          <Link
-            to={`/providers/${providerId}`}
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-ink-2 transition hover:text-ink"
-          >
-            <Icon name="arrowLeft" size={15} />
-            Back to provider
-          </Link>
-        }
-        title={service?.name || "Choose a time"}
-        description="Pick a day, then a time. Every time below is in your own timezone."
-      />
-
-      <SplitLayout
-        aside={
-          <>
-            <Section title="What you're booking" flush>
-              <dl className="divide-y divide-line-soft text-sm">
-                <SummaryRow label="Service" value={service?.name} />
-                <SummaryRow label="Duration" value={formatDuration(service?.duration)} />
-                <SummaryRow
-                  label="Price"
-                  value={<span className={metric}>{formatPrice(service?.price)}</span>}
-                />
-                {(service?.bufferBefore > 0 || service?.bufferAfter > 0) && (
-                  <SummaryRow
-                    label="Time held"
-                    value={metaLine(
-                      service.bufferBefore > 0 ? `${service.bufferBefore}m before` : null,
-                      service.bufferAfter > 0 ? `${service.bufferAfter}m after` : null
-                    )}
-                  />
-                )}
-              </dl>
-            </Section>
-
-            <TimezonePanel
-              clientTimezone={data?.clientTimezone}
-              providerTimezone={data?.providerTimezone}
-            />
-
-            {fetchedAt && (
-              <div className="rounded-lg border border-line bg-subtle px-3 py-2.5">
-                {/* Stated openly rather than implying the list updates itself. */}
-                <p className="text-xs leading-relaxed text-ink-3">
-                  Availability as of{" "}
-                  <span className="font-medium text-ink-2">
-                    {formatTime(fetchedAt.toISOString(), viewerTimezone)}
-                  </span>
-                  . Slots can be taken by someone else at any moment.
-                </p>
-                <button
-                  type="button"
-                  onClick={loadSlots}
-                  disabled={loading}
-                  className={`mt-2 ${secondaryButton} ${buttonSm} w-full`}
-                >
-                  <Icon name="refresh" size={14} />
-                  {loading ? "Refreshing…" : "Refresh times"}
-                </button>
-              </div>
-            )}
-          </>
-        }
+      <Link
+        to={`/providers/${providerId}`}
+        className="mb-6 inline-flex items-center gap-1.5 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
       >
-        <Section
-          title="Choose a day"
-          description={
-            loading
-              ? "Loading…"
-              : `${totalFree} time${totalFree === 1 ? "" : "s"} free this week`
-          }
-          actions={
-            <div className="flex items-center gap-1">
-              <button
-                type="button"
-                onClick={() => setRangeStart(addDaysToDate(rangeStart, -WINDOW_DAYS))}
-                disabled={isFirstWindow}
-                aria-label="Earlier week"
-                className={iconButton}
-              >
-                <Icon name="chevronLeft" size={16} />
-              </button>
-              <button
-                type="button"
-                onClick={() => setRangeStart(addDaysToDate(rangeStart, WINDOW_DAYS))}
-                aria-label="Later week"
-                className={iconButton}
-              >
-                <Icon name="chevronRight" size={16} />
-              </button>
-              {!isFirstWindow && (
-                <button
-                  type="button"
-                  onClick={() => setRangeStart(todayIn(viewerTimezone))}
-                  className={`${ghostButton} ${buttonSm}`}
-                >
-                  This week
-                </button>
-              )}
-            </div>
-          }
-          flush
-        >
-          {loading ? (
-            <div className="p-4">
-              <SkeletonRows count={2} variant="line" />
-            </div>
-          ) : days.length === 0 ? (
-            <EmptyState
-              compact
-              icon="calendar"
-              title="No times available this week"
-              description="Try a later week — cancelled appointments come straight back into the list."
-              actionLabel="Show the next week"
-              onAction={() => setRangeStart(addDaysToDate(rangeStart, WINDOW_DAYS))}
-            />
-          ) : (
-            <>
-              <DayStrip
-                days={days}
-                selectedDate={selectedDate}
-                onSelect={setSelectedDate}
-                timezone={viewerTimezone}
+        <Icon name="arrow_back" size={18} />
+        Back
+      </Link>
+
+      <div className="grid items-start gap-gutter lg:grid-cols-[320px_minmax(0,1fr)]">
+        {/* ---- Booking Details ------------------------------------------- */}
+        <aside className="min-w-0">
+          <h1 className="mb-4 font-h1-mobile text-h1-mobile text-primary">Booking Details</h1>
+
+          <div className="rounded-lg border border-outline-variant bg-surface p-5">
+            <div className="flex items-center gap-3">
+              <Avatar
+                src={provider?.avatar_url}
+                name={provider?.name}
+                size="lg"
+                className="border border-outline-variant"
               />
-
-              <div className="border-t border-line p-3 sm:p-4">
-                {!activeDay ? null : activeDay.slots.length === 0 ? (
-                  <EmptyState
-                    compact
-                    icon="ban"
-                    title={`Nothing free on ${friendlyDateHeading(activeDay.date, viewerTimezone)}`}
-                    description="Pick another day above, or try a later week."
-                  />
-                ) : (
-                  <>
-                    <h3 className="mb-2.5 text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-3">
-                      {friendlyDateHeading(activeDay.date, viewerTimezone)} ·{" "}
-                      {activeDay.slots.length} time{activeDay.slots.length === 1 ? "" : "s"}
-                    </h3>
-
-                    {/* A fixed-width grid rather than a wrapped flex row. Times
-                        in a grid line up in columns, which is what lets the eye
-                        find "the 2 o'clocks" without reading each button. */}
-                    <ul className="grid grid-cols-[repeat(auto-fill,minmax(6.5rem,1fr))] gap-2">
-                      {activeDay.slots.map((slot) => (
-                        <li key={slot.startsAt}>
-                          <button
-                            type="button"
-                            // The day's own date travels with the selection.
-                            // Deriving it from `startsAt` would give the *UTC*
-                            // date, which is the wrong day for anyone whose local
-                            // date differs from it — exactly the class of bug this
-                            // app exists to avoid.
-                            onClick={() => setSelectedSlot({ ...slot, localDate: activeDay.date })}
-                            className="flex w-full min-h-11 flex-col items-center justify-center rounded-md border border-brand-line bg-surface px-2 py-1.5 text-sm font-medium text-brand-ink transition hover:border-brand hover:bg-brand focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-brand hover:text-white"
-                          >
-                            {slot.clientTime}
-                            {/* The provider's local time in small print: useful
-                                context across a large offset, quiet enough not to
-                                clutter the grid. */}
-                            {slot.providerTime !== slot.clientTime && (
-                              <span className="text-[0.625rem] font-normal opacity-70">
-                                {slot.providerTime} there
-                              </span>
-                            )}
-                          </button>
-                        </li>
-                      ))}
-                    </ul>
-                  </>
+              <div className="min-w-0">
+                <p className="truncate font-small text-base font-semibold text-primary">
+                  {provider?.business_name || provider?.name || "Provider"}
+                </p>
+                {(provider?.business_name ? provider?.name : provider?.business_type) && (
+                  <p className="truncate font-caption text-caption text-on-surface-variant">
+                    {provider.business_name ? provider.name : provider.business_type}
+                  </p>
                 )}
               </div>
-            </>
-          )}
-        </Section>
-      </SplitLayout>
-
-      <Modal
-        open={Boolean(selectedSlot)}
-        onClose={() => !booking && setSelectedSlot(null)}
-        title="Confirm your booking"
-        description={service?.name}
-        footer={
-          <>
-            <button
-              type="button"
-              onClick={() => setSelectedSlot(null)}
-              disabled={booking}
-              className={secondaryButton}
-            >
-              Back
-            </button>
-            <button type="button" onClick={handleConfirm} disabled={booking} className={primaryButton}>
-              {booking ? "Booking…" : "Confirm booking"}
-            </button>
-          </>
-        }
-      >
-        {selectedSlot && (
-          <div className="space-y-4">
-            <div className={insetClasses}>
-              {/* The time, big, because it is the one thing being confirmed. */}
-              <p className={metricLg}>{selectedSlot.clientTime}</p>
-              <p className="mt-0.5 text-sm font-medium text-ink-2">
-                {friendlyDateHeading(selectedSlot.localDate, viewerTimezone)}
-              </p>
-              <p className="mt-0.5 text-xs text-ink-3">
-                {metaLine(
-                  zoneName(data?.clientTimezone),
-                  formatDuration(service?.duration),
-                  formatPrice(service?.price)
-                )}
-              </p>
-
-              {/* Both timezones before the user commits — the same pairing the
-                  confirmation screen shows afterwards. Only when they differ. */}
-              {data?.clientTimezone !== data?.providerTimezone && (
-                <p className="mt-2.5 flex items-start gap-1.5 border-t border-line pt-2.5 text-xs leading-relaxed text-ink-2">
-                  <Icon name="globe" size={13} className="mt-0.5" />
-                  <span>
-                    That is <span className="font-medium text-ink">{selectedSlot.providerTime}</span> for
-                    the provider in {zoneName(data?.providerTimezone)}.
-                  </span>
-                </p>
-              )}
             </div>
 
+            <dl className="mt-5 space-y-4 border-t border-outline-variant pt-5">
+              <DetailRow icon="description" term="Service">
+                <span className="font-medium text-on-surface">{service?.name}</span>
+                {serviceDetail?.description && (
+                  <span className="mt-0.5 block font-caption text-caption text-on-surface-variant">
+                    {serviceDetail.description}
+                  </span>
+                )}
+              </DetailRow>
+
+              <DetailRow icon="schedule" term="Duration">
+                {formatDuration(service?.duration)}
+              </DetailRow>
+
+              <DetailRow icon="payments" term="Price">
+                <span className="font-semibold text-on-surface">{formatPrice(service?.price)}</span>
+              </DetailRow>
+
+              {(service?.bufferBefore > 0 || service?.bufferAfter > 0) && (
+                <DetailRow icon="hourglass_empty" term="Time held">
+                  {[
+                    service.bufferBefore > 0 ? `${service.bufferBefore}m before` : null,
+                    service.bufferAfter > 0 ? `${service.bufferAfter}m after` : null,
+                  ]
+                    .filter(Boolean)
+                    .join(" · ")}
+                </DetailRow>
+              )}
+            </dl>
+          </div>
+
+          {/* The reference has no field for this, but `POST /bookings` accepts a
+              note and dropping the control would quietly remove the only way a
+              client can say why they are coming. It sits here rather than beside
+              the times, where it would compete with the decision being made. */}
+          <div className="mt-4">
             <Field
               id="booking-note"
               label="Anything they should know?"
@@ -462,133 +363,242 @@ export default function BookServicePage() {
                 rows={3}
                 maxLength={MAX_NOTE}
                 value={note}
-                onChange={(e) => setNote(e.target.value)}
+                onChange={(event) => setNote(event.target.value)}
                 placeholder="e.g. First session, back pain on the left side"
               />
             </Field>
           </div>
-        )}
-      </Modal>
+        </aside>
+
+        {/* ---- Select Date & Time ----------------------------------------- */}
+        <div className="min-w-0">
+          <h2 className="font-h3 text-h3 text-primary">Select Date &amp; Time</h2>
+          <p className="mt-1 font-small text-small text-on-surface-variant">
+            All times are displayed in your local timezone ({zoneName(data?.clientTimezone)})
+            {differentZones && <> · the provider is in {zoneName(data.providerTimezone)}</>}
+          </p>
+
+          <div className="mt-6 grid gap-6 md:grid-cols-[minmax(0,1fr)_240px]">
+            {/* Calendar */}
+            <div className="rounded-lg border border-outline-variant bg-surface-container-lowest p-5">
+              <div className="mb-4 flex items-center justify-between gap-2">
+                <button
+                  type="button"
+                  onClick={() => shiftMonth(-1)}
+                  disabled={isCurrentMonth}
+                  aria-label="Previous month"
+                  className={iconButton}
+                >
+                  <Icon name="chevron_left" size={20} />
+                </button>
+
+                <p aria-live="polite" className="font-small text-small font-semibold text-primary">
+                  {monthLabel}
+                </p>
+
+                <button
+                  type="button"
+                  onClick={() => shiftMonth(1)}
+                  aria-label="Next month"
+                  className={iconButton}
+                >
+                  <Icon name="chevron_right" size={20} />
+                </button>
+              </div>
+
+              <div
+                aria-hidden="true"
+                className="grid grid-cols-7 gap-1 border-b border-outline-variant pb-2"
+              >
+                {WEEKDAY_INITIALS.map((initial, index) => (
+                  <span
+                    key={`${initial}-${index}`}
+                    className="text-center font-caption text-caption text-on-surface-variant"
+                  >
+                    {initial}
+                  </span>
+                ))}
+              </div>
+
+              <div
+                aria-busy={busy}
+                className={`mt-2 grid grid-cols-7 gap-1 transition-opacity ${
+                  busy ? "opacity-50" : "opacity-100"
+                }`}
+              >
+                {monthCells.map((cell) => {
+                  const iso = cell.toFormat("yyyy-MM-dd");
+                  const outsideMonth = cell.toFormat("yyyy-MM") !== monthStart.slice(0, 7);
+                  const free = slotsByDate.get(iso)?.length ?? 0;
+
+                  return (
+                    <CalendarCell
+                      key={iso}
+                      day={cell.day}
+                      outsideMonth={outsideMonth}
+                      free={free}
+                      isToday={iso === today}
+                      selected={iso === selectedDate}
+                      onSelect={() => setSelectedDate(iso)}
+                    />
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Times for the chosen day, and the commit */}
+            <div className="flex min-w-0 flex-col">
+              {busy && !selectedDate ? (
+                <SkeletonRows count={3} variant="line" />
+              ) : !selectedDate ? (
+                <EmptyState
+                  compact
+                  icon="calendar"
+                  title="Nothing free this month"
+                  description="Try a later month — cancelled appointments come straight back into the list."
+                  actionLabel="Next month"
+                  onAction={() => shiftMonth(1)}
+                />
+              ) : (
+                <>
+                  <h3 className="font-small text-small font-semibold text-primary">
+                    {DateTime.fromISO(selectedDate).toFormat("cccc, LLL d")}
+                  </h3>
+
+                  <ul className="mt-3 grid grid-cols-2 gap-2">
+                    {daySlots.map((slot) => {
+                      const chosen = selectedSlot?.startsAt === slot.startsAt;
+
+                      return (
+                        <li key={slot.startsAt}>
+                          <button
+                            type="button"
+                            aria-pressed={chosen}
+                            // The day's own date travels with the selection.
+                            // Deriving it from `startsAt` would give the *UTC*
+                            // date, which is the wrong day for anyone whose local
+                            // date differs from it — exactly the class of bug this
+                            // app exists to avoid.
+                            onClick={() => setSelectedSlot({ ...slot, localDate: selectedDate })}
+                            className={`w-full cursor-pointer rounded-md px-3 py-2 font-body text-small tabular-nums transition-all focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${
+                              chosen
+                                ? "border-2 border-primary bg-primary/5 font-bold text-primary"
+                                : "border border-outline-variant text-on-surface hover:border-primary"
+                            }`}
+                          >
+                            {slot.clientTime}
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
+                </>
+              )}
+
+              <div className="mt-6 border-t border-outline-variant pt-4">
+                {/* Both timezones at the moment of committing — the one place the
+                    client is deciding, and the last chance to notice that 1:00 PM
+                    for them is 8:30 PM for whoever they are booking. */}
+                {selectedSlot && differentZones && (
+                  <p className="mb-3 flex items-start gap-1.5 font-caption text-caption leading-relaxed text-on-surface-variant">
+                    <Icon name="public" size={14} className="mt-0.5 shrink-0" />
+                    <span>
+                      That is{" "}
+                      <span className="font-semibold text-on-surface">
+                        {selectedSlot.providerTime}
+                      </span>{" "}
+                      for the provider in {zoneName(data.providerTimezone)}.
+                    </span>
+                  </p>
+                )}
+
+                <button
+                  type="button"
+                  onClick={handleConfirm}
+                  disabled={!selectedSlot || booking}
+                  className={`${primaryButton} w-full`}
+                >
+                  {booking ? "Booking…" : "Confirm Booking"}
+                </button>
+
+                {fetchedAt && (
+                  // Stated openly rather than implying the list updates itself.
+                  <p className="mt-3 text-center font-caption text-caption text-on-surface-variant">
+                    Times as of {formatTime(fetchedAt.toISOString(), viewerTimezone)} ·{" "}
+                    <button
+                      type="button"
+                      onClick={loadSlots}
+                      disabled={busy}
+                      className="cursor-pointer font-semibold text-primary underline underline-offset-2 disabled:opacity-50"
+                    >
+                      {busy ? "Refreshing…" : "Refresh"}
+                    </button>
+                  </p>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
     </Page>
   );
 }
 
 /**
- * The day picker.
+ * One day in the month grid.
  *
- * ## Why a strip and not a month grid
- *
- * A month calendar is the obvious reference for this, and it is the wrong control
- * here: the API returns a seven-day window, so five of the six visible weeks in a
- * month grid would have no data behind them and would either look closed or need
- * their own fetch on hover. A strip shows exactly the window that was fetched, and
- * says how many times each day holds — which a month cell cannot.
- *
- * Scrolls sideways on a phone rather than wrapping, so the seven days stay one row
- * and the times below them stay on the screen.
+ * Three states carry meaning and none of them relies on colour alone: a day with
+ * nothing free is dimmed *and* disabled, so it cannot be chosen by keyboard
+ * either; the chosen day is a filled disc; today keeps a dot under it, because
+ * once the client pages forward it is no longer the first cell.
  */
-function DayStrip({ days, selectedDate, onSelect, timezone }) {
-  const today = todayIn(timezone);
+function CalendarCell({ day, outsideMonth, free, isToday, selected, onSelect }) {
+  if (outsideMonth) {
+    return <span aria-hidden="true" className="h-9" />;
+  }
+
+  const bookable = free > 0;
 
   return (
-    <div
-      role="tablist"
-      aria-label="Choose a day"
-      className="no-scrollbar flex gap-1.5 overflow-x-auto p-3 sm:grid sm:grid-cols-7 sm:gap-2 sm:p-4"
+    <button
+      type="button"
+      onClick={onSelect}
+      disabled={!bookable}
+      aria-pressed={selected}
+      aria-label={
+        bookable ? `${day}, ${free} time${free === 1 ? "" : "s"} free` : `${day}, nothing free`
+      }
+      // `cursor-pointer` is stated per-branch rather than in the shared prefix:
+      // two conflicting cursor utilities in one class attribute are resolved by
+      // their order in the compiled stylesheet, not by the order written here.
+      className={`relative mx-auto flex h-9 w-9 items-center justify-center rounded-full font-small text-small tabular-nums transition-colors focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary ${
+        selected
+          ? "cursor-pointer bg-primary font-semibold text-on-primary"
+          : bookable
+            ? "cursor-pointer text-on-surface hover:bg-surface-container-high"
+            : "cursor-not-allowed text-outline-variant"
+      }`}
     >
-      {days.map((day) => {
-        const date = DateTime.fromISO(day.date, { zone: timezone });
-        const active = day.date === selectedDate;
-        const free = day.slots.length;
-        const isToday = day.date === today;
-
-        return (
-          <button
-            key={day.date}
-            type="button"
-            role="tab"
-            aria-selected={active}
-            // A day with nothing free is still reachable: pressing it explains
-            // that it is closed, which is more useful than a dead control that
-            // gives no reason.
-            onClick={() => onSelect(day.date)}
-            className={`flex min-w-[4.25rem] shrink-0 flex-col items-center gap-0.5 rounded-md border px-2 py-2 transition ${
-              active
-                ? "border-brand bg-brand text-white"
-                : free === 0
-                  ? "border-line bg-subtle text-ink-3 hover:border-ink-3/30"
-                  : "border-line bg-surface text-ink hover:border-brand-line hover:bg-brand-soft"
-            }`}
-          >
-            <span
-              className={`text-[0.625rem] font-medium uppercase tracking-wide ${
-                active ? "text-white/75" : "text-ink-3"
-              }`}
-            >
-              {date.toFormat("ccc")}
-            </span>
-            <span className="text-base font-semibold tabular-nums leading-none">
-              {date.toFormat("d")}
-            </span>
-            <span className={`text-[0.625rem] ${active ? "text-white/80" : "text-ink-3"}`}>
-              {free === 0 ? "—" : free}
-            </span>
-            {/* Marks today without relying on it being the first column, which it
-                is not once the client browses to a later week. */}
-            {isToday && !active && (
-              <span aria-hidden="true" className="h-1 w-1 rounded-full bg-brand" />
-            )}
-          </button>
-        );
-      })}
-    </div>
+      {day}
+      {isToday && !selected && (
+        <span
+          aria-hidden="true"
+          className="absolute bottom-1 h-1 w-1 rounded-full bg-primary"
+        />
+      )}
+    </button>
   );
 }
 
-/**
- * States both zones.
- *
- * Shown even when the two match — the reassurance is the point, and a panel that
- * appears and disappears depending on who is looking is harder to trust than one
- * that is always there.
- */
-function TimezonePanel({ clientTimezone, providerTimezone }) {
-  if (!clientTimezone) return null;
-
-  const sameZone = clientTimezone === providerTimezone;
-
+/** A labelled line in the Booking Details card. */
+function DetailRow({ icon, term, children }) {
   return (
-    <div className="rounded-lg border border-brand-line bg-brand-soft px-3 py-2.5">
-      <p className="flex items-center gap-1.5 text-xs font-semibold uppercase tracking-[0.06em] text-brand-ink">
-        <Icon name="globe" size={13} />
-        Timezones
-      </p>
-      <p className="mt-1.5 text-xs leading-relaxed text-brand-ink">
-        {sameZone ? (
-          <>
-            You and this provider are both in{" "}
-            <span className="font-semibold">{zoneName(clientTimezone)}</span>, so the times above need
-            no conversion.
-          </>
-        ) : (
-          <>
-            Times above are in <span className="font-semibold">{zoneName(clientTimezone)}</span> —
-            yours. The provider is in{" "}
-            <span className="font-semibold">{zoneName(providerTimezone)}</span>.
-          </>
-        )}
-      </p>
-    </div>
-  );
-}
-
-function SummaryRow({ label, value }) {
-  if (value == null) return null;
-
-  return (
-    <div className="flex items-baseline justify-between gap-3 px-3 py-2">
-      <dt className="shrink-0 text-xs text-ink-3">{label}</dt>
-      <dd className="min-w-0 text-right text-[0.8125rem] text-ink-2">{value}</dd>
+    <div className="flex items-start gap-3">
+      <Icon name={icon} size={18} className="mt-0.5 shrink-0 text-on-surface-variant" />
+      <div className="min-w-0">
+        <dt className="sr-only">{term}</dt>
+        <dd className="font-small text-small text-on-surface-variant">{children}</dd>
+      </div>
     </div>
   );
 }
