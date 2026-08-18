@@ -21,13 +21,20 @@ import {
   listMessages,
   sendMessage,
   getUnreadCount,
+  getRecentConversations,
 } from "../controller/messageController.js";
 import { createReview, getBookingReview } from "../controller/reviewController.js";
 import { verifyToken } from "../middleware/authMiddleware.js";
+import { registerNumericParams } from "../middleware/validateParams.js";
 
 const router = express.Router();
 
 router.use(verifyToken);
+
+// Rejects "/api/bookings/abc" with 400 instead of letting it reach a query and
+// surface as a 500. Only fires for routes that actually capture `:id`, so the
+// literal paths registered below are unaffected.
+registerNumericParams(router, "id");
 
 router.post("/", createBooking);
 router.get("/", listBookings);
@@ -36,6 +43,8 @@ router.get("/", listBookings);
 // "summary" and "unread-count" as booking ids and hand them to getBooking.
 router.get("/summary", getBookingSummary);
 router.get("/unread-count", getUnreadCount);
+// Cross-booking, so it belongs beside unread-count rather than under /:id.
+router.get("/recent-messages", getRecentConversations);
 
 router.get("/:id", getBooking);
 router.post("/:id/cancel", cancelBooking);

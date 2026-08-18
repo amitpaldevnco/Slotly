@@ -220,28 +220,155 @@ export const sendMessage = async (req, res) => {
 /**
  * GET /api/bookings/unread-count — any signed-in user.
  *
- * Drives the badge in the navigation. Scoped in SQL to bookings the caller is a
- * party to, so there is no request shape that counts somebody else's messages.
+ * Drives the badge in the navigation and the per-conversation dot in the inbox.
+ * Scoped in SQL to bookings the caller is a party to, so there is no request
+ * shape that counts somebody else's messages.
+ *
+ * Grouped by booking rather than counted flat: the totals are then summed from
+ * the groups, which keeps one query serving both readings and makes the
+ * per-thread figure impossible to disagree with the badge. This is the exact
+ * shape `idx_booking_messages_unread` — partial on `(booking_id, sender_id)
+ * WHERE read_at IS NULL` — was built for, so grouping costs nothing over the
+ * flat count it replaces.
  *
  * Must be registered before `GET /:id/messages` style routes that could match
  * "unread-count" as an id — the same ordering `/bookings/summary` already needs.
  */
+/**
+ * GET /api/bookings/recent-messages — any signed-in user.
+ *
+ * The most recently active conversations this person is part of: one row per
+ * thread, carrying the latest message in it, newest thread first.
+ *
+ * ## Why this endpoint exists
+ *
+ * The provider dashboard has a "Recent Messages" panel which, until this was
+ * added, had no message data to draw. It listed *upcoming bookings* instead and
+ * timestamped each row with the appointment's `startsAt` — so a panel headed
+ * "Recent Messages" showed rows reading "in 2 days", describing a message that
+ * had not been sent, at a time in the future. The ordering was by appointment
+ * date too, which has nothing to do with which conversation was last active.
+ *
+ * A cross-booking aggregate rather than a per-thread read, so it sits beside
+ * `/bookings/unread-count` rather than under `/bookings/:id`, matching the
+ * convention already in the routes.
+ *
+ * ## Reading this must not mark anything read
+ *
+ * Deliberately a preview, not a thread view. `listMessages` marks the other
+ * party's messages read as a side effect of opening a thread, which is right
+ * there and would be wrong here: glancing at a dashboard is not reading your
+ * messages, and clearing someone's unread badge because a summary rendered
+ * would lose them the only signal they had.
+ *
+ * @returns 200 with `{ conversations }`. Each carries the other party, a
+ *   truncated preview, who sent it, when, and the thread's unread count.
+ */
+export const getRecentConversations = async (req, res) => {
+  try {
+    const limit = Math.min(Math.max(Number(req.query.limit) || 5, 1), 20);
+
+    // `DISTINCT ON (booking_id)` with a matching ORDER BY is Postgres's way of
+    // saying "one row per thread, the newest one" without a window function or a
+    // correlated subquery. The outer query then re-sorts those winners by time,
+    // because DISTINCT ON forces the inner sort to lead with booking_id.
+    //
+    // The `id DESC` tiebreak matters: two messages can share a created_at at
+    // millisecond precision, and without it the "latest" would be arbitrary.
+    const result = await query(
+      `WITH latest AS (
+         SELECT DISTINCT ON (m.booking_id)
+                m.booking_id, m.body, m.created_at, m.sender_id
+         FROM booking_messages m
+         JOIN bookings b ON b.id = m.booking_id
+         WHERE b.client_id = $1 OR b.provider_id = $1
+         ORDER BY m.booking_id, m.created_at DESC, m.id DESC
+       )
+       SELECT l.booking_id, l.body, l.created_at, l.sender_id,
+              b.client_id, b.provider_id, b.service_name_snapshot, b.starts_at, b.status,
+              c.name AS client_name, c.avatar_url AS client_avatar,
+              p.name AS provider_name, p.business_name AS provider_business_name,
+              p.avatar_url AS provider_avatar,
+              (SELECT COUNT(*)::int
+                 FROM booking_messages u
+                WHERE u.booking_id = l.booking_id
+                  AND u.sender_id <> $1
+                  AND u.read_at IS NULL) AS unread
+       FROM latest l
+       JOIN bookings b ON b.id = l.booking_id
+       JOIN users c ON c.id = b.client_id
+       JOIN users p ON p.id = b.provider_id
+       ORDER BY l.created_at DESC
+       LIMIT $2`,
+      [req.user.userId, limit]
+    );
+
+    const conversations = result.rows.map((row) => {
+      const viewerIsClient = row.client_id === req.user.userId;
+
+      return {
+        bookingId: row.booking_id,
+        serviceName: row.service_name_snapshot,
+        bookingStartsAt: row.starts_at,
+        bookingStatus: row.status,
+        // Whoever the viewer is talking *to*. A thread has exactly two parties,
+        // so "the other one" is fully determined.
+        withUser: viewerIsClient
+          ? {
+              id: row.provider_id,
+              name: row.provider_business_name || row.provider_name,
+              avatarUrl: row.provider_avatar,
+            }
+          : { id: row.client_id, name: row.client_name, avatarUrl: row.client_avatar },
+        lastMessage: {
+          // Truncated server-side: the panel shows one line, and sending the
+          // full 2000 characters so the browser can hide them is waste on every
+          // dashboard load.
+          preview: row.body.length > 120 ? `${row.body.slice(0, 119)}…` : row.body,
+          at: row.created_at,
+          // Lets the UI write "You: …", which is what makes a thread list
+          // readable at a glance.
+          fromMe: row.sender_id === req.user.userId,
+        },
+        unread: row.unread,
+      };
+    });
+
+    return successResponse(res, "Recent conversations fetched", { conversations });
+  } catch (err) {
+    console.error("getRecentConversations error:", err.message);
+    return errorResponse(res, "Could not fetch recent conversations", 500);
+  }
+};
+
 export const getUnreadCount = async (req, res) => {
   try {
     const result = await query(
-      `SELECT COUNT(*)::int AS unread,
-              COUNT(DISTINCT m.booking_id)::int AS threads
+      `SELECT m.booking_id, COUNT(*)::int AS unread
        FROM booking_messages m
        JOIN bookings b ON b.id = m.booking_id
        WHERE (b.client_id = $1 OR b.provider_id = $1)
          AND m.sender_id <> $1
-         AND m.read_at IS NULL`,
+         AND m.read_at IS NULL
+       GROUP BY m.booking_id`,
       [req.user.userId]
     );
 
+    // Keys are booking ids. JSON object keys are strings whatever is put in
+    // them, so the client has to look these up by String(id) — stated here
+    // because the alternative is a silently empty lookup on the other side.
+    const byBooking = {};
+    let unread = 0;
+
+    for (const row of result.rows) {
+      byBooking[row.booking_id] = row.unread;
+      unread += row.unread;
+    }
+
     return successResponse(res, "Unread count fetched", {
-      unread: result.rows[0].unread,
-      threads: result.rows[0].threads,
+      unread,
+      threads: result.rows.length,
+      byBooking,
     });
   } catch (err) {
     console.error("getUnreadCount error:", err.message);
