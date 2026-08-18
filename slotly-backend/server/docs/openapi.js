@@ -84,7 +84,8 @@ export const openApiDocument = {
               "INVALID_CREDENTIALS",
               "UPLOAD_REJECTED",
               "RANGE_TOO_WIDE",
-              "SERVICE_IN_USE",
+              "SERVICE_RETIRED",
+              "ALREADY_ACTIVE",
               "SERVER_ERROR",
             ],
           },
@@ -120,17 +121,44 @@ export const openApiDocument = {
 
       Service: {
         type: "object",
+        description:
+          "camelCase throughout, like every other resource in this API. The endpoint " +
+          "previously returned raw database rows in snake_case; those field names are " +
+          "still accepted on *input* for compatibility, but are no longer returned.",
         properties: {
           id: { type: "integer" },
-          provider_id: { type: "integer" },
-          service_name: { type: "string" },
+          providerId: { type: "integer" },
+          name: { type: "string", description: "Was `service_name`" },
           description: { type: "string", nullable: true },
           price: { type: "string", description: "NUMERIC, serialised as a string to avoid float drift" },
           duration: { type: "integer", description: "Minutes" },
-          buffer_before: { type: "integer", description: "Minutes held before the appointment" },
-          buffer_after: { type: "integer", description: "Minutes held after the appointment" },
-          cover_image: { type: "string", nullable: true, example: "/uploads/services/2_1717.jpg" },
-          is_active: { type: "boolean", description: "False once retired; hidden from booking" },
+          bufferBefore: { type: "integer", description: "Minutes held before the appointment" },
+          bufferAfter: { type: "integer", description: "Minutes held after the appointment" },
+          slotInterval: {
+            type: "integer",
+            description:
+              "Spacing of the offered start times, in minutes. Independent of duration — " +
+              "a booking is only accepted on a start this grid produces.",
+          },
+          coverImage: { type: "string", nullable: true, example: "/uploads/services/2_1717.jpg" },
+          isActive: { type: "boolean", description: "False once retired; hidden from booking" },
+          hasCustomAvailability: {
+            type: "boolean",
+            description: "True when the service has its own hours instead of the provider's default ones",
+          },
+          createdAt: { type: "string", format: "date-time" },
+          stats: {
+            type: "object",
+            description:
+              "Booking counts and earnings. Returned **only** to the provider who owns the " +
+              "service — a stranger never sees another provider's takings.",
+            properties: {
+              totalBookings: { type: "integer" },
+              completedBookings: { type: "integer" },
+              upcomingBookings: { type: "integer" },
+              totalEarnings: { type: "string" },
+            },
+          },
         },
       },
 
@@ -532,14 +560,21 @@ export const openApiDocument = {
             "multipart/form-data": {
               schema: {
                 type: "object",
-                required: ["service_name", "price", "duration"],
+                required: ["serviceName", "price", "duration"],
                 properties: {
-                  service_name: { type: "string" },
+                  serviceName: {
+                    type: "string",
+                    description: "Also accepted as `service_name` (legacy spelling)",
+                  },
                   description: { type: "string" },
                   price: { type: "number" },
                   duration: { type: "integer", description: "Minutes, 1–1440" },
-                  buffer_before: { type: "integer", description: "Minutes, 0–240" },
-                  buffer_after: { type: "integer", description: "Minutes, 0–240" },
+                  bufferBefore: { type: "integer", description: "Minutes, 0–240. Also accepted as `buffer_before`" },
+                  bufferAfter: { type: "integer", description: "Minutes, 0–240. Also accepted as `buffer_after`" },
+                  slotInterval: {
+                    type: "integer",
+                    description: "Minutes, 5–240. Spacing of offered start times. Also accepted as `slot_interval`",
+                  },
                   coverImage: { type: "string", format: "binary" },
                 },
               },
@@ -576,6 +611,325 @@ export const openApiDocument = {
           200: { description: "Deleted or retired" },
           403: errorRef("Not your service"),
           404: errorRef("No such service"),
+        },
+      },
+    },
+
+    "/services/{id}/reactivate": {
+      post: {
+        tags: ["Services"],
+        summary: "Bring a retired service back",
+        description: `${bearerNote} Provider role required, and the service must be your own.
+
+Retiring was always reversible in the data — \`isActive\` is a boolean and nothing is destroyed — but there was no way to reverse it from the app, so a provider who retired a service by mistake had to recreate it. A recreated service is a *different row*, which detaches it from its own booking history and its reviews.
+
+Its own verb rather than \`PUT /services/{id}\` with \`isActive: true\`, because editing a retired service is refused with SERVICE_RETIRED — so this path has to exist outside that rule.`,
+        parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        responses: {
+          200: {
+            description: "Reactivated. Bookable and publicly visible again.",
+            content: {
+              "application/json": { schema: { $ref: "#/components/schemas/Service" } },
+            },
+          },
+          403: errorRef("Not your service"),
+          404: errorRef("No such service"),
+          409: errorRef("ALREADY_ACTIVE — it was not retired"),
+        },
+      },
+    },
+
+    "/bookings/recent-messages": {
+      get: {
+        tags: ["Messages"],
+        summary: "The viewer's most recently active conversations",
+        description: `${bearerNote}
+
+One entry per thread, carrying the latest message in it, newest thread first. Cross-booking, which is why it sits beside \`/bookings/unread-count\` rather than under \`/bookings/{id}\`.
+
+**Reading this does not mark anything read.** Unlike \`GET /bookings/{id}/messages\`, which marks the other party's messages read as a side effect of opening a thread, this is a preview — glancing at a dashboard is not reading your messages, and clearing an unread badge because a summary rendered would lose the only signal there was.`,
+        parameters: [
+          {
+            name: "limit",
+            in: "query",
+            required: false,
+            schema: { type: "integer", minimum: 1, maximum: 20, default: 5 },
+            description: "Threads to return. Clamped server-side.",
+          },
+        ],
+        responses: {
+          200: {
+            description: "Newest-first list of threads.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    conversations: {
+                      type: "array",
+                      items: {
+                        type: "object",
+                        properties: {
+                          bookingId: { type: "integer" },
+                          serviceName: { type: "string" },
+                          bookingStartsAt: { type: "string", format: "date-time" },
+                          bookingStatus: { type: "string" },
+                          withUser: {
+                            type: "object",
+                            description: "The other party. A thread has exactly two.",
+                            properties: {
+                              id: { type: "integer" },
+                              name: { type: "string" },
+                              avatarUrl: { type: "string", nullable: true },
+                            },
+                          },
+                          lastMessage: {
+                            type: "object",
+                            properties: {
+                              preview: { type: "string", description: "Truncated to 120 characters" },
+                              at: { type: "string", format: "date-time" },
+                              fromMe: { type: "boolean", description: "Lets the UI write \"You: …\"" },
+                            },
+                          },
+                          unread: { type: "integer", description: "Unread messages in this thread" },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          401: errorRef("No session"),
+        },
+      },
+    },
+
+    "/availability/validate": {
+      post: {
+        tags: ["Availability"],
+        summary: "Dry-run a weekly pattern without saving it",
+        description: `${bearerNote} Provider role required.
+
+Runs the same validation and the same slot arithmetic as \`PUT /availability/rules\`, against a draft in the request body, and writes nothing. It answers the question a provider cannot otherwise ask until it is too late: *would these hours actually produce any bookable times?*
+
+They often would not, for a reason that is genuinely surprising. Candidate start times sit on a grid anchored at the window's start, so a 09:00–10:00 window with a 30-minute service, 10-minute buffers and a 30-minute interval has a legal band of 09:10–09:20 and grid positions at 09:00 and 09:30 — which never intersect, and the day silently offers nothing.
+
+\`remedies\` are therefore *verified* rather than guessed: each one is checked against the same arithmetic before being suggested, so the UI never tells a provider to shorten a buffer when a shorter buffer would not help.
+
+POST rather than GET because the thing being checked is a draft in the body, not something already stored.`,
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["rules"],
+                properties: {
+                  rules: {
+                    type: "array",
+                    description: "The draft weekly pattern, same shape as PUT /availability/rules.",
+                    items: {
+                      type: "object",
+                      properties: {
+                        weekday: { type: "integer", minimum: 0, maximum: 6 },
+                        startTime: { type: "string", example: "09:00" },
+                        endTime: { type: "string", example: "17:00" },
+                      },
+                    },
+                  },
+                  serviceId: {
+                    type: "integer",
+                    description:
+                      "Judge the draft against this service's duration, buffers and slot interval. Omit to use the provider's defaults.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "The diagnosis. `valid` reports the rules parsed; `feasibility` reports whether they yield slots.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    bookable: { type: "boolean", description: "False when the whole week yields no slot" },
+                    totalSlotsPerWeek: { type: "integer" },
+                    minimumWindowMinutes: {
+                      type: "integer",
+                      description: "Shortest open window that would yield one slot, given the duration, buffers and grid",
+                    },
+                    problemDays: {
+                      type: "array",
+                      description: "Only the days that cannot yield a slot. A day that is merely fully booked never appears here.",
+                      items: { type: "object" },
+                    },
+                    remedies: {
+                      type: "array",
+                      description: "Concrete changes that would fix it, each verified to actually work. The first is the recommendation.",
+                      items: {
+                        type: "object",
+                        properties: {
+                          kind: {
+                            type: "string",
+                            enum: ["extend-availability", "slot-interval", "buffer-before", "duration"],
+                          },
+                          value: { type: "integer" },
+                          summary: { type: "string", example: "Add 40 min to that day — ending at 5:40 PM instead would fit." },
+                        },
+                      },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          400: errorRef("VALIDATION_FAILED — the draft itself is malformed"),
+          403: errorRef("Not a provider"),
+        },
+      },
+    },
+
+    "/availability/preview": {
+      post: {
+        tags: ["Availability"],
+        summary: "How many slots would a draft service yield?",
+        description: `${bearerNote} Provider role required.
+
+The mirror image of \`/availability/validate\`. That endpoint takes a draft **pattern** and judges it against saved **services**; this takes a draft **service** and judges it against saved **hours**.
+
+It exists because the service form cannot answer the question locally. Duration, the two buffers and the slot spacing interact in a way nobody works out in their head: a 09:00-10:00 window with a 30-minute service, 10-minute buffers and a 30-minute grid yields **nothing at all** — the legal band of starts is 09:10-09:20 and the grid offers 09:00 and 09:30, so the two never meet. Dropping one buffer makes the same window yield a slot.
+
+Routed through the same \`diagnoseSlotFeasibility()\` the validation endpoint uses, which walks the same \`candidateStartsInWindow()\` the real slot list walks — so the count previewed here is the count that will be offered.
+
+**Ignores bookings, one-off exceptions and the minimum-notice rule**, none of which the provider can change from the form in front of them. A day empty only because it is fully booked is not a misconfiguration.`,
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["duration"],
+                properties: {
+                  duration: { type: "integer", description: "Minutes, 1-1440" },
+                  bufferBefore: { type: "integer", description: "Also accepted as `buffer_before`" },
+                  bufferAfter: { type: "integer", description: "Also accepted as `buffer_after`" },
+                  slotInterval: { type: "integer", description: "Also accepted as `slot_interval`" },
+                  serviceId: {
+                    type: "integer",
+                    description:
+                      "Which hours to judge against: a service with its own schedule is measured against that, everything else against the provider's default. Omit for a service that does not exist yet.",
+                  },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: {
+            description: "The weekly shape these settings would produce.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    scope: { type: "string", enum: ["service", "provider"] },
+                    hasRules: {
+                      type: "boolean",
+                      description:
+                        "False when the provider has no hours at all — a different problem, with a different fix, from hours that cannot fit this service.",
+                    },
+                    bookable: { type: "boolean" },
+                    totalSlotsPerWeek: { type: "integer" },
+                    minimumWindowMinutes: {
+                      type: "integer",
+                      description: "Shortest open window that would yield one slot with these settings",
+                    },
+                    days: {
+                      type: "array",
+                      description: "Per weekday, in order, with a slot count each.",
+                      items: {
+                        type: "object",
+                        properties: {
+                          weekday: { type: "integer", minimum: 0, maximum: 6 },
+                          weekdayName: { type: "string" },
+                          slotCount: { type: "integer" },
+                          windows: { type: "array", items: { type: "object" } },
+                        },
+                      },
+                    },
+                    problemDays: { type: "array", items: { type: "object" } },
+                    remedies: {
+                      type: "array",
+                      description: "Changes that would fix it, each verified against the same arithmetic first.",
+                      items: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          400: errorRef("VALIDATION_FAILED — duration is not a positive number of minutes"),
+          403: errorRef("Not a provider"),
+          404: errorRef("serviceId is not one of yours"),
+        },
+      },
+    },
+
+    "/availability/health": {
+      get: {
+        tags: ["Availability"],
+        summary: "Diagnose the saved configuration, per service",
+        description: `${bearerNote} Provider role required.
+
+The same feasibility check as \`POST /availability/validate\`, run against what is already stored rather than a draft, once per active service. This is what powers the dashboard warning that a service is configured so that it can never be booked.
+
+Like the dry run, it deliberately ignores bookings, one-off blocks and the minimum-notice rule: none of those are things a provider can fix by editing their settings, and reporting a fully-booked day as a misconfiguration would be noise.`,
+        responses: {
+          200: {
+            description: "One entry per active service.",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    services: {
+                      type: "array",
+                      description: "Every active service, whether or not it has a problem.",
+                      items: {
+                        type: "object",
+                        properties: {
+                          serviceId: { type: "integer" },
+                          serviceName: { type: "string" },
+                          hasRules: { type: "boolean", description: "False when no hours apply to this service at all" },
+                          bookable: { type: "boolean" },
+                          totalSlotsPerWeek: { type: "integer" },
+                          problemDays: { type: "array", items: { type: "object" } },
+                          remedies: { type: "array", items: { type: "object" } },
+                        },
+                      },
+                    },
+                    servicesWithoutHours: {
+                      type: "array",
+                      description:
+                        "Names of services with no hours at all. Split out from the next field because the two need different words: this one needs \"set your hours\".",
+                      items: { type: "string" },
+                    },
+                    misconfiguredServices: {
+                      type: "array",
+                      description:
+                        "Services that have hours which nonetheless yield no slot — \"your day is too short for this service\".",
+                      items: { type: "object" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+          403: errorRef("Not a provider"),
         },
       },
     },
@@ -875,9 +1229,12 @@ export const openApiDocument = {
       get: {
         tags: ["Messages"],
         summary: "How many unread messages the caller has across all their bookings",
-        description: `${bearerNote} Counts only messages on the caller's own bookings that they did not send and have not read. Drives the navbar badge.`,
+        description: `${bearerNote} Counts only messages on the caller's own bookings that they did not send and have not read. Drives the navbar badge and the per-conversation dot in the inbox.`,
         responses: {
-          200: { description: "`{ unreadCount }`" },
+          200: {
+            description:
+              "`{ unread, threads, byBooking }` — `byBooking` maps a booking id to that thread's unread count, and omits threads with none.",
+          },
           401: errorRef("No session"),
         },
       },
