@@ -1,17 +1,24 @@
-
+/**
+ * One-off overrides to a provider's weekly pattern: blocking a date or range
+ * (holiday, sick day) and opening extra hours on a specific date.
+ *
+ * Dates here are calendar dates, not instants — "22 August" means that day on
+ * the provider's own calendar, wherever anyone reading it happens to be — so
+ * they travel as bare "YYYY-MM-DD" strings and are never converted. `todayIn()`
+ * supplies the lower bound in the provider's zone rather than the browser's, so
+ * a provider cannot be offered a date that is already yesterday for them.
+ */
 import { useState } from "react";
 import { DateTime } from "luxon";
 import { parseApiError } from "../../api/client";
 import * as availabilityApi from "../../api/availability";
 import { useToast } from "../../context/ToastContext";
 import Icon from "../ui/Icon";
-import { Section } from "../ui/Page";
 import Field, { Input, CardRadioGroup } from "../ui/Field";
 import EmptyState from "../ui/Feedback";
 import { formatClockTime, todayIn } from "../../lib/time";
 import {
   primaryButton,
-  secondaryButton,
   ghostButton,
   buttonSm,
   badgeVariants,
@@ -112,25 +119,29 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
   const sorted = [...exceptions].sort((a, b) => a.startDate.localeCompare(b.startDate));
 
   return (
-    <Section
-      headingId="exceptions-heading"
-      title="Exceptions"
-      description="Holidays and one-off hours that override the pattern above"
-      actions={
+    <div className="overflow-hidden rounded-lg border border-outline-variant bg-surface-container-lowest">
+      <div className="flex flex-wrap items-center justify-between gap-4 border-b border-outline-variant bg-surface/50 p-6">
+        <div>
+          <h2 className="font-h3 text-[18px] font-semibold text-primary">Exceptions</h2>
+          <p className="mt-1 font-caption text-caption text-on-surface-variant">
+            Holidays and one-off hours that override the pattern above.
+          </p>
+        </div>
         <button
           type="button"
           onClick={() => setFormOpen((open) => !open)}
           aria-expanded={formOpen}
-          className={formOpen ? `${ghostButton} ${buttonSm}` : `${secondaryButton} ${buttonSm}`}
+          className="flex cursor-pointer items-center gap-1 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
         >
-          <Icon name={formOpen ? "close" : "plus"} size={14} />
+          <Icon name={formOpen ? "close" : "add"} size={16} />
           {formOpen ? "Cancel" : "Add exception"}
         </button>
-      }
-      flush
-    >
+      </div>
       {formOpen && (
-        <form onSubmit={handleSubmit} className="space-y-3.5 border-b border-line bg-subtle p-3.5">
+        <form
+          onSubmit={handleSubmit}
+          className="space-y-5 border-b border-outline-variant bg-surface-container-low p-6"
+        >
           <CardRadioGroup
             name="exceptionKind"
             legend="What are you adding?"
@@ -152,7 +163,7 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
             ]}
           />
 
-          <div className="grid gap-3.5 sm:grid-cols-2">
+          <div className="grid gap-5 sm:grid-cols-2">
             <Field id="exception-start" label="From" error={errors.startDate}>
               <Input
                 id="exception-start"
@@ -194,7 +205,7 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
           )}
 
           {showTimeFields && (
-            <div className="grid gap-3.5 sm:grid-cols-2">
+            <div className="grid gap-5 sm:grid-cols-2">
               <Field id="exception-start-time" label="Start time" error={errors.startTime}>
                 <Input
                   id="exception-start-time"
@@ -245,12 +256,12 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
           description="Your weekly hours apply every week. Add an exception for a holiday or a one-off."
         />
       ) : (
-        <ul className="divide-y divide-line-soft">
+        <ul className="divide-y divide-outline-variant/50">
           {sorted.map((exception) => {
             const isBlock = exception.kind === "block";
 
             return (
-              <li key={exception.id} className="flex items-start gap-3 px-3 py-2.5">
+              <li key={exception.id} className="flex items-start gap-4 p-6">
                 <span
                   className={`mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-md ${
                     isBlock ? "bg-danger-soft text-danger-ink" : "bg-brand-soft text-brand-ink"
@@ -290,6 +301,6 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
           })}
         </ul>
       )}
-    </Section>
+    </div>
   );
 }

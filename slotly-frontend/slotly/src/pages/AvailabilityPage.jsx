@@ -1,25 +1,27 @@
 /**
- * The provider's availability screen: weekly hours, one-off exceptions, and the
- * cancellation cutoff.
+ * Availability settings — `availability_editor`.
  *
- * Loads everything in one request and hands each section its slice, so the three
- * editors stay independent components while the page owns the single source of
- * truth for what is currently saved.
+ * Transcribed from the reference: a page heading, then a twelve-column split —
+ * the Timezone card and the Weekly Hours editor on the left, a sticky
+ * Scheduling Rules card on the right.
  *
- * ## Layout
+ * The reference's rules card offers Slot Duration, Buffer Time and Minimum
+ * Notice. In Slotly the first two are per-service, not per-provider — they are
+ * columns on `services`, edited on the service form — and there is no
+ * minimum-notice setting at all. The card therefore carries the one scheduling
+ * rule that *is* the provider's and does exist, the cancellation cutoff, plus
+ * the explanation of how a slot is arrived at, which is the question the missing
+ * controls were really answering.
  *
- * This was five stacked full-width panels in an 896px column: a title with a
- * three-line explanation, a timezone notice, the scope tabs, a scope explanation,
- * the weekly grid (seven rows of time inputs), the exceptions editor (a form plus
- * two lists), and the cancellation policy. Roughly three screens of scrolling, in
- * which the weekly grid — the thing the page is for — was in the middle.
+ * The scope tabs above the editor have no counterpart in the reference and are
+ * kept because the feature does: a service may override the provider's default
+ * hours, and this is the only screen that can edit either.
  *
- * The weekly grid is now the main column and the two smaller settings are a
- * sidebar, so the page is one screen on a laptop and the grid starts at the top.
- * The three-line explanation of how slots are calculated moved into the sidebar
- * too: it is worth saying once, not worth saying above the control it describes.
+ * Everything loads in one request and each editor is handed its slice, so the
+ * page owns the single source of truth for what is currently saved.
  */
-import { useState } from "react";
+
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { parseApiError } from "../api/client";
 import * as availabilityApi from "../api/availability";
@@ -29,19 +31,10 @@ import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import WeeklyHoursEditor from "../components/availability/WeeklyHoursEditor";
 import ExceptionsEditor from "../components/availability/ExceptionsEditor";
-import Page, { PageHeader, Section, SplitLayout } from "../components/ui/Page";
 import Icon from "../components/ui/Icon";
-import { FilterTabs } from "../components/ui/Tabs";
 import Field, { Input } from "../components/ui/Field";
 import { Alert, ErrorState, PageLoader } from "../components/ui/Feedback";
-import {
-  primaryButton,
-  secondaryButton,
-  buttonSm,
-  chipClasses,
-  linkClasses,
-  zoneName,
-} from "../lib/ui";
+import { container, primaryButton, secondaryButton, buttonSm, zoneName } from "../lib/ui";
 
 export default function AvailabilityPage() {
   const { user, refetchUser } = useAuth();
@@ -50,9 +43,9 @@ export default function AvailabilityPage() {
   const [selectedServiceId, setSelectedServiceId] = useState(null);
   const [resetting, setResetting] = useState(false);
 
-  // The service list is what tells the tabs which services already have a
-  // custom schedule — loaded once, independently of which tab is selected.
-  // Non-fatal: the page still works with just the default-hours tab.
+  // The service list is what tells the tabs which services already have a custom
+  // schedule — loaded once, independently of which tab is selected. Non-fatal:
+  // the page still works with just the default-hours tab.
   const {
     data: servicesData,
     setData: setServices,
@@ -62,16 +55,21 @@ export default function AvailabilityPage() {
     { enabled: Boolean(user?.id), deps: [user?.id], initialData: [] }
   );
 
-  const services = servicesData ?? [];
+  // Active services only. A retired service is not bookable, so hours for it
+  // could never produce a slot — offering a tab to configure them is inviting a
+  // provider to spend time on something with no effect. Its rules stay in the
+  // database untouched, so reactivating brings them back with it.
+  //
+  // Filtered rather than requested that way, because the endpoint returns the
+  // owner's retired services deliberately (the Services page needs them) and a
+  // second request for a different slice of the same list would be waste.
+  const services = useMemo(
+    () => (servicesData ?? []).filter((service) => service.isActive !== false),
+    [servicesData]
+  );
 
   const {
     data: availability,
-    // Every editor below reports what it saved through an `onSaved` callback that
-    // patches this state in place, so the screen updates from the server's own
-    // response instead of re-fetching. Leaving `setData` out of this destructure
-    // is what made a successful save look like a network failure: the callbacks
-    // referenced an undeclared `setAvailability` and threw inside the editor's
-    // try/catch, which then reported the throw as a failed request.
     setData: setAvailability,
     loading,
     error: loadError,
@@ -79,17 +77,15 @@ export default function AvailabilityPage() {
   } = useApiResource(
     ({ signal }) =>
       providersApi
-        .getAvailability(
-          user.id,
-          selectedServiceId ? { serviceId: selectedServiceId } : {},
-          { signal }
-        )
+        .getAvailability(user.id, selectedServiceId ? { serviceId: selectedServiceId } : {}, {
+          signal,
+        })
         // Stamp each response with the tab it was fetched for. A scope switch
-        // keeps the previous schedule on screen while the new one loads (see
-        // `initialLoading` below), which means that for a moment `availability`
-        // holds one scope's rules while `selectedServiceId` names another. The
-        // editors must not be handed that mismatch — it is how a service's hours
-        // ended up displayed, and then saved, as the provider's default.
+        // keeps the previous schedule on screen while the new one loads, which
+        // means that for a moment `availability` holds one scope's rules while
+        // `selectedServiceId` names another. The editors must not be handed that
+        // mismatch — it is how a service's hours ended up displayed, and then
+        // saved, as the provider's default.
         .then((data) => ({ ...data, forServiceId: selectedServiceId ?? null })),
     {
       enabled: Boolean(user?.id),
@@ -109,7 +105,9 @@ export default function AvailabilityPage() {
     try {
       await availabilityApi.resetServiceRules(selectedServiceId);
       setServices((current) =>
-        current.map((s) => (s.id === selectedServiceId ? { ...s, has_custom_availability: false } : s))
+        current.map((s) =>
+          s.id === selectedServiceId ? { ...s, hasCustomAvailability: false } : s
+        )
       );
       await load();
       toast.success("This service now follows your default hours.");
@@ -121,175 +119,160 @@ export default function AvailabilityPage() {
   };
 
   // The page needs both requests: the tabs come from the service list and the
-  // editors from the availability. Waiting for both means the tabs are there on
-  // the first paint instead of appearing a moment later and pushing everything
-  // below them down.
-  //
-  // Deliberately not true for a tab switch — that refetches the availability
-  // while the current schedule stays on screen, rather than blanking the page.
+  // editors from the availability. Deliberately not true for a tab switch —
+  // that refetches while the current schedule stays on screen.
   const initialLoading = servicesLoading || (loading && !availability);
 
   if (initialLoading && !loadError) return <PageLoader label="Loading your availability…" />;
 
   if (loadError) {
     return (
-      <Page narrow>
+      <div className={`${container} py-8 md:py-12`}>
         <ErrorState message={loadError} onRetry={load} />
-      </Page>
+      </div>
     );
   }
 
   return (
-    <Page>
-      <PageHeader
-        title="Availability"
-        description="The hours clients can book, and the days they cannot."
-        meta={
-          <span className={chipClasses}>
-            <Icon name="globe" size={12} />
-            {zoneName(availability.timezone)}
-          </span>
-        }
-      />
+    <div className={`${container} pb-16 pt-8 md:pt-12`}>
+      <header className="mb-10">
+        <h1 className="mb-2 font-h1-mobile text-h1-mobile text-primary md:font-h1 md:text-h1">
+          Availability Settings
+        </h1>
+        <p className="max-w-2xl font-body text-body text-on-surface-variant">
+          Define your weekly booking hours and scheduling rules.
+        </p>
+      </header>
 
-      {/* Only when there is more than one schedule to switch between. A provider
-          with no services gets no tabs rather than a tab strip of one. */}
-      {services.length > 0 && (
-        <div className="mb-3">
-          <FilterTabs
-            label="Whose hours to edit"
-            panelId="availability-editors"
-            value={selectedServiceId}
-            onChange={setSelectedServiceId}
-            options={[{ id: null, label: "Default hours" }].concat(
-              services.map((s) => ({
-                id: s.id,
-                label: s.service_name,
-                dot: s.has_custom_availability,
-              }))
-            )}
-          />
-        </div>
-      )}
+      <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-12">
+        {/* Left column */}
+        <div className="space-y-6 lg:col-span-8">
+          {/* Timezone */}
+          <div className="flex flex-col items-start justify-between gap-4 rounded-lg border border-outline-variant bg-surface-container-lowest p-6 sm:flex-row sm:items-center">
+            <div>
+              <h3 className="flex items-center gap-2 font-small text-small font-semibold text-primary">
+                <Icon name="public" size={18} />
+                Global Timezone
+              </h3>
+              <p className="mt-1 font-caption text-caption text-on-surface-variant">
+                All times below are relative to this timezone.
+              </p>
+            </div>
 
-      {selectedService && (
-        <Alert
-          tone={selectedService.has_custom_availability ? "info" : "warn"}
-          className="mb-3"
-          action={
-            selectedService.has_custom_availability && (
-              <button
-                type="button"
-                onClick={handleReset}
-                disabled={resetting}
-                className={`${secondaryButton} ${buttonSm}`}
+            {/* Read-only here on purpose: the timezone is an account setting and
+                is edited in one place, so two screens cannot disagree about it. */}
+            <div className="flex w-full items-center gap-3 sm:w-auto">
+              <span className="flex-1 rounded-md border border-outline-variant px-3 py-2 font-small text-small text-on-surface sm:w-64 sm:flex-none">
+                {zoneName(availability.timezone)}
+              </span>
+              <Link
+                to="/settings"
+                className="shrink-0 font-small text-small font-semibold text-primary underline underline-offset-2"
               >
-                {resetting ? "Resetting…" : "Reset to default"}
-              </button>
-            )
-          }
-        >
-          {selectedService.has_custom_availability ? (
-            <>
-              <span className="font-medium">{selectedService.service_name}</span> has its own hours,
-              separate from your default schedule.
-            </>
-          ) : (
-            <>
-              <span className="font-medium">{selectedService.service_name}</span> currently follows
-              your default hours. Saving below gives it a schedule of its own.
-            </>
+                Change
+              </Link>
+            </div>
+          </div>
+
+          {/* Scope tabs — the provider's default hours, or one service's own. */}
+          {services.length > 0 && (
+            <div className="no-scrollbar flex gap-2 overflow-x-auto pb-1">
+              {[{ id: null, label: "Default hours" }]
+                .concat(
+                  services.map((s) => ({
+                    id: s.id,
+                    label: s.name,
+                    dot: s.hasCustomAvailability,
+                  }))
+                )
+                .map((option) => {
+                  const active = option.id === selectedServiceId;
+                  return (
+                    <button
+                      key={option.id ?? "__default"}
+                      type="button"
+                      onClick={() => setSelectedServiceId(option.id)}
+                      aria-pressed={active}
+                      className={`flex shrink-0 cursor-pointer items-center gap-2 whitespace-nowrap rounded-full border px-4 py-2 font-small text-small transition-colors ${
+                        active
+                          ? "border-primary bg-primary text-on-primary"
+                          : "border-outline-variant bg-surface text-on-surface-variant hover:bg-surface-container-low hover:text-primary"
+                      }`}
+                    >
+                      <span className="max-w-[14rem] truncate">{option.label}</span>
+                      {option.dot && (
+                        <span
+                          aria-hidden="true"
+                          title="Has its own hours"
+                          className={`h-1.5 w-1.5 rounded-full ${
+                            active ? "bg-on-primary/80" : "bg-primary"
+                          }`}
+                        />
+                      )}
+                    </button>
+                  );
+                })}
+            </div>
           )}
-        </Alert>
-      )}
 
-      <div id="availability-editors">
-        <SplitLayout
-          aside={
-            <>
-              <Section title="How slots are worked out" flush>
-                <ol className="divide-y divide-line-soft text-xs">
-                  {[
-                    "Start from your weekly hours",
-                    "Subtract your exceptions",
-                    "Subtract anything already booked",
-                    "Keep only where the appointment plus its buffers fits",
-                  ].map((step, index) => (
-                    <li key={step} className="flex gap-2.5 px-3 py-2">
-                      <span className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-brand-soft text-[0.625rem] font-semibold text-brand-ink">
-                        {index + 1}
-                      </span>
-                      <span className="leading-relaxed text-ink-2">{step}</span>
-                    </li>
-                  ))}
-                </ol>
-                <p className="border-t border-line-soft px-3 py-2 text-xs leading-relaxed text-ink-3">
-                  A service only needs its own hours if it genuinely runs on a different schedule
-                  from the rest of your day.
-                </p>
-              </Section>
+          {selectedService && (
+            <Alert
+              tone={selectedService.hasCustomAvailability ? "info" : "warn"}
+              action={
+                selectedService.hasCustomAvailability && (
+                  <button
+                    type="button"
+                    onClick={handleReset}
+                    disabled={resetting}
+                    className={`${secondaryButton} ${buttonSm}`}
+                  >
+                    {resetting ? "Resetting…" : "Reset to default"}
+                  </button>
+                )
+              }
+            >
+              {selectedService.hasCustomAvailability ? (
+                <>
+                  <span className="font-semibold">{selectedService.name}</span> has its own
+                  hours, separate from your default schedule.
+                </>
+              ) : (
+                <>
+                  <span className="font-semibold">{selectedService.name}</span> currently
+                  follows your default hours. Saving below gives it a schedule of its own.
+                </>
+              )}
+            </Alert>
+          )}
 
-              <Section title="Timezone" flush>
-                <div className="px-3 py-3">
-                  <p className="flex items-center gap-2 text-[0.8125rem] font-medium text-ink">
-                    <Icon name="globe" size={15} className="text-ink-3" />
-                    {zoneName(availability.timezone)}
-                  </p>
-                  {/* Worth stating plainly: every field on this page is a
-                      wall-clock time, and none of them mean anything until the
-                      reader knows whose clock. */}
-                  <p className="mt-1.5 text-xs leading-relaxed text-ink-3">
-                    All times on this page are in this zone. Clients always see them converted to
-                    their own.{" "}
-                    <Link to="/profile" className={linkClasses}>
-                      Change it
-                    </Link>
-                  </p>
-                </div>
-              </Section>
-
-              <CancellationPolicyEditor
-                value={availability.cancellationCutoffHours}
-                onSaved={(hours) => {
-                  setAvailability((current) => ({ ...current, cancellationCutoffHours: hours }));
-                  // The cutoff also lives on the user record the header and
-                  // dashboard read, so re-sync rather than letting the two drift.
-                  refetchUser();
-                  toast.success("Cancellation policy saved.");
-                }}
-              />
-            </>
-          }
-        >
           {/* Held back until the fetched scope matches the selected tab, so the
               grid is never populated from the scope the provider just left. */}
           {availabilityInSync && (
             <WeeklyHoursEditor
               key={`rules-${selectedServiceId ?? "default"}`}
               rules={availability.rules}
-              timezone={availability.timezone}
               serviceId={selectedServiceId}
-              scopeLabel={selectedService?.service_name}
+              scopeLabel={selectedService?.name}
               onSaved={(rules) => {
                 setAvailability((current) => ({
                   ...current,
                   rules,
                   // An empty week on a service is not a schedule of its own — it
                   // means "follow my default hours", and the server clears the
-                  // override to match. See replaceAvailabilityRules.
+                  // override to match.
                   scope: selectedServiceId && rules.length > 0 ? "service" : "provider",
                 }));
                 if (selectedServiceId) {
                   setServices((current) =>
                     current.map((s) =>
                       s.id === selectedServiceId
-                        ? { ...s, has_custom_availability: rules.length > 0 }
+                        ? { ...s, hasCustomAvailability: rules.length > 0 }
                         : s
                     )
                   );
                 }
                 // Saving an empty week hands the service back to the default
-                // hours, so what is on screen is now the *provider's* schedule,
+                // hours, so what is on screen is now the provider's schedule,
                 // not this service's. Re-fetch rather than guess at it.
                 if (selectedServiceId && rules.length === 0) load();
               }}
@@ -297,26 +280,76 @@ export default function AvailabilityPage() {
           )}
 
           {availabilityInSync && (
-          <ExceptionsEditor
-            key={`exceptions-${selectedServiceId ?? "default"}`}
-            exceptions={availability.exceptions}
-            timezone={availability.timezone}
-            serviceId={selectedServiceId}
-            onChanged={(exceptions) => {
-              setAvailability((current) => ({ ...current, exceptions }));
-              if (selectedServiceId) {
-                setServices((current) =>
-                  current.map((s) =>
-                    s.id === selectedServiceId ? { ...s, has_custom_availability: true } : s
-                  )
-                );
-              }
-            }}
-          />
+            <ExceptionsEditor
+              key={`exceptions-${selectedServiceId ?? "default"}`}
+              exceptions={availability.exceptions}
+              timezone={availability.timezone}
+              serviceId={selectedServiceId}
+              onChanged={(exceptions) => {
+                setAvailability((current) => ({ ...current, exceptions }));
+                if (selectedServiceId) {
+                  setServices((current) =>
+                    current.map((s) =>
+                      s.id === selectedServiceId ? { ...s, hasCustomAvailability: true } : s
+                    )
+                  );
+                }
+              }}
+            />
           )}
-        </SplitLayout>
+        </div>
+
+        {/* Right column: scheduling rules */}
+        <div className="lg:col-span-4">
+          <div className="sticky top-24 space-y-6">
+            <CancellationPolicyCard
+              value={availability.cancellationCutoffHours}
+              onSaved={(hours) => {
+                setAvailability((current) => ({ ...current, cancellationCutoffHours: hours }));
+                // The cutoff also lives on the user record the dashboard reads,
+                // so re-sync rather than letting the two drift.
+                refetchUser();
+                toast.success("Cancellation policy saved.");
+              }}
+            />
+
+            <div className="rounded-lg border border-outline-variant bg-surface-container-lowest p-6">
+              <h2 className="mb-6 flex items-center gap-2 font-h3 text-[18px] font-semibold text-primary">
+                <Icon name="tune" size={20} />
+                How slots are worked out
+              </h2>
+
+              <ol className="space-y-4">
+                {[
+                  "Start from your weekly hours",
+                  "Subtract your exceptions",
+                  "Subtract anything already booked",
+                  "Keep only where the appointment plus its buffers fits",
+                ].map((step, index) => (
+                  <li key={step} className="flex gap-3">
+                    <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-surface-container-high font-caption text-[10px] font-bold text-on-surface">
+                      {index + 1}
+                    </span>
+                    <span className="font-small text-small text-on-surface-variant">{step}</span>
+                  </li>
+                ))}
+              </ol>
+
+              <p className="mt-6 border-t border-outline-variant/50 pt-4 font-caption text-caption text-on-surface-variant">
+                A service&apos;s own duration, buffers and slot spacing are set on{" "}
+                <Link
+                  to="/services"
+                  className="font-semibold text-primary underline underline-offset-2"
+                >
+                  the service itself
+                </Link>
+                , because they differ per service.
+              </p>
+            </div>
+          </div>
+        </div>
       </div>
-    </Page>
+    </div>
   );
 }
 
@@ -324,10 +357,10 @@ export default function AvailabilityPage() {
  * How long before an appointment a client may still cancel.
  *
  * The note about existing bookings is not decoration — it is the visible half of
- * the snapshot rule: tightening this cannot retroactively trap someone who booked
- * under the old policy.
+ * the snapshot rule: tightening this cannot retroactively trap someone who
+ * booked under the old policy.
  */
-function CancellationPolicyEditor({ value, onSaved }) {
+function CancellationPolicyCard({ value, onSaved }) {
   const toast = useToast();
 
   const [hours, setHours] = useState(String(value ?? 12));
@@ -360,15 +393,20 @@ function CancellationPolicyEditor({ value, onSaved }) {
   };
 
   return (
-    <Section title="Cancellation policy" flush>
-      <form onSubmit={handleSubmit} className="px-3 py-3">
+    <div className="rounded-lg border border-outline-variant bg-surface-container-lowest p-6">
+      <h2 className="mb-6 flex items-center gap-2 font-h3 text-[18px] font-semibold text-primary">
+        <Icon name="rule" size={20} />
+        Scheduling Rules
+      </h2>
+
+      <form onSubmit={handleSubmit}>
         <Field
           id="cutoff-hours"
-          label="Clients can cancel up to"
+          label="Cancellation notice"
           error={error}
-          hint="You can always cancel or reschedule anything on your calendar yourself."
+          hint="How far in advance a client must cancel. You can always cancel or reschedule anything on your calendar yourself."
         >
-          <div className="flex items-center gap-2">
+          <div className="flex items-center gap-3">
             <Input
               id="cutoff-hours"
               type="number"
@@ -379,27 +417,27 @@ function CancellationPolicyEditor({ value, onSaved }) {
               onChange={(e) => setHours(e.target.value)}
               className="w-24"
             />
-            <span className="text-[0.8125rem] text-ink-2">hours before</span>
+            <span className="font-small text-small text-on-surface-variant">hours before</span>
           </div>
         </Field>
 
         {/* Only offered once the value has actually changed. A permanently
-            enabled Save on a settings panel invites a pointless request and
-            gives no signal that anything is unsaved. */}
+            enabled Save invites a pointless request and gives no signal that
+            anything is unsaved. */}
         {dirty && (
-          <button type="submit" disabled={saving} className={`mt-2.5 ${primaryButton} ${buttonSm}`}>
+          <button type="submit" disabled={saving} className={`${primaryButton} ${buttonSm} mt-4`}>
             {saving ? "Saving…" : "Save policy"}
           </button>
         )}
-
-        <p className="mt-2.5 flex items-start gap-1.5 border-t border-line-soft pt-2.5 text-xs leading-relaxed text-ink-3">
-          <Icon name="info" size={13} className="mt-px" />
-          <span>
-            Affects new bookings only. Every existing booking keeps the policy it was made under, so
-            nobody is caught out by a change made after they booked.
-          </span>
-        </p>
       </form>
-    </Section>
+
+      <p className="mt-6 flex items-start gap-2 border-t border-outline-variant/50 pt-4 font-caption text-caption text-on-surface-variant">
+        <Icon name="info" size={16} className="mt-px shrink-0" />
+        <span>
+          Affects new bookings only. Every existing booking keeps the policy it was made under, so
+          nobody is caught out by a change made after they booked.
+        </span>
+      </p>
+    </div>
   );
 }

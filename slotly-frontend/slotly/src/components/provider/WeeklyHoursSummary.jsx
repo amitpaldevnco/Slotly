@@ -85,7 +85,7 @@ export default function WeeklyHoursSummary({ availability }) {
     >
       <dl className="divide-y divide-line-soft">
         {rows.map((row) => (
-          <div key={row.days} className="flex items-baseline justify-between gap-4 px-3 py-2">
+          <div key={row.days} className="flex items-baseline justify-between gap-4 px-5 py-2.5">
             <dt className="w-20 shrink-0 text-[0.8125rem] font-medium text-ink">{row.days}</dt>
             <dd className="text-right text-[0.8125rem] tabular-nums text-ink-2">
               {row.hours || <span className="text-ink-3">Closed</span>}
@@ -95,7 +95,7 @@ export default function WeeklyHoursSummary({ availability }) {
       </dl>
 
       {upcomingClosures.length > 0 && (
-        <div className="border-t border-line px-3 py-2.5">
+        <div className="border-t border-line px-5 py-3.5">
           <p className="flex items-center gap-1.5 text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-3">
             <Icon name="ban" size={12} />
             Closed on

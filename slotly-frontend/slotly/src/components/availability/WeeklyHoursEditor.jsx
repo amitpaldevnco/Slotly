@@ -8,17 +8,22 @@ import { parseApiError } from "../../api/client";
 import * as availabilityApi from "../../api/availability";
 import { useToast } from "../../context/ToastContext";
 import Icon from "../ui/Icon";
-import { Section } from "../ui/Page";
+import { Toggle } from "../ui/Field";
 import { timeToMinutes } from "../../lib/time";
-import {
-  inputClasses,
-  primaryButton,
-  secondaryButton,
-  ghostButton,
-  buttonSm,
-  iconButton,
-  zoneName,
-} from "../../lib/ui";
+import { primaryButton, secondaryButton, buttonSm } from "../../lib/ui";
+
+/**
+ * A time field in a day row.
+ *
+ * Transparent rather than filled, because the reference draws these against the
+ * card rather than as raised controls. `text-base` on a phone is the iOS
+ * auto-zoom threshold — below it, tapping a time field zooms the page in and
+ * does not zoom back out.
+ */
+const timeInputClasses =
+  "min-w-0 flex-1 rounded-md border border-outline-variant bg-transparent px-3 py-2 " +
+  "font-small text-base outline-none transition-colors focus:border-primary " +
+  "focus:ring-1 focus:ring-primary aria-[invalid=true]:border-error sm:text-small";
 
 /**
  * Warns that a service's settings cannot produce a single bookable time.
@@ -41,7 +46,7 @@ function NoSlotsWarning({ report }) {
   const { duration, bufferBefore, bufferAfter } = report.config;
 
   return (
-    <div className="border-b border-warn-line bg-warn-soft px-3.5 py-3 text-warn-ink">
+    <div className="border-b border-warn-line bg-warn-soft px-6 py-4 text-warn-ink">
       <div className="flex items-start gap-2.5">
         <Icon name="alert" size={16} className="mt-0.5 shrink-0" />
         <div className="min-w-0 flex-1">
@@ -268,7 +273,11 @@ function useSlotFeasibility(windowsByDay, serviceId, localErrors) {
   return state;
 }
 
-export default function WeeklyHoursEditor({ rules, timezone, serviceId, scopeLabel, onSaved }) {
+/**
+ * The zone every time on this card is written in is stated once, by the
+ * Timezone card at the top of the page, rather than repeated per editor.
+ */
+export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSaved }) {
   const toast = useToast();
 
   const [windowsByDay, setWindowsByDay] = useState(() => groupByWeekday(rules));
@@ -428,28 +437,27 @@ export default function WeeklyHoursEditor({ rules, timezone, serviceId, scopeLab
   const openDays = WEEKDAYS.filter((day) => (windowsByDay[day.value]?.length || 0) > 0).length;
 
   return (
-    <Section
-      headingId="weekly-hours-heading"
-      title={serviceId ? `Weekly hours — ${scopeLabel}` : "Weekly hours"}
-      description={`Repeated every week, in ${zoneName(timezone)}`}
-      actions={
+    <div className="overflow-hidden rounded-lg border border-outline-variant bg-surface-container-lowest">
+      <div className="flex items-center justify-between gap-4 border-b border-outline-variant bg-surface/50 p-6">
+        <h2 className="font-h3 text-[18px] font-semibold text-primary">
+          {serviceId ? `Weekly Hours — ${scopeLabel}` : "Weekly Hours"}
+        </h2>
         <button
           type="button"
           onClick={applyMondayToWeekdays}
-          className={`${ghostButton} ${buttonSm}`}
+          className="flex cursor-pointer items-center gap-1 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
         >
-          <Icon name="refresh" size={13} />
-          Copy Mon → Fri
+          <Icon name="content_copy" size={16} />
+          Copy to all
         </button>
-      }
-      flush
-    >
+      </div>
+
       <form onSubmit={handleSubmit}>
         {feasibility.services.map((service) => (
           <NoSlotsWarning key={service.serviceId} report={service} />
         ))}
 
-        <ul className="divide-y divide-line-soft">
+        <ul className="divide-y divide-outline-variant/50">
           {WEEKDAYS.map((day) => {
             const windows = windowsByDay[day.value] || [];
             const open = windows.length > 0;
@@ -457,114 +465,120 @@ export default function WeeklyHoursEditor({ rules, timezone, serviceId, scopeLab
             return (
               <li
                 key={day.value}
-                className={`flex flex-col gap-2 px-3 py-2.5 sm:flex-row sm:items-start sm:gap-3 ${
-                  open ? "" : "bg-subtle/60"
+                className={`group grid grid-cols-[100px_1fr] gap-4 p-6 md:grid-cols-[120px_1fr] ${
+                  open
+                    ? "items-start"
+                    : "items-center opacity-60 transition-opacity hover:opacity-100"
                 }`}
               >
-                
-                <label className="flex min-h-9 shrink-0 cursor-pointer items-center gap-2 sm:w-32">
-                  <input
-                    type="checkbox"
+                <div className={`flex items-center gap-3 ${open ? "pt-2" : ""}`}>
+                  <Toggle
                     checked={open}
-                    onChange={(e) => toggleDay(day.value, e.target.checked)}
-                    className="h-4 w-4"
+                    onChange={(next) => toggleDay(day.value, next)}
+                    label={`${day.label} available`}
                   />
                   <span
-                    className={`text-[0.8125rem] font-medium ${open ? "text-ink" : "text-ink-3"}`}
+                    className={`font-small text-small uppercase ${
+                      open ? "font-semibold text-primary" : "text-on-surface-variant"
+                    }`}
                   >
-                    {day.label}
+                    {day.short}
                   </span>
-                </label>
+                </div>
 
-                <div className="min-w-0 flex-1">
-                  {!open ? (
-                    <p className="flex min-h-9 items-center text-[0.8125rem] text-ink-3">Closed</p>
-                  ) : (
-                    <div className="space-y-1.5">
-                      {windows.map((window, index) => {
-                        const error = errors[`${day.value}-${index}`];
+                {!open ? (
+                  <p className="py-2 font-small text-small italic text-on-surface-variant">
+                    Unavailable
+                  </p>
+                ) : (
+                  <div className="w-full space-y-3">
+                    {windows.map((window, index) => {
+                      const error = errors[`${day.value}-${index}`];
 
-                        return (
-                          <div key={index}>
-                            <div className="flex items-center gap-1.5">
-                              <input
-                                type="time"
-                                value={window.startTime}
-                                onChange={(e) =>
-                                  updateWindow(day.value, index, "startTime", e.target.value)
-                                }
-                                aria-label={`${day.label} window ${index + 1} start time`}
-                                aria-invalid={Boolean(error)}
-                                className={`${inputClasses} w-auto min-w-0 flex-1 sm:max-w-[8rem] sm:flex-none`}
-                              />
-                              <span aria-hidden="true" className="text-xs text-ink-3">
-                                to
-                              </span>
-                              <input
-                                type="time"
-                                value={window.endTime}
-                                onChange={(e) =>
-                                  updateWindow(day.value, index, "endTime", e.target.value)
-                                }
-                                aria-label={`${day.label} window ${index + 1} end time`}
-                                aria-invalid={Boolean(error)}
-                                className={`${inputClasses} w-auto min-w-0 flex-1 sm:max-w-[8rem] sm:flex-none`}
-                              />
+                      return (
+                        <div key={index}>
+                          <div className="flex w-full items-center gap-3">
+                            <input
+                              type="time"
+                              value={window.startTime}
+                              onChange={(e) =>
+                                updateWindow(day.value, index, "startTime", e.target.value)
+                              }
+                              aria-label={`${day.label} window ${index + 1} start time`}
+                              aria-invalid={Boolean(error)}
+                              className={timeInputClasses}
+                            />
+                            <span aria-hidden="true" className="text-on-surface-variant">
+                              -
+                            </span>
+                            <input
+                              type="time"
+                              value={window.endTime}
+                              onChange={(e) =>
+                                updateWindow(day.value, index, "endTime", e.target.value)
+                              }
+                              aria-label={`${day.label} window ${index + 1} end time`}
+                              aria-invalid={Boolean(error)}
+                              className={timeInputClasses}
+                            />
 
-                              
-                              {windows.length > 1 && (
-                                <button
-                                  type="button"
-                                  onClick={() => removeWindow(day.value, index)}
-                                  aria-label={`Remove ${day.label} window ${index + 1}`}
-                                  className={`${iconButton} hover:bg-danger-soft hover:text-danger-ink`}
-                                >
-                                  <Icon name="close" size={15} />
-                                </button>
-                              )}
-
-                              {index === windows.length - 1 && (
-                                <button
-                                  type="button"
-                                  onClick={() => addWindow(day.value)}
-                                  aria-label={`Add another window on ${day.label}`}
-                                  title="Add another window"
-                                  className={iconButton}
-                                >
-                                  <Icon name="plus" size={15} />
-                                </button>
-                              )}
-                            </div>
-
-                            {error && (
-                              <p className="mt-1 flex items-start gap-1 text-xs text-danger">
-                                <Icon name="alert" size={13} className="mt-px" />
-                                <span>{error}</span>
-                              </p>
+                            {/* Revealed on hover at desktop widths, always present
+                                on touch — where there is no hover, and a control
+                                that only appears on one is unreachable. */}
+                            {windows.length > 1 && (
+                              <button
+                                type="button"
+                                onClick={() => removeWindow(day.value, index)}
+                                aria-label={`Remove ${day.label} window ${index + 1}`}
+                                className="cursor-pointer rounded-md p-2 text-on-surface-variant transition-colors hover:bg-error-container/50 hover:text-error focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                              >
+                                <Icon name="delete" size={20} />
+                              </button>
                             )}
                           </div>
-                        );
-                      })}
-                    </div>
-                  )}
-                </div>
+
+                          {error && (
+                            <p className="mt-1.5 flex items-start gap-1.5 font-caption text-caption text-error">
+                              <Icon name="warning" size={14} className="mt-px" />
+                              <span>{error}</span>
+                            </p>
+                          )}
+                        </div>
+                      );
+                    })}
+
+                    <button
+                      type="button"
+                      onClick={() => addWindow(day.value)}
+                      className="flex cursor-pointer items-center gap-1 py-1 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
+                    >
+                      <Icon name="add" size={16} />
+                      Add range
+                    </button>
+                  </div>
+                )}
               </li>
             );
           })}
         </ul>
 
-        
+        {/* The reference floats this bar over the whole page. Here it sticks to
+            the foot of the card it belongs to, because the page also carries an
+            exceptions editor with a save of its own, and two floating bars
+            claiming the same strip is one too many. */}
         <div
-          className={`sticky bottom-0 flex flex-wrap items-center justify-between gap-3 border-t px-3 py-2.5 ${
-            dirty ? "border-brand-line bg-brand-soft" : "border-line bg-subtle"
+          className={`sticky bottom-0 flex flex-wrap items-center justify-between gap-3 border-t p-4 backdrop-blur-md ${
+            dirty ? "border-primary/20 bg-primary/5" : "border-outline-variant bg-surface/90"
           }`}
         >
-          <p className="text-xs text-ink-2">
+          <p className="font-small text-small text-on-surface-variant">
             {totalWindows === 0 ? (
-              <span className="flex items-center gap-1.5 text-warn-ink">
-                <Icon name="alert" size={13} />
+              <span className="flex items-center gap-1.5 text-error">
+                <Icon name="warning" size={16} />
                 No hours set — clients cannot book anything yet.
               </span>
+            ) : dirty ? (
+              "Unsaved changes"
             ) : (
               `${openDays} day${openDays === 1 ? "" : "s"} open · ${totalWindows} window${
                 totalWindows === 1 ? "" : "s"
@@ -572,18 +586,15 @@ export default function WeeklyHoursEditor({ rules, timezone, serviceId, scopeLab
             )}
           </p>
 
-          <div className="flex items-center gap-2">
-            {dirty && <span className="text-xs font-medium text-brand-ink">Unsaved changes</span>}
-            <button
-              type="submit"
-              disabled={saving || !dirty}
-              className={dirty ? `${primaryButton} ${buttonSm}` : `${secondaryButton} ${buttonSm}`}
-            >
-              {saving ? "Saving…" : "Save hours"}
-            </button>
-          </div>
+          <button
+            type="submit"
+            disabled={saving || !dirty}
+            className={dirty ? `${primaryButton} ${buttonSm}` : `${secondaryButton} ${buttonSm}`}
+          >
+            {saving ? "Saving…" : "Save hours"}
+          </button>
         </div>
       </form>
-    </Section>
+    </div>
   );
 }
