@@ -15,10 +15,13 @@
 import express from "express";
 import { updateReview, replyToReview } from "../controller/reviewController.js";
 import { verifyToken } from "../middleware/authMiddleware.js";
+import { registerNumericParams } from "../middleware/validateParams.js";
 
 const router = express.Router();
 
 router.use(verifyToken);
+
+registerNumericParams(router, "id");
 
 router.patch("/:id", updateReview);
 router.post("/:id/reply", replyToReview);

@@ -20,6 +20,7 @@ import { successResponse, errorResponse, ERROR_CODES } from "../responseControll
 import { generateSlots, MAX_RANGE_DAYS } from "../services/slotEngine.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
 import { TIME_FORMAT } from "../services/bookingRules.js";
+import { parseId } from "../middleware/validateParams.js";
 
 /**
  * GET /api/providers/:providerId/slots — public.
@@ -41,6 +42,17 @@ export const getAvailableSlots = async (req, res) => {
 
     if (!serviceId) {
       return errorResponse(res, "serviceId is required", 400, ERROR_CODES.VALIDATION_FAILED);
+    }
+
+    // `serviceId` arrives from the query string, so it is arbitrary text until
+    // proven otherwise. Passing "abc" straight into the integer comparison below
+    // raises SQLSTATE 22P02 and would be reported as a 500 — the caller's
+    // mistake blamed on the server. The path parameter is already guarded by
+    // router.param; this is the query-string half of the same rule.
+    if (parseId(serviceId) === null) {
+      return errorResponse(res, "serviceId must be a positive whole number", 400, ERROR_CODES.VALIDATION_FAILED, [
+        { field: "serviceId", message: "serviceId must be a positive whole number" },
+      ]);
     }
 
     const service = await query(

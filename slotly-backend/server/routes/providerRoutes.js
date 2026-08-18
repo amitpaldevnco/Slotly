@@ -14,8 +14,11 @@ import { getProviderAvailability } from "../controller/availabilityController.js
 import { getAvailableSlots } from "../controller/slotController.js";
 import { listProviderReviews } from "../controller/reviewController.js";
 import { attachUserIfPresent } from "../middleware/authMiddleware.js";
+import { registerNumericParams } from "../middleware/validateParams.js";
 
 const router = express.Router();
+
+registerNumericParams(router, "id");
 
 router.get("/", listProviders);
 router.get("/:id", attachUserIfPresent, getProviderProfile);
