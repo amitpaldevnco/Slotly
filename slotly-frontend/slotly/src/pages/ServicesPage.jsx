@@ -12,18 +12,15 @@ import ServiceCard from "../components/provider/ServiceCard";
 import ServiceForm from "../components/provider/ServiceForm";
 import ServiceDetailsModal from "../components/provider/ServiceDetailsModal";
 import BookingCard from "../components/bookings/BookingCard";
-import Page, { PageHeader, Toolbar } from "../components/ui/Page";
 import Icon from "../components/ui/Icon";
 import Modal from "../components/ui/Modal";
-import { SegmentedControl } from "../components/ui/Tabs";
 import EmptyState, { ErrorState, SkeletonRows } from "../components/ui/Feedback";
 import Pagination, { usePagination } from "../components/ui/Pagination";
 import {
+  container,
   primaryButton,
   secondaryButton,
   dangerButton,
-  buttonSm,
-  cardClasses,
   formatPrice,
   zoneName,
 } from "../lib/ui";
@@ -50,6 +47,9 @@ export default function ServicesPage() {
 
   const [detailsService, setDetailsService] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
+  // The id currently being reactivated, so only that card shows a busy state
+  // rather than every card on the page.
+  const [reactivatingId, setReactivatingId] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
   const [bookingsService, setBookingsService] = useState(null);
@@ -113,6 +113,42 @@ export default function ServicesPage() {
     setEditorOpen(true);
   };
 
+  /**
+   * Un-retires a service, putting the row the server returned back in the list.
+   *
+   * The response is used rather than a local `isActive: true` patch, because the
+   * server also refreshes `updatedAt` and could adjust anything else it decides
+   * belongs to an active service — reading back what was actually stored keeps
+   * the card from disagreeing with the database.
+   */
+  const handleReactivate = async (service) => {
+    setReactivatingId(service.id);
+    try {
+      const updated = await servicesApi.reactivate(service.id);
+
+      setServices((current) =>
+        current.map((existing) => (existing.id === updated.id ? { ...existing, ...updated } : existing))
+      );
+      toast.success(`${updated.name} is bookable again.`);
+    } catch (err) {
+      const { message, code } = parseApiError(err, "Could not reactivate that service.");
+      // Someone double-clicked, or had the page open while it was reactivated in
+      // another tab. Not an error worth alarming them about — correct the card.
+      if (code === "ALREADY_ACTIVE") {
+        setServices((current) =>
+          current.map((existing) =>
+            existing.id === service.id ? { ...existing, isActive: true } : existing
+          )
+        );
+        toast.info(`${service.name} is already active.`);
+      } else {
+        toast.error(message);
+      }
+    } finally {
+      setReactivatingId(null);
+    }
+  };
+
   const handleDelete = async () => {
     if (!pendingDelete) return;
 
@@ -126,7 +162,7 @@ export default function ServicesPage() {
           : // Retired, not deleted: keep it in the list marked inactive, which is
             // what the owner needs to see.
             current.map((service) =>
-              service.id === pendingDelete.id ? { ...service, is_active: false } : service
+              service.id === pendingDelete.id ? { ...service, isActive: false } : service
             )
       );
 
@@ -141,58 +177,72 @@ export default function ServicesPage() {
 
   const counts = useMemo(
     () => ({
-      active: services.filter((s) => s.is_active !== false).length,
-      retired: services.filter((s) => s.is_active === false).length,
+      active: services.filter((s) => s.isActive !== false).length,
+      retired: services.filter((s) => s.isActive === false).length,
       all: services.length,
     }),
     [services]
   );
 
   const visible = useMemo(() => {
-    if (filter === "active") return services.filter((s) => s.is_active !== false);
-    if (filter === "retired") return services.filter((s) => s.is_active === false);
+    if (filter === "active") return services.filter((s) => s.isActive !== false);
+    if (filter === "retired") return services.filter((s) => s.isActive === false);
     return services;
   }, [services, filter]);
 
   const bookingsPagination = usePagination(serviceBookings, BOOKINGS_PAGE_SIZE);
 
   return (
-    <Page>
-      <PageHeader
-        title="Services"
-        description="What clients can book, how long each one takes and what it costs."
-        actions={
-          <>
-            <Link to={`/providers/${user?.id}`} className={`${secondaryButton} hidden sm:inline-flex`}>
-              <Icon name="external" size={15} />
-              View public page
-            </Link>
-            <button type="button" onClick={() => openEditor(null)} className={primaryButton}>
-              <Icon name="plus" size={15} />
-              New service
-            </button>
-          </>
-        }
-      />
-
-      {!loading && !error && services.length > 0 && counts.retired > 0 && (
-        <Toolbar className="mb-3">
-          <SegmentedControl
-            label="Which services to show"
-            panelId="services-grid"
-            value={filter}
-            onChange={setFilter}
-            options={FILTERS.map((option) => ({ ...option, count: counts[option.id] }))}
-          />
-          <p className="ml-auto text-xs text-ink-3">
-            Retired services keep their booking history and cannot be booked again.
+    <div className={`${container} py-8 md:py-12`}>
+      {/* Page header — `services_management` */}
+      <div className="mb-8 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
+        <div>
+          <h1 className="mb-2 font-h1-mobile text-h1-mobile text-primary md:font-h1 md:text-h1">
+            Services
+          </h1>
+          <p className="font-body text-body text-on-surface-variant">
+            Manage the services your clients can book.
           </p>
-        </Toolbar>
+        </div>
+
+        <button
+          type="button"
+          onClick={() => openEditor(null)}
+          className="flex h-12 cursor-pointer items-center justify-center gap-2 whitespace-nowrap rounded-md bg-primary px-6 font-small text-small text-on-primary shadow-raise transition-colors hover:bg-primary/90"
+        >
+          <Icon name="add" size={18} />
+          Add Service
+        </button>
+      </div>
+
+      {/* The active/retired switch. Only once there is something retired to
+          switch to — a tab strip of one is furniture. */}
+      {!loading && !error && services.length > 0 && counts.retired > 0 && (
+        <div className="no-scrollbar mb-6 flex overflow-x-auto border-b border-outline-variant">
+          {FILTERS.map((option) => {
+            const active = option.id === filter;
+            return (
+              <button
+                key={option.id}
+                type="button"
+                onClick={() => setFilter(option.id)}
+                aria-current={active ? "page" : undefined}
+                className={`cursor-pointer whitespace-nowrap border-b-2 px-6 py-3 font-small text-small transition-colors ${
+                  active
+                    ? "border-primary font-semibold text-primary"
+                    : "border-transparent text-on-surface-variant hover:text-primary"
+                }`}
+              >
+                {option.label} ({counts[option.id]})
+              </button>
+            );
+          })}
+        </div>
       )}
 
       <div id="services-grid">
         {loading ? (
-          <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 3 }, (_, i) => (
               <SkeletonRows key={i} count={1} variant="card" />
             ))}
@@ -201,7 +251,7 @@ export default function ServicesPage() {
           <ErrorState message={error} onRetry={load} />
         ) : visible.length === 0 ? (
           <EmptyState
-            icon="tag"
+            icon="category"
             title={
               services.length === 0
                 ? "You have not added any services yet"
@@ -217,35 +267,44 @@ export default function ServicesPage() {
               : { actionLabel: "Show all", onAction: () => setFilter("all") })}
           />
         ) : (
-          <ul className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
+          <ul className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
             {visible.map((service) => (
-              <li key={service.id}>
-                <ServiceCard
-                  service={service}
-                  isOwner
-                  providerId={user?.id}
-                  canBook={false}
-                  onEdit={openEditor}
-                  onDelete={setPendingDelete}
-                  onViewBookings={setBookingsService}
-                  onViewDetails={setDetailsService}
-                />
+              <li key={service.id} className="flex">
+                <div className="flex w-full">
+                  <ServiceCard
+                    service={service}
+                    isOwner
+                    providerId={user?.id}
+                    canBook={false}
+                    onEdit={openEditor}
+                    onReactivate={handleReactivate}
+                    reactivating={reactivatingId === service.id}
+                    onDelete={setPendingDelete}
+                    onViewBookings={setBookingsService}
+                    onViewDetails={setDetailsService}
+                  />
+                </div>
               </li>
             ))}
           </ul>
         )}
       </div>
 
+      {/* Where a service's hours come from. Worth stating on this screen,
+          because "why can nobody book this?" is answered on another one. */}
       {!loading && services.length > 0 && (
-        <div className={`${cardClasses} mt-4 flex flex-wrap items-center justify-between gap-3 px-4 py-3`}>
-          <p className="flex items-start gap-2 text-[0.8125rem] text-ink-2">
-            <Icon name="clock" size={15} className="mt-0.5 text-ink-3" />
+        <div className="mt-6 flex flex-wrap items-center justify-between gap-4 rounded-lg border border-outline-variant bg-surface px-6 py-4">
+          <p className="flex items-start gap-3 font-small text-small text-on-surface-variant">
+            <Icon name="schedule" size={20} className="shrink-0 text-on-surface-variant" />
             <span>
-              Slots come from your weekly hours in {zoneName(user?.timezone)}. A service can also have
-              hours of its own.
+              Slots come from your weekly hours in {zoneName(user?.timezone)}. A service can also
+              have hours of its own.
             </span>
           </p>
-          <Link to="/availability" className={`${secondaryButton} ${buttonSm}`}>
+          <Link
+            to="/availability"
+            className="rounded-md border border-outline-variant px-4 py-2 font-small text-small text-primary transition-colors hover:bg-surface-container-low"
+          >
             Manage availability
           </Link>
         </div>
@@ -260,7 +319,7 @@ export default function ServicesPage() {
             ? "Changes apply to new bookings; existing ones keep what they were booked at."
             : "Clients can book this as soon as it is saved."
         }
-        size="lg"
+        size="xl"
         footer={
           <>
             <button
@@ -328,7 +387,7 @@ export default function ServicesPage() {
         }
       >
         <p className="text-sm text-ink-2">
-          <span className="font-medium text-ink">{pendingDelete?.service_name}</span> will stop being
+          <span className="font-medium text-ink">{pendingDelete?.name}</span> will stop being
           offered to new clients.
         </p>
         
@@ -342,10 +401,10 @@ export default function ServicesPage() {
       <Modal
         open={Boolean(bookingsService)}
         onClose={() => setBookingsService(null)}
-        title={bookingsService ? bookingsService.service_name : "Bookings"}
+        title={bookingsService ? bookingsService.name : "Bookings"}
         description={
           bookingsService
-            ? `Every booking for this service · ${formatPrice(bookingsService.total_earnings)} earned`
+            ? `Every booking for this service · ${formatPrice(bookingsService.stats?.totalEarnings)} earned`
             : undefined
         }
         size="lg"
@@ -383,6 +442,6 @@ export default function ServicesPage() {
           </>
         )}
       </Modal>
-    </Page>
+    </div>
   );
 }

@@ -25,15 +25,15 @@ export default function ServiceDetailsModal({
   isOwner,
   onEdit,
 }) {
-  const cover = imageUrl(service?.cover_image);
-  const retired = service?.is_active === false;
-  const hasBuffers = Number(service?.buffer_before) > 0 || Number(service?.buffer_after) > 0;
+  const cover = imageUrl(service?.coverImage);
+  const retired = service?.isActive === false;
+  const hasBuffers = Number(service?.bufferBefore) > 0 || Number(service?.bufferAfter) > 0;
 
   return (
     <Modal
       open={Boolean(service)}
       onClose={onClose}
-      title={service?.service_name || "Service"}
+      title={service?.name || "Service"}
       description={
         service ? `${formatPrice(service.price)} · ${formatDuration(service.duration)}` : undefined
       }
@@ -106,9 +106,9 @@ export default function ServiceDetailsModal({
             <div className={insetClasses}>
               <p className={eyebrow}>Time held around the appointment</p>
               <p className="mt-1 text-[0.8125rem] text-ink">
-                {Number(service.buffer_before) > 0 && `${service.buffer_before} min before`}
-                {Number(service.buffer_before) > 0 && Number(service.buffer_after) > 0 && " · "}
-                {Number(service.buffer_after) > 0 && `${service.buffer_after} min after`}
+                {Number(service.bufferBefore) > 0 && `${service.bufferBefore} min before`}
+                {Number(service.bufferBefore) > 0 && Number(service.bufferAfter) > 0 && " · "}
+                {Number(service.bufferAfter) > 0 && `${service.bufferAfter} min after`}
               </p>
               
               <p className="mt-1.5 text-xs leading-relaxed text-ink-3">
