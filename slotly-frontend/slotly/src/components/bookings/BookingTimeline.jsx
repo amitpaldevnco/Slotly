@@ -58,7 +58,7 @@ export default function BookingTimeline({ timeline, viewerZone }) {
       }
       flush
     >
-      <ol className="px-3 py-3">
+      <ol className="px-5 py-4">
         {(open ? timeline : [latest]).map((event, index, shown) => (
           <Entry
             key={event.id}

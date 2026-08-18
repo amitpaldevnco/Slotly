@@ -1,4 +1,11 @@
-
+/**
+ * One appointment, as a card. The shared row in every list of bookings —
+ * dashboards, history, the client's upcoming list.
+ *
+ * Always renders the time with its zone label attached. A time without its zone
+ * is precisely the ambiguity this app exists to remove, and a card is the most
+ * likely place to drop it, because there is never quite enough room.
+ */
 import { Link } from "react-router-dom";
 import StatusBadge from "../ui/StatusBadge";
 import Avatar from "../ui/Avatar";

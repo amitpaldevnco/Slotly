@@ -23,7 +23,7 @@
  * what someone does next — the time — is at the top and nothing competes with it.
  */
 import { useState } from "react";
-import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { DateTime } from "luxon";
 import { parseApiError } from "../api/client";
 import * as bookingsApi from "../api/bookings";
@@ -32,6 +32,7 @@ import { useToast } from "../context/ToastContext";
 import StatusBadge from "../components/ui/StatusBadge";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
+import BackLink from "../components/ui/BackLink";
 import Page, { PageHeader, Section, SplitLayout } from "../components/ui/Page";
 import Modal from "../components/ui/Modal";
 import Field, { Textarea, CharCount } from "../components/ui/Field";
@@ -61,7 +62,6 @@ const MAX_REASON = 500;
 export default function BookingDetailPage() {
   const { bookingId } = useParams();
   const [searchParams] = useSearchParams();
-  const navigate = useNavigate();
   const toast = useToast();
 
   const [cancelOpen, setCancelOpen] = useState(false);
@@ -165,17 +165,13 @@ export default function BookingDetailPage() {
 
   return (
     <Page>
+      {/* The back control was a hardcoded "Back to dashboard", which was wrong
+          for most arrivals: the appointments list and the calendar both link
+          here, and both sent you somewhere you had not come from. BackLink
+          returns to wherever that was, and only falls back to the list for a
+          booking opened from a direct link. */}
       <PageHeader
-        back={
-          <button
-            type="button"
-            onClick={() => navigate("/dashboard")}
-            className="inline-flex items-center gap-1.5 text-sm font-medium text-ink-2 transition hover:text-ink"
-          >
-            <Icon name="arrowLeft" size={15} />
-            Back to dashboard
-          </button>
-        }
+        back={<BackLink fallbackTo="/appointments" fallbackLabel="All appointments" />}
         title={booking.service.name}
         meta={<StatusBadge status={booking.status} dot />}
         description={
@@ -230,7 +226,7 @@ export default function BookingDetailPage() {
 
             {(booking.clientNote || booking.cancellationReason) && (
               <Section title="Notes" flush>
-                <div className="space-y-2.5 px-3 py-3">
+                <div className="space-y-3 px-5 py-4">
                   {booking.clientNote && (
                     <div>
                       <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-3">
@@ -571,7 +567,7 @@ function DetailRow({ label, value }) {
   if (value == null) return null;
 
   return (
-    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-3 py-2">
+    <div className="flex flex-wrap items-baseline justify-between gap-x-3 gap-y-0.5 px-5 py-2.5">
       <dt className="shrink-0 text-xs text-ink-3">{label}</dt>
       <dd className="min-w-0 break-words text-right text-[0.8125rem] text-ink">{value}</dd>
     </div>
