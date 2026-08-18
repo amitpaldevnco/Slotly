@@ -11,6 +11,37 @@ import {
 } from "../responseController/responseHandler.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
 import { diagnoseSlotFeasibility } from "../services/slotEngine.js";
+import { parseId } from "../middleware/validateParams.js";
+
+/**
+ * Reads the optional `serviceId` from a request body.
+ *
+ * Absent means "scope this to my default hours", which is a legitimate and
+ * common request — so absence is not an error. A value that is present but not
+ * an id *is* an error, and has to be reported as one.
+ *
+ * The previous form, `req.body.serviceId ? Number(req.body.serviceId) : null`,
+ * silently conflated the two: `Number("abc")` is `NaN`, `NaN` is falsy, and the
+ * request went on to rewrite the provider's *default* weekly hours while the
+ * caller believed it was editing one service's override. Failing loudly is the
+ * only safe reading of an id nobody can parse.
+ *
+ * @param {object} body The request body.
+ * @returns {{ok: true, serviceId: number|null} | {ok: false, error: {field: string, message: string}}}
+ */
+function readOptionalServiceId(body) {
+  const raw = body?.serviceId;
+  if (raw === undefined || raw === null || raw === "") return { ok: true, serviceId: null };
+
+  const serviceId = parseId(raw);
+  if (serviceId === null) {
+    return {
+      ok: false,
+      error: { field: "serviceId", message: "serviceId must be a positive whole number" },
+    };
+  }
+  return { ok: true, serviceId };
+}
 
 /**
  * Confirms a service belongs to this provider before letting them scope a
@@ -111,7 +142,12 @@ function toIsoDate(value) {
 export const getProviderAvailability = async (req, res) => {
   try {
     const { id } = req.params;
-    const serviceId = req.query.serviceId ? Number(req.query.serviceId) : null;
+
+    // Same rule as the write paths: absent is fine, unparseable is a 400 rather
+    // than a silent fall back to the provider's default hours.
+    const scoped = readOptionalServiceId(req.query);
+    if (!scoped.ok) return validationErrorResponse(res, "Please fix the errors below", [scoped.error]);
+    const serviceId = scoped.serviceId;
 
     const provider = await query(
       "SELECT id, timezone, cancellation_cutoff_hours FROM users WHERE id = $1 AND role = 'provider'",
@@ -230,7 +266,9 @@ function parseWeeklyRules(rules) {
 export const replaceAvailabilityRules = async (req, res) => {
   try {
     const { rules } = req.body;
-    const serviceId = req.body.serviceId ? Number(req.body.serviceId) : null;
+    const scoped = readOptionalServiceId(req.body);
+    if (!scoped.ok) return validationErrorResponse(res, "Please fix the errors below", [scoped.error]);
+    const serviceId = scoped.serviceId;
 
     if (serviceId && !(await ownsService(serviceId, req.user.userId))) {
       return validationErrorResponse(res, "Please fix the errors below", [
@@ -359,7 +397,9 @@ export const replaceAvailabilityRules = async (req, res) => {
 export const validateAvailabilityConfiguration = async (req, res) => {
   try {
     const { rules } = req.body;
-    const serviceId = req.body.serviceId ? Number(req.body.serviceId) : null;
+    const scoped = readOptionalServiceId(req.body);
+    if (!scoped.ok) return validationErrorResponse(res, "Please fix the errors below", [scoped.error]);
+    const serviceId = scoped.serviceId;
 
     if (!Array.isArray(rules)) {
       return validationErrorResponse(res, "Please fix the errors below", [
@@ -445,6 +485,115 @@ export const validateAvailabilityConfiguration = async (req, res) => {
  * Only active services are considered. A retired service producing no slots is
  * not a problem to solve.
  */
+/**
+ * POST /api/availability/preview — provider only.
+ *
+ * Answers the question the service form cannot: *given the hours I already have
+ * saved, how many appointments would these settings actually offer?*
+ *
+ * The mirror image of `/availability/validate`. That endpoint takes a draft
+ * **pattern** and judges it against saved **services**; this takes a draft
+ * **service** and judges it against saved **hours**. A provider setting a
+ * duration and buffers has no way to know what those numbers do to their day
+ * until they save and go and look at the booking page, and the interaction is
+ * genuinely unobvious — a 09:00–17:00 day with a 90-minute service, 15-minute
+ * buffers and a 30-minute grid does not yield the eight slots the arithmetic
+ * suggests.
+ *
+ * Both endpoints route through `diagnoseSlotFeasibility()`, which walks the same
+ * `candidateStartsInWindow()` the real slot list does, so the number previewed
+ * here is the number that will be offered — not a second estimate that can
+ * disagree with the first.
+ *
+ * ## What it deliberately ignores
+ *
+ * Bookings, one-off exceptions and the minimum-notice rule. None of those are
+ * things the provider can change from the form in front of them, and a day that
+ * is empty only because it is fully booked is not a misconfiguration. The
+ * question being answered is about the recurring weekly shape.
+ *
+ * Body: `{ duration, bufferBefore?, bufferAfter?, slotInterval?, serviceId? }`.
+ * `serviceId` selects which hours apply — a service with its own schedule is
+ * judged against that, everything else against the provider's default. Omit it
+ * when previewing a service that does not exist yet.
+ *
+ * @returns 200 with the weekly shape: total slots, a per-weekday breakdown, and
+ *   verified remedies when a day cannot yield anything. 400 for a duration that
+ *   is not a positive number of minutes.
+ */
+export const previewServiceSlots = async (req, res) => {
+  try {
+    const scoped = readOptionalServiceId(req.body);
+    if (!scoped.ok) return validationErrorResponse(res, "Please fix the errors below", [scoped.error]);
+    const serviceId = scoped.serviceId;
+
+    if (serviceId && !(await ownsService(serviceId, req.user.userId))) {
+      return errorResponse(res, "Service not found", 404, ERROR_CODES.NOT_FOUND);
+    }
+
+    // Read with the same names the service endpoints accept, both spellings, so
+    // the form can send exactly what it would send to save.
+    const pick = (camel, snake) =>
+      req.body[camel] !== undefined ? req.body[camel] : req.body[snake];
+
+    const duration = Number.parseInt(pick("duration", "duration"), 10);
+    if (!Number.isInteger(duration) || duration <= 0 || duration > 1440) {
+      return validationErrorResponse(res, "Please fix the errors below", [
+        { field: "duration", message: "Duration must be a positive number of minutes" },
+      ]);
+    }
+
+    const nonNegative = (value, fallback) => {
+      const parsed = Number.parseInt(value, 10);
+      return Number.isInteger(parsed) && parsed >= 0 ? parsed : fallback;
+    };
+
+    const draft = {
+      duration,
+      buffer_before: nonNegative(pick("bufferBefore", "buffer_before"), 0),
+      buffer_after: nonNegative(pick("bufferAfter", "buffer_after"), 0),
+      slot_interval: nonNegative(pick("slotInterval", "slot_interval"), 30) || 30,
+    };
+
+    // The hours this service would actually be booked against. `serviceId` is
+    // passed through so a service with its own schedule is judged against that
+    // one rather than the provider's default.
+    const { rules, scope } = await getEffectiveAvailability({
+      providerId: req.user.userId,
+      serviceId,
+    });
+
+    const engineRules = rules.map((rule) => ({
+      weekday: rule.weekday,
+      start_minute: rule.start_minute,
+      end_minute: rule.end_minute,
+    }));
+
+    const report = diagnoseSlotFeasibility({ rules: engineRules, service: draft });
+
+    return successResponse(res, "Slot preview computed", {
+      scope,
+      // False when the provider has no hours at all. The form needs to tell that
+      // apart from "your hours cannot fit this service" — the first is answered
+      // by going to the availability page, the second by changing these numbers.
+      hasRules: engineRules.length > 0,
+      config: report.config,
+      minimumWindowMinutes: report.minimumWindowMinutes,
+      bookable: report.bookable,
+      totalSlotsPerWeek: report.totalSlotsPerWeek,
+      days: report.days.map((day) => ({ ...day, weekdayName: WEEKDAY_NAMES[day.weekday] })),
+      problemDays: report.problemDays.map((day) => ({
+        ...day,
+        weekdayName: WEEKDAY_NAMES[day.weekday],
+      })),
+      remedies: report.remedies,
+    });
+  } catch (err) {
+    console.error("previewServiceSlots error:", err.message);
+    return errorResponse(res, "Could not preview slots for this service", 500);
+  }
+};
+
 export const getAvailabilityHealth = async (req, res) => {
   try {
     const providerId = req.user.userId;
@@ -508,7 +657,9 @@ export const getAvailabilityHealth = async (req, res) => {
 export const createAvailabilityException = async (req, res) => {
   try {
     const { kind, startDate, endDate, startTime, endTime, note } = req.body;
-    const serviceId = req.body.serviceId ? Number(req.body.serviceId) : null;
+    const scoped = readOptionalServiceId(req.body);
+    if (!scoped.ok) return validationErrorResponse(res, "Please fix the errors below", [scoped.error]);
+    const serviceId = scoped.serviceId;
     const errors = [];
 
     if (serviceId && !(await ownsService(serviceId, req.user.userId))) {

@@ -16,13 +16,17 @@ import {
   clearServiceAvailabilityOverride,
   updateAvailabilitySettings,
   validateAvailabilityConfiguration,
+  previewServiceSlots,
   getAvailabilityHealth,
 } from "../controller/availabilityController.js";
 import { verifyToken, requireProviderRole } from "../middleware/authMiddleware.js";
+import { registerNumericParams } from "../middleware/validateParams.js";
 
 const router = express.Router();
 
 router.use(verifyToken, requireProviderRole);
+
+registerNumericParams(router, "id", "serviceId");
 
 router.put("/rules", replaceAvailabilityRules);
 // A dry run of /rules: same validation, same slot arithmetic, no write. POST
@@ -30,6 +34,9 @@ router.put("/rules", replaceAvailabilityRules);
 // body, not something already stored.
 router.post("/validate", validateAvailabilityConfiguration);
 // The same diagnosis against what is already saved, per service, for dashboards.
+// The mirror of /validate: a draft *service* judged against saved *hours*,
+// which is what the service form needs while someone types a duration.
+router.post("/preview", previewServiceSlots);
 router.get("/health", getAvailabilityHealth);
 router.delete("/rules/service/:serviceId", clearServiceAvailabilityOverride);
 router.post("/exceptions", createAvailabilityException);
