@@ -1,3 +1,18 @@
+/**
+ * Route table and the provider stack every page sits inside.
+ *
+ * Routing is where this app's authorization story becomes visible, and the
+ * guards in `components/RouteGuards` are the whole of it on this side:
+ * `ProtectedRoute` needs a session, `RoleRoute` needs a particular role,
+ * `GuestOnlyRoute` bounces a signed-in user away from the login page, and
+ * `CompleteProfileRoute` holds a half-registered account on the profile step
+ * until it has picked a role.
+ *
+ * None of that is security. Every one of these routes calls an API that checks
+ * the same thing again on the server, against the specific row being touched —
+ * the guards here only keep a user from navigating somewhere that would render
+ * nothing but an error.
+ */
 import { BrowserRouter, Routes, Route } from "react-router-dom";
 import { AuthProvider } from "./context/AuthContext";
 import { ToastProvider } from "./context/ToastContext";
@@ -18,6 +33,10 @@ import ProviderPublicProfilePage from "./pages/ProviderPublicProfilePage";
 import BookServicePage from "./pages/BookServicePage";
 import DashboardPage from "./pages/DashboardPage";
 import BookingDetailPage from "./pages/BookingDetailPage";
+import AppointmentsPage from "./pages/AppointmentsPage";
+import CalendarPage from "./pages/CalendarPage";
+import MessagesPage from "./pages/MessagesPage";
+import SettingsPage from "./pages/SettingsPage";
 import ServicesPage from "./pages/ServicesPage";
 import AvailabilityPage from "./pages/AvailabilityPage";
 import NotFoundPage from "./pages/NotFoundPage";
@@ -52,7 +71,11 @@ export default function App() {
               {/* Any signed-in user with a completed profile. */}
               <Route element={<ProtectedRoute />}>
                 <Route path="/dashboard" element={<DashboardPage />} />
+                <Route path="/appointments" element={<AppointmentsPage />} />
                 <Route path="/profile" element={<EditProfilePage />} />
+                <Route path="/settings" element={<SettingsPage />} />
+                <Route path="/messages" element={<MessagesPage />} />
+                <Route path="/messages/:bookingId" element={<MessagesPage />} />
                 <Route
                   path="/bookings/:bookingId"
                   element={<BookingDetailPage />}
@@ -69,6 +92,7 @@ export default function App() {
 
               {/* Providers only. */}
               <Route element={<RoleRoute role="provider" />}>
+                <Route path="/calendar" element={<CalendarPage />} />
                 <Route path="/services" element={<ServicesPage />} />
                 <Route path="/availability" element={<AvailabilityPage />} />
               </Route>
