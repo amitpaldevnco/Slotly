@@ -69,7 +69,7 @@ export function StarRatingInput({ value, onChange, disabled }) {
               key={star}
               // 44px tap target around a 28px star: the star itself should not be
               // the hit area on a phone.
-              className={`flex h-11 w-11 cursor-pointer items-center justify-center rounded-lg transition hover:bg-canvas ${
+              className={`flex h-11 w-11 cursor-pointer items-center justify-center rounded-md transition hover:bg-subtle ${
                 disabled ? "cursor-not-allowed opacity-60" : ""
               }`}
             >

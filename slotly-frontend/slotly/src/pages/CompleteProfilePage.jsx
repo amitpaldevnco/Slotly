@@ -88,17 +88,17 @@ export default function CompleteProfilePage() {
     <Page narrow>
       <div className="animate-fade-in motion-reduce:animate-none">
         <p className={eyebrow}>One last step</p>
-        <h1 className="mt-1 text-xl font-semibold tracking-tight text-ink sm:text-[1.375rem]">
+        <h1 className="mt-3 font-display text-3xl font-semibold tracking-[-0.02em] text-ink">
           Complete your profile
         </h1>
-        <p className="mt-1 text-sm text-ink-2">
+        <p className="mt-2 text-base text-ink-2">
           A few details, and Slotly is set up the way you will use it.
         </p>
 
-        <form onSubmit={handleSubmit} noValidate className={`${cardClasses} mt-5 p-4 sm:p-5`}>
-          {formError && <Alert tone="error" className="mb-4">{formError}</Alert>}
+        <form onSubmit={handleSubmit} noValidate className={`${cardClasses} mt-8 p-6 sm:p-8`}>
+          {formError && <Alert tone="error" className="mb-6">{formError}</Alert>}
 
-          <div className="space-y-4">
+          <div className="space-y-6">
             <CardRadioGroup
               name="role"
               legend="How will you use Slotly?"
@@ -157,8 +157,8 @@ export default function CompleteProfilePage() {
             </Field>
 
             {isProvider && (
-              <fieldset className="space-y-4 border-t border-line pt-4">
-                <legend className={`${eyebrow} mb-1`}>About your business</legend>
+              <fieldset className="space-y-6 border-t border-line pt-6">
+                <legend className={`${eyebrow} mb-2`}>About your business</legend>
 
                 <Field id="businessName" label="Business name" error={errors.businessName}>
                   <Input
@@ -194,7 +194,7 @@ export default function CompleteProfilePage() {
           <button
             type="submit"
             disabled={loading}
-            className={`mt-5 ${primaryButton} ${buttonBlock} ${buttonLg}`}
+            className={`mt-8 ${primaryButton} ${buttonBlock} ${buttonLg}`}
           >
             {loading ? "Saving…" : "Continue to Slotly"}
           </button>

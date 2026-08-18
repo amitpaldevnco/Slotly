@@ -111,7 +111,7 @@ export default function BookingReview({ bookingId, viewerRole, viewerZone, other
 
     return (
       <Section title="Review" flush>
-        <p className="flex items-start gap-2 px-3 py-3 text-xs leading-relaxed text-ink-3">
+        <p className="flex items-start gap-2 px-5 py-4 text-xs leading-relaxed text-ink-3">
           <Icon name="info" size={14} className="mt-px" />
           <span>
             {bookingStatus === "no_show"

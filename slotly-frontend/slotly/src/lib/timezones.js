@@ -39,7 +39,7 @@ export function buildTimezonesWithCountry() {
 
 export const timezoneSelectClassNames = {
   control: () =>
-    "!min-h-11 sm:!min-h-9 !rounded-md !border !border-line !bg-surface !px-3 !py-1 !text-base sm:!text-sm !text-ink !shadow-none focus-within:!border-brand focus-within:!ring-[3px] focus-within:!ring-brand/15",
+    "!min-h-11 sm:!min-h-10 !rounded-md !border !border-line !bg-surface !px-3 !py-1 !text-base sm:!text-sm !text-ink !shadow-none focus-within:!border-brand focus-within:!ring-2 focus-within:!ring-brand/10",
   valueContainer: () => "!p-0 !gap-1",
   singleValue: () => "!text-ink !m-0",
   input: () => "!text-ink !m-0 !p-0",
@@ -51,11 +51,11 @@ export const timezoneSelectClassNames = {
     "!mt-1 !rounded-md !border !border-line !bg-surface !shadow-float !overflow-hidden !z-50",
   menuList: () => "!p-1 !max-h-60",
   option: ({ isFocused, isSelected }) =>
-    `!rounded-[0.3125rem] !px-2.5 !py-1.5 !text-sm !cursor-pointer ${
+    `!rounded-sm !px-3 !py-2 !text-sm !cursor-pointer ${
       isSelected
         ? "!bg-brand !text-white"
         : isFocused
-          ? "!bg-canvas !text-ink"
+          ? "!bg-subtle !text-ink"
           : "!bg-surface !text-ink"
     }`,
   noOptionsMessage: () => "!text-ink-3 !text-sm !px-2.5 !py-1.5",
