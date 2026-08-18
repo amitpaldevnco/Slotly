@@ -27,11 +27,12 @@ import {
 } from "../responseController/responseHandler.js";
 import {
   computeBookingSpan,
-  isWithinAvailability,
+  isOfferedSlotStart,
   hasInstantPassed,
   earliestBookableInstant,
 } from "../services/slotEngine.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
+import { parseId } from "../middleware/validateParams.js";
 import {
   evaluateClientCancellation,
   evaluateProviderTransition,
@@ -213,7 +214,14 @@ export const createBooking = async (req, res) => {
     const { serviceId, startsAt, note } = req.body;
     const errors = [];
 
-    if (!serviceId) errors.push({ field: "serviceId", message: "Service is required" });
+    // Not just "is it present": an id from a JSON body is arbitrary text, and
+    // "abc" reaching the integer comparison below raises SQLSTATE 22P02, which
+    // would surface as a 500 rather than the 400 this plainly is.
+    if (!serviceId) {
+      errors.push({ field: "serviceId", message: "Service is required" });
+    } else if (parseId(serviceId) === null) {
+      errors.push({ field: "serviceId", message: "serviceId must be a positive whole number" });
+    }
 
     const start = new Date(startsAt);
     if (!startsAt || Number.isNaN(start.getTime())) {
@@ -289,15 +297,21 @@ export const createBooking = async (req, res) => {
       );
     }
 
-    // Is this a time the provider is open for at all? This rejects hand-crafted
-    // requests for 03:00 on a Sunday. It says nothing about whether the slot is
-    // free — that is the constraint's job, below.
+    // Is this a start the provider actually offered? This rejects hand-crafted
+    // requests for 03:00 on a Sunday *and* requests for a time that fits inside
+    // the provider's hours but was never on the menu — 09:17 when the grid
+    // publishes 09:00 and 10:00. The second case matters because an off-grid
+    // appointment straddles two grid positions and would consume two bookable
+    // slots instead of one; see isOfferedSlotStart().
+    //
+    // It says nothing about whether the slot is still free — that is the
+    // exclusion constraint's job, below.
     const { rules, exceptions } = await getEffectiveAvailability({
       providerId: svc.provider_id,
       serviceId: svc.id,
     });
 
-    const openForBusiness = isWithinAvailability({
+    const offered = isOfferedSlotStart({
       rules,
       exceptions,
       timezone: svc.provider_timezone,
@@ -305,16 +319,16 @@ export const createBooking = async (req, res) => {
       startsAt: start,
     });
 
-    if (!openForBusiness) {
+    if (!offered) {
       return errorResponse(
         res,
-        "That time is outside the provider's available hours",
+        "That time is not one of the provider's available appointment times",
         409,
         ERROR_CODES.SLOT_UNAVAILABLE
       );
     }
 
-    
+
     const span = computeBookingSpan(start, svc);
 
     const created = await transaction(async (tx) => {
@@ -481,8 +495,12 @@ export const listBookings = async (req, res) => {
     }
 
     if (serviceId) {
+      const filterServiceId = parseId(serviceId);
+      if (filterServiceId === null) {
+        return errorResponse(res, "`serviceId` must be a positive whole number", 400, ERROR_CODES.VALIDATION_FAILED);
+      }
       conditions.push(`b.service_id = $${params.length + 1}`);
-      params.push(serviceId);
+      params.push(filterServiceId);
     }
 
     if (from) {
@@ -715,7 +733,7 @@ export const rescheduleBooking = async (req, res) => {
     // the two disagree the moment a provider moved city: the picker would offer
     // times the write path then rejected as outside availability.
     const existing = await query(
-      `SELECT b.*, s.duration, s.buffer_before, s.buffer_after,
+      `SELECT b.*, s.duration, s.buffer_before, s.buffer_after, s.slot_interval,
               p.timezone AS provider_timezone_now
        FROM bookings b
        JOIN services s ON s.id = b.service_id
@@ -762,6 +780,7 @@ export const rescheduleBooking = async (req, res) => {
       duration: booking.duration_snapshot,
       buffer_before: booking.buffer_before,
       buffer_after: booking.buffer_after,
+      slot_interval: booking.slot_interval,
     };
 
     const { rules, exceptions } = await getEffectiveAvailability({
@@ -769,8 +788,12 @@ export const rescheduleBooking = async (req, res) => {
       serviceId: booking.service_id,
     });
 
+    // The same grid check the create path applies. A reschedule is still an
+    // appointment landing on the provider's calendar, so it has to land on one
+    // of the times that calendar publishes — otherwise a provider could move a
+    // booking to 09:17 and lose two slots to it, exactly as a client could.
     if (
-      !isWithinAvailability({
+      !isOfferedSlotStart({
         rules,
         exceptions,
         timezone: booking.provider_timezone_now,
@@ -780,7 +803,7 @@ export const rescheduleBooking = async (req, res) => {
     ) {
       return errorResponse(
         res,
-        "That time is outside your available hours",
+        "That time is not one of your available appointment times",
         409,
         ERROR_CODES.SLOT_UNAVAILABLE
       );

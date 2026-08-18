@@ -24,6 +24,7 @@ import {
   wallClockToInstant,
   computeBookingSpan,
   isWithinAvailability,
+  isOfferedSlotStart,
   hasInstantPassed,
   earliestBookableInstant,
   mergeIntervals,
@@ -748,6 +749,239 @@ describe("isWithinAvailability — the write-path guard", () => {
         startsAt: new Date("2025-06-02T08:00:00Z"),
       })
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Regression suite for the off-grid booking hole.
+//
+// `isWithinAvailability` answers "does the span fit inside an open window?",
+// which a 09:17 start satisfies perfectly well on a 09:00–17:00 day. It was the
+// only write-path guard, so a hand-written request could book a time that was
+// never offered — and because such an appointment straddles two grid positions,
+// accepting one removed *two* bookable slots from the provider's day.
+//
+// `isOfferedSlotStart` closes that by re-deriving the grid from the same
+// `candidateStartsInWindow()` the slot list walks. The contract these tests pin
+// down is the important one: **the write path accepts exactly the set of starts
+// the read path offers — no more, no fewer.**
+// ---------------------------------------------------------------------------
+describe("isOfferedSlotStart — the booking must land on an offered start", () => {
+  const zone = "Europe/London";
+  const rules = [rule(MONDAY, 540, 1020)]; // Monday 09:00–17:00
+  const monday = "2025-06-02";
+
+  /** The instant of a London wall-clock reading on the fixture Monday. */
+  const at = (hhmm) => DateTime.fromISO(`${monday}T${hhmm}`, { zone }).toJSDate();
+
+  it("accepts a start that is on the grid", () => {
+    expect(
+      isOfferedSlotStart({
+        rules,
+        exceptions: [],
+        timezone: zone,
+        service: service({ duration: 60, slot_interval: 60 }),
+        startsAt: at("09:00"),
+      })
+    ).toBe(true);
+  });
+
+  it("rejects a start that fits the window but is off the grid", () => {
+    // The exact hole: 09:17 sits comfortably inside 09:00–17:00 and its span
+    // fits, so the old guard said yes.
+    const args = {
+      rules,
+      exceptions: [],
+      timezone: zone,
+      service: service({ duration: 60, slot_interval: 60 }),
+      startsAt: at("09:17"),
+    };
+
+    expect(isWithinAvailability(args)).toBe(true); // the weaker guard is fooled
+    expect(isOfferedSlotStart(args)).toBe(false); // the real one is not
+  });
+
+  it("rejects every off-grid minute across a whole hour", () => {
+    const offGrid = [1, 7, 13, 17, 29, 30, 31, 45, 59].map((m) =>
+      isOfferedSlotStart({
+        rules,
+        exceptions: [],
+        timezone: zone,
+        service: service({ duration: 60, slot_interval: 60 }),
+        startsAt: at(`09:${String(m).padStart(2, "0")}`),
+      })
+    );
+
+    expect(offGrid).toEqual(offGrid.map(() => false));
+  });
+
+  it("agrees with generateSlots on every start it offers, and on nothing else", () => {
+    // The property that matters, asserted directly rather than by example: walk
+    // a whole day of one-minute candidates and require the two functions to
+    // return the same verdict for every single one.
+    const svc = service({ duration: 60, buffer_before: 10, buffer_after: 5, slot_interval: 30 });
+
+    const offered = new Set(
+      generateSlots({
+        rules,
+        exceptions: [],
+        timezone: zone,
+        service: svc,
+        ...localDay(monday, zone),
+        now: NOW,
+      }).map((s) => s.startsAt)
+    );
+
+    expect(offered.size).toBeGreaterThan(0);
+
+    const disagreements = [];
+    for (let minute = 0; minute < 24 * 60; minute += 1) {
+      const instant = DateTime.fromISO(`${monday}T00:00`, { zone }).plus({ minutes: minute });
+      const iso = instant.toUTC().toISO({ suppressMilliseconds: false });
+
+      const readPathOffersIt = offered.has(instant.toJSDate().toISOString());
+      const writePathAcceptsIt = isOfferedSlotStart({
+        rules,
+        exceptions: [],
+        timezone: zone,
+        service: svc,
+        startsAt: instant.toJSDate(),
+      });
+
+      if (readPathOffersIt !== writePathAcceptsIt) {
+        disagreements.push({ iso, readPathOffersIt, writePathAcceptsIt });
+      }
+    }
+
+    expect(disagreements).toEqual([]);
+  });
+
+  it("honours the service's own slot_interval", () => {
+    const args = (slotInterval) => ({
+      rules,
+      exceptions: [],
+      timezone: zone,
+      service: service({ duration: 30, slot_interval: slotInterval }),
+      startsAt: at("09:30"),
+    });
+
+    expect(isOfferedSlotStart(args(30))).toBe(true); // 09:00, 09:30, 10:00 …
+    expect(isOfferedSlotStart(args(60))).toBe(false); // 09:00, 10:00 …
+  });
+
+  it("anchors the grid on the buffer, exactly as the slot list does", () => {
+    // A 10-minute leading buffer on a 30-minute grid pushes the first offered
+    // start to 09:30, not 09:10 — the window's first grid position that leaves
+    // room for the buffer. The write path must agree, or the very first slot in
+    // the list would be unbookable.
+    const svc = service({ duration: 30, buffer_before: 10, buffer_after: 0, slot_interval: 30 });
+    const common = { rules, exceptions: [], timezone: zone, service: svc };
+
+    expect(isOfferedSlotStart({ ...common, startsAt: at("09:00") })).toBe(false);
+    expect(isOfferedSlotStart({ ...common, startsAt: at("09:10") })).toBe(false);
+    expect(isOfferedSlotStart({ ...common, startsAt: at("09:30") })).toBe(true);
+  });
+
+  it("rejects a time the provider is closed for outright", () => {
+    expect(
+      isOfferedSlotStart({
+        rules,
+        exceptions: [],
+        timezone: zone,
+        service: service(),
+        startsAt: DateTime.fromISO("2025-06-01T03:00", { zone }).toJSDate(), // Sunday
+      })
+    ).toBe(false);
+  });
+
+  it("rejects the last grid position when the trailing buffer would overrun", () => {
+    // 16:00 + 60m + 30m buffer runs to 17:30, past the 17:00 close.
+    const svc = service({ duration: 60, buffer_after: 30, slot_interval: 60 });
+    const common = { rules, exceptions: [], timezone: zone, service: svc };
+
+    expect(isOfferedSlotStart({ ...common, startsAt: at("15:00") })).toBe(true);
+    expect(isOfferedSlotStart({ ...common, startsAt: at("16:00") })).toBe(false);
+  });
+
+  it("keeps the grid anchored across a DST boundary", () => {
+    // Britain springs forward on 30 March 2025. The Monday after is a normal
+    // day at a different UTC offset, and 09:00 local must still be offered.
+    const marchRules = [rule(MONDAY, 540, 1020)];
+    const common = { rules: marchRules, exceptions: [], timezone: zone, service: service() };
+
+    const before = DateTime.fromISO("2025-03-24T09:00", { zone }); // GMT
+    const after = DateTime.fromISO("2025-03-31T09:00", { zone }); // BST
+
+    expect(before.offset).not.toBe(after.offset); // the fixture is doing its job
+    expect(isOfferedSlotStart({ ...common, startsAt: before.toJSDate() })).toBe(true);
+    expect(isOfferedSlotStart({ ...common, startsAt: after.toJSDate() })).toBe(true);
+  });
+
+  it("is not fooled by an 'open' exception on an otherwise closed day", () => {
+    // Extra hours opened on a Sunday: 14:00–16:00. The grid anchors at 14:00.
+    const exceptions = [
+      {
+        kind: "open",
+        start_date: "2025-06-01",
+        end_date: "2025-06-01",
+        start_minute: 840,
+        end_minute: 960,
+      },
+    ];
+    const common = { rules, exceptions, timezone: zone, service: service({ slot_interval: 60 }) };
+    const sundayAt = (hhmm) => DateTime.fromISO(`2025-06-01T${hhmm}`, { zone }).toJSDate();
+
+    expect(isOfferedSlotStart({ ...common, startsAt: sundayAt("14:00") })).toBe(true);
+    expect(isOfferedSlotStart({ ...common, startsAt: sundayAt("14:30") })).toBe(false);
+    expect(isOfferedSlotStart({ ...common, startsAt: sundayAt("16:00") })).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("the offered grid does not depend on the range being browsed", () => {
+  // Before the fix, generateSlots anchored the grid on windows that had already
+  // been clipped to the requested range. For a provider whose open window
+  // crosses the edge of that range, asking for one day and asking for a week
+  // could therefore publish different start times for the same day — and the
+  // write path, which knows nothing about what range the client browsed, had no
+  // way to agree with either.
+  const zone = "Europe/London";
+
+  it("offers the same starts for a day whether asked alone or inside a week", () => {
+    const rules = [0, 1, 2, 3, 4, 5, 6].map((d) => rule(d, 540, 1020));
+    const svc = service({ duration: 60, slot_interval: 60 });
+    const common = { rules, exceptions: [], timezone: zone, service: svc, now: NOW };
+
+    const alone = generateSlots({ ...common, ...localDay("2025-06-04", zone) });
+
+    const weekStart = DateTime.fromISO("2025-06-02", { zone }).startOf("day");
+    const week = generateSlots({
+      ...common,
+      rangeStart: weekStart.toJSDate(),
+      rangeEnd: weekStart.plus({ days: 7 }).toJSDate(),
+    }).filter((s) => DateTime.fromISO(s.startsAt).setZone(zone).toFormat("yyyy-MM-dd") === "2025-06-04");
+
+    expect(alone.map((s) => s.startsAt)).toEqual(week.map((s) => s.startsAt));
+    expect(alone.length).toBeGreaterThan(0);
+  });
+
+  it("still returns nothing outside the requested range", () => {
+    // The clipping the range used to do is now a filter on the slots instead,
+    // so this guarantee has to be re-asserted directly.
+    const rules = [0, 1, 2, 3, 4, 5, 6].map((d) => rule(d, 540, 1020));
+    const slots = generateSlots({
+      rules,
+      exceptions: [],
+      timezone: zone,
+      service: service(),
+      ...localDay("2025-06-04", zone),
+      now: NOW,
+    });
+
+    const dates = new Set(
+      slots.map((s) => DateTime.fromISO(s.startsAt).setZone(zone).toFormat("yyyy-MM-dd"))
+    );
+    expect([...dates]).toEqual(["2025-06-04"]);
   });
 });
 

@@ -199,19 +199,36 @@ export function expandBlockedWindows({ exceptions, timezone, rangeStart, rangeEn
 /**
  * Computes the provider's genuinely open time in a range.
  *
- * @returns {Array<{start:number,end:number}>} Merged, block-subtracted, clipped
- *   to the requested range.
+ * @param {object} args
+ * @param {boolean} [args.clipToRange] When true (the default), windows are cut
+ *   back to the requested range, so a caller asking for one day never sees the
+ *   neighbouring days the expansion pads with internally. Pass `false` to get
+ *   each window at its true extent — which is what anything reasoning about the
+ *   *candidate grid* must do, because the grid is anchored at the window's own
+ *   start and a clipped start would move it. See `generateSlots`.
+ * @returns {Array<{start:number,end:number}>} Merged, block-subtracted, and
+ *   clipped to the requested range unless `clipToRange` is false.
  */
-export function computeAvailableWindows({ rules, exceptions, timezone, rangeStart, rangeEnd }) {
+export function computeAvailableWindows({
+  rules,
+  exceptions,
+  timezone,
+  rangeStart,
+  rangeEnd,
+  clipToRange = true,
+}) {
   const open = expandOpenWindows({ rules, exceptions, timezone, rangeStart, rangeEnd });
   const blocked = expandBlockedWindows({ exceptions, timezone, rangeStart, rangeEnd });
+
+  const windows = subtractIntervals(open, blocked);
+  if (!clipToRange) return windows;
 
   const rangeInterval = {
     start: toDateTime(rangeStart).toMillis(),
     end: toDateTime(rangeEnd).toMillis(),
   };
 
-  return subtractIntervals(open, blocked)
+  return windows
     .map((w) => ({
       start: Math.max(w.start, rangeInterval.start),
       end: Math.min(w.end, rangeInterval.end),
@@ -370,7 +387,24 @@ export function generateSlots({
 
   const step = Math.max(1, Number(stepMinutes) || Number(service.slot_interval) || DEFAULT_SLOT_INTERVAL);
 
-  const windows = computeAvailableWindows({ rules, exceptions, timezone, rangeStart, rangeEnd });
+  // Unclipped on purpose. The candidate grid is anchored at each window's own
+  // start (see candidateStartsInWindow), so a window cut back to the requested
+  // range would anchor the grid at the range boundary instead — and the same
+  // provider would then offer different start times depending on whether the
+  // client asked for one day or a whole week. Taking windows at their true
+  // extent makes the offered times a property of the provider's schedule alone,
+  // which is also what lets `isOfferedSlotStart()` re-derive them on the write
+  // path without knowing what range the client happened to browse.
+  //
+  // Slots outside the requested range are dropped below instead.
+  const windows = computeAvailableWindows({
+    rules,
+    exceptions,
+    timezone,
+    rangeStart,
+    rangeEnd,
+    clipToRange: false,
+  });
 
   // Normalise the busy spans once, up front, so the inner loop compares plain
   // numbers instead of re-parsing dates for every candidate slot.
@@ -417,6 +451,11 @@ export function generateSlots({
       // wallClockToInstant().toMillis() when the window was built), so both
       // checks are true instant-vs-instant compares, never clock-face
       // arithmetic.
+      // Windows are unclipped (see above), so a window overlapping the edge of
+      // the requested range can produce candidates outside it. Keep only the
+      // ones the caller actually asked about.
+      if (startMs < rangeStartMs || startMs >= rangeEndMs) continue;
+
       if (hasInstantPassed(startMs, timezone, now)) continue;
       if (startMs < earliestBookableMs) continue;
 
@@ -753,21 +792,86 @@ export function computeBookingSpan(startsAt, service) {
  * @returns {boolean} True when the whole occupied span sits inside one open window.
  */
 export function isWithinAvailability({ rules, exceptions, timezone, service, startsAt }) {
+  return Boolean(containingWindowFor({ rules, exceptions, timezone, service, startsAt }));
+}
+
+/**
+ * Checks that a requested start is one of the start times actually *offered*.
+ *
+ * `isWithinAvailability()` asks the weaker question — "does the whole occupied
+ * span fit inside an open window?" — and a span can satisfy that while sitting
+ * nowhere near a time the client was ever shown. A provider open 09:00–17:00
+ * offering a 60-minute service on a 60-minute grid publishes 09:00, 10:00,
+ * 11:00 …; a hand-written request for 09:17 fits inside the window perfectly
+ * well and is not a slot.
+ *
+ * That gap matters for more than tidiness. Because an off-grid appointment
+ * straddles two grid positions, accepting one removes *two* bookable slots from
+ * the provider's day rather than one — so a client sending crafted times could
+ * quietly strip a provider's calendar of far more availability than they booked.
+ *
+ * The grid is re-derived here from `candidateStartsInWindow()`, the same
+ * function `generateSlots()` walks, so the write path can never drift from what
+ * the slot list offered. Both anchor on the window's *unclipped* start, which is
+ * why the answer does not depend on the date range the client happened to browse.
+ *
+ * @param {object} args
+ * @param {Array} args.rules availability_rules rows.
+ * @param {Array} args.exceptions availability_exceptions rows.
+ * @param {string} args.timezone Provider's IANA zone.
+ * @param {{duration:number,buffer_before:number,buffer_after:number,slot_interval?:number}} args.service
+ * @param {Date|string} args.startsAt The requested appointment start.
+ * @param {number} [args.stepMinutes] Overrides the service's slot_interval.
+ * @returns {boolean} True when `startsAt` is exactly one of the offered starts.
+ *   False when it is off the grid, or outside the provider's hours entirely.
+ */
+export function isOfferedSlotStart({ rules, exceptions, timezone, service, startsAt, stepMinutes }) {
+  const window = containingWindowFor({ rules, exceptions, timezone, service, startsAt });
+  if (!window) return false;
+
+  const step = Math.max(
+    1,
+    Number(stepMinutes) || Number(service.slot_interval) || DEFAULT_SLOT_INTERVAL
+  );
+
+  const startMs = toDateTime(startsAt).toMillis();
+
+  return candidateStartsInWindow(window, {
+    duration: Number(service.duration),
+    bufferBefore: Number(service.buffer_before) || 0,
+    bufferAfter: Number(service.buffer_after) || 0,
+    step,
+  }).includes(startMs);
+}
+
+/**
+ * Finds the single open window that wholly contains a booking's occupied span.
+ *
+ * Shared by the two write-path guards above so they can never disagree about
+ * which window a request falls in.
+ *
+ * @returns {{start:number,end:number}|null} The containing window at its true
+ *   extent, or null when the span does not fit inside any open window.
+ */
+function containingWindowFor({ rules, exceptions, timezone, service, startsAt }) {
   const span = computeBookingSpan(startsAt, service);
   const blockedFrom = span.blockedFrom.getTime();
   const blockedTo = span.blockedTo.getTime();
 
   // Expand a day either side of the span so a window is never clipped by the
   // range boundary and wrongly judged too short to contain the booking.
+  // `clipToRange: false` keeps each window at its true extent, which the grid
+  // arithmetic in isOfferedSlotStart() depends on.
   const windows = computeAvailableWindows({
     rules,
     exceptions,
     timezone,
     rangeStart: new Date(blockedFrom - 86_400_000),
     rangeEnd: new Date(blockedTo + 86_400_000),
+    clipToRange: false,
   });
 
-  return windows.some((w) => w.start <= blockedFrom && w.end >= blockedTo);
+  return windows.find((w) => w.start <= blockedFrom && w.end >= blockedTo) || null;
 }
 
 // ---------------------------------------------------------------------------
