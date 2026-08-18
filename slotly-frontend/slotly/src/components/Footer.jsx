@@ -1,79 +1,66 @@
-//Site footer.
+/**
+ * The site footer.
+ *
+ * Rendered only by the public shell (see `Layout`), so there is no signed-in
+ * variant — the application shell carries its own one-line colophon instead.
+ *
+ * Four columns from `md`: the wordmark and the copyright, then Product, Legal
+ * and Support. Light rather than inverted, because the design gives the footer
+ * the same `surface` tone as the page and separates it with a single rule — the
+ * same "flat but tactile" idea every card on the site is built on.
+ */
 
 import { Link } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
+import Logo from "./ui/Logo";
 import { container } from "../lib/ui";
-import { DISCOVERY_ROUTE, DISCOVERY_LABEL } from "../lib/discovery";
 
-const API_DOCS = `${import.meta.env.VITE_API_BASE_URL}/docs`;
+/**
+ * The link columns.
+ *
+ * `to` is an internal route; `href` is anything else. Several of the design's
+ * labels have no page behind them yet — those carry `href: "#"` and are listed
+ * here rather than spelled out in the markup, so wiring each one up later is a
+ * single edit in a single place and nothing in the layout has to move.
+ */
+const COLUMNS = [
+  {
+    title: "Product",
+    links: [
+      { label: "Features", href: "#" },
+      { label: "Pricing", href: "#" },
+    ],
+  },
+  {
+    title: "Legal",
+    links: [
+      { label: "Privacy Policy", href: "#" },
+      { label: "Terms of Service", href: "#" },
+      { label: "Cookie Settings", href: "#" },
+    ],
+  },
+  {
+    title: "Support",
+    links: [
+      { label: "Contact Us", href: "#" },
+      { label: "Help Center", href: "#" },
+    ],
+  },
+];
 
 export default function Footer() {
-  const { user } = useAuth();
-
-
-  if (user) {
-    return (
-      <footer className="mt-auto border-t border-line">
-        <div
-          className={`${container} flex flex-wrap items-center justify-between gap-x-4 gap-y-2 py-4 text-xs text-ink-3`}
-        >
-          <p>© {new Date().getFullYear()} Slotly</p>
-          <div className="flex items-center gap-4">
-            <Link to="/profile" className="transition hover:text-ink">
-              Settings
-            </Link>
-            <a href={API_DOCS} target="_blank" rel="noreferrer" className="transition hover:text-ink">
-              API docs
-            </a>
-          </div>
-        </div>
-      </footer>
-    );
-  }
-
   return (
-    <footer className="mt-auto border-t border-dark-line bg-dark">
-      <div className={`${container} py-10`}>
-        <div className="flex flex-col gap-8 sm:flex-row sm:justify-between">
-          <div className="max-w-xs">
-            <span className="text-[0.9375rem] font-semibold tracking-tight text-dark-ink">Slotly</span>
-            <p className="mt-2 text-sm leading-relaxed text-dark-3">
-              Appointment booking for service providers and the clients who book them. Every time, in
-              every timezone, correct.
-            </p>
-          </div>
-
-          <div className="flex gap-12 sm:gap-16">
-            <FooterColumn
-              title="Product"
-              links={[
-                { to: DISCOVERY_ROUTE, label: DISCOVERY_LABEL },
-                { to: "/login", label: "For providers" },
-              ]}
-            />
-            <FooterColumn
-              title="Account"
-              links={[
-                { to: "/login", label: "Sign in" },
-                { to: "/login", label: "Create an account" },
-              ]}
-            />
-          </div>
+    <footer className="mt-auto w-full border-t border-outline-variant bg-surface">
+      <div className={`${container} grid grid-cols-1 gap-gutter py-12 sm:grid-cols-2 md:grid-cols-4`}>
+        <div className="space-y-4">
+          <Logo size="sm" />
+          <p className="font-caption text-caption text-on-surface-variant">
+            © {new Date().getFullYear()} Slotly Inc. All rights reserved.
+          </p>
         </div>
 
-        <div className="mt-8 flex flex-col-reverse items-center justify-between gap-3 border-t border-dark-line pt-5 sm:flex-row">
-          <p className="text-xs text-dark-3">© {new Date().getFullYear()} Slotly.</p>
-          {/* Points at the live API reference rather than at placeholder legal
-              pages that do not exist. */}
-          <a
-            href={API_DOCS}
-            target="_blank"
-            rel="noreferrer"
-            className="text-xs text-dark-3 transition hover:text-dark-ink"
-          >
-            API documentation
-          </a>
-        </div>
+        {COLUMNS.map((column) => (
+          <FooterColumn key={column.title} title={column.title} links={column.links} />
+        ))}
       </div>
     </footer>
   );
@@ -81,23 +68,27 @@ export default function Footer() {
 
 function FooterColumn({ title, links }) {
   return (
-    <div>
-      <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-dark-3">{title}</p>
-      {/* `-mx-2 px-2 py-2` widens each link's hit area without moving the text:
-          these were 16–18px tall, the smallest targets in the app.
-          `inline-block` is what lets the vertical padding count. */}
-      <ul className="mt-1.5 space-y-0.5">
-        {links.map((link) => (
-          <li key={`${link.to}-${link.label}`}>
-            <Link
-              to={link.to}
-              className="-mx-2 inline-block rounded-md px-2 py-1.5 text-sm text-dark-2 transition hover:bg-white/5 hover:text-dark-ink"
-            >
-              {link.label}
-            </Link>
-          </li>
-        ))}
-      </ul>
+    <div className="flex flex-col gap-3">
+      <h4 className="mb-2 font-small text-small font-semibold text-primary">{title}</h4>
+
+      {links.map((link) => {
+        // `w-fit` with vertical padding widens each hit area without moving the
+        // text: at 12px these are the smallest targets on the page.
+        const className =
+          "-my-1 w-fit rounded-sm py-1 font-caption text-caption text-on-surface-variant " +
+          "transition-colors hover:text-primary hover:underline focus-visible:outline " +
+          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary";
+
+        return link.to ? (
+          <Link key={link.label} to={link.to} className={className}>
+            {link.label}
+          </Link>
+        ) : (
+          <a key={link.label} href={link.href} className={className}>
+            {link.label}
+          </a>
+        );
+      })}
     </div>
   );
 }
