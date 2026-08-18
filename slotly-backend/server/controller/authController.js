@@ -524,16 +524,39 @@ export const registerUser = async (req, res) => {
     // Email is present — figure out why, and never create a duplicate row for it
     const existingUser = existing.rows[0];
 
+    // Each branch carries its own machine-readable code, because a client has to
+    // do something different in each case: WRONG_AUTH_METHOD means "send them to
+    // the social button named in `details.provider`", ACCOUNT_EXISTS means "send
+    // them to the login form". Both were previously falling back to the generic
+    // CONFLICT, which the OpenAPI document nonetheless advertised as these two —
+    // so a client written against the published spec matched neither.
     if (existingUser.google_id) {
-      return errorResponse(res, "This email is already registered with Google. Please continue with Google.", 409);
+      return errorResponse(
+        res,
+        "This email is already registered with Google. Please continue with Google.",
+        409,
+        ERROR_CODES.WRONG_AUTH_METHOD,
+        { provider: "google" }
+      );
     }
 
     if (existingUser.github_id) {
-      return errorResponse(res, "This email is already registered with GitHub. Please continue with GitHub.", 409);
+      return errorResponse(
+        res,
+        "This email is already registered with GitHub. Please continue with GitHub.",
+        409,
+        ERROR_CODES.WRONG_AUTH_METHOD,
+        { provider: "github" }
+      );
     }
 
     if (existingUser.password_hash) {
-      return errorResponse(res, "This email is already registered. Please log in instead.", 409);
+      return errorResponse(
+        res,
+        "This email is already registered. Please log in instead.",
+        409,
+        ERROR_CODES.ACCOUNT_EXISTS
+      );
     }
 
     // Edge case: email exists but has no google_id, github_id, or password_hash.
@@ -575,18 +598,45 @@ export const loginUser = async (req, res) => {
 
     const result = await query(`SELECT * FROM users WHERE email = $1`, [email]);
 
+    // One wording, one code, for both "no such address" and "wrong password".
+    //
+    // Saying "no account found with this email" for the first and "invalid email
+    // or password" for the second turns this form into an address oracle: submit
+    // a list of addresses with any password and the two different replies tell
+    // you which ones have accounts here. Both statuses were already 401, so the
+    // leak was in the prose, which is exactly where it is easiest to miss.
+    const invalidCredentials = () =>
+      errorResponse(res, "Invalid email or password", 401, ERROR_CODES.INVALID_CREDENTIALS);
+
     if (result.rows.length === 0) {
-      return errorResponse(res, "No account found with this email", 401);
+      return invalidCredentials();
     }
 
     const user = result.rows[0];
 
     if (!user.password_hash) {
+      // Naming the social provider here is a deliberate exception to the rule
+      // above, and a narrow one: the caller has proved nothing, but this is the
+      // only way to tell someone who signed up with Google why their password
+      // does not work. It reveals that the address is registered — which the
+      // registration form would reveal anyway, since it must refuse duplicates.
       if (user.google_id) {
-        return errorResponse(res, "This account uses Google sign-in. Please continue with Google.", 409);
+        return errorResponse(
+          res,
+          "This account uses Google sign-in. Please continue with Google.",
+          409,
+          ERROR_CODES.WRONG_AUTH_METHOD,
+          { provider: "google" }
+        );
       }
       if (user.github_id) {
-        return errorResponse(res, "This account uses GitHub sign-in. Please continue with GitHub.", 409);
+        return errorResponse(
+          res,
+          "This account uses GitHub sign-in. Please continue with GitHub.",
+          409,
+          ERROR_CODES.WRONG_AUTH_METHOD,
+          { provider: "github" }
+        );
       }
       // Edge case: no password_hash, no google_id, no github_id — broken account
       console.error(`Data integrity issue: user ${user.id} (${email}) has no linked auth method`);
@@ -595,7 +645,7 @@ export const loginUser = async (req, res) => {
 
     const passwordMatches = await bcrypt.compare(password, user.password_hash);
     if (!passwordMatches) {
-      return errorResponse(res, "Invalid email or password", 401);
+      return invalidCredentials();
     }
 
     issueSession(res, user);
