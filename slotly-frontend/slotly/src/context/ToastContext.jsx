@@ -8,7 +8,10 @@ const ToastContext = createContext(null);
 const DEFAULT_DURATION_MS = 5000;
 
 const VARIANTS = {
-  success: { className: "border-brand-line bg-brand-soft text-brand-ink", icon: "check" },
+  success: {
+    className: "border-success-line bg-success-soft text-success-ink",
+    icon: "checkCircle",
+  },
   error: { className: "border-danger-line bg-danger-soft text-danger-ink", icon: "alert" },
   info: { className: "border-line bg-surface text-ink", icon: "info" },
 };

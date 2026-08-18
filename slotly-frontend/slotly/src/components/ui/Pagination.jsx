@@ -45,8 +45,12 @@ export function usePagination(items, pageSize = 10) {
  * Always the first page, the last page, and a window around the current one, so
  * the control's width does not grow with the number of pages — the reason a bare
  * `Array.from({length: pageCount})` is unusable past about fifteen.
+ *
+ * Exported because the provider directory draws its own control — the design
+ * gives that one bordered squares rather than these flat numbers — but the rule
+ * for *which* numbers to show is the same, and should not be written twice.
  */
-function pageWindow(page, pageCount) {
+export function pageWindow(page, pageCount) {
   if (pageCount <= 7) return Array.from({ length: pageCount }, (_, i) => i + 1);
 
   const window = new Set([1, pageCount, page, page - 1, page + 1]);
@@ -136,7 +140,7 @@ export default function Pagination({
                   className={`inline-flex h-9 min-w-9 items-center justify-center rounded-md px-2 text-[0.8125rem] font-medium tabular-nums transition ${
                     entry === page
                       ? "bg-brand text-white"
-                      : "text-ink-2 hover:bg-canvas hover:text-ink"
+                      : "text-ink-2 hover:bg-subtle hover:text-ink"
                   }`}
                 >
                   {entry}

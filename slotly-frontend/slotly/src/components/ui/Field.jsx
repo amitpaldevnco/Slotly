@@ -117,6 +117,38 @@ export function CharCount({ value, max }) {
 }
 
 /**
+ * The design's switch: a 36×20 track with a 16px knob.
+ *
+ * A `<button role="switch">` rather than a checkbox, which is what the reference
+ * uses and what lets the track and knob be drawn without fighting the platform's
+ * own control. `aria-checked` carries the state to assistive technology, and the
+ * label is passed in rather than assumed, because several of these sit in a grid
+ * where the visible text is a separate cell.
+ */
+export function Toggle({ checked, onChange, label, disabled = false, className = "" }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={label}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 shrink-0 cursor-pointer rounded-full border-2 border-transparent transition-colors duration-200 ease-in-out focus:outline-none focus-visible:ring-2 focus-visible:ring-primary focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50 ${
+        checked ? "bg-primary" : "bg-outline-variant"
+      } ${className}`}
+    >
+      <span
+        aria-hidden="true"
+        className={`pointer-events-none inline-block h-4 w-4 transform rounded-full bg-white shadow ring-0 transition duration-200 ease-in-out ${
+          checked ? "translate-x-4" : "translate-x-0"
+        }`}
+      />
+    </button>
+  );
+}
+
+/**
  * A radio group rendered as selectable cards.
  *
  * Used for the two-or-three-way choices that carry an explanation — client vs
@@ -140,10 +172,10 @@ export function CardRadioGroup({ name, value, onChange, options, legend, columns
           return (
             <label
               key={option.value}
-              className={`flex cursor-pointer items-start gap-2.5 rounded-md border px-3 py-2.5 transition ${
+              className={`flex cursor-pointer items-start gap-3 rounded-md border px-4 py-3 transition ${
                 selected
-                  ? "border-brand bg-brand-soft ring-1 ring-brand/25"
-                  : "border-line bg-surface hover:border-ink-3/40"
+                  ? "border-brand bg-brand-soft ring-2 ring-brand/10"
+                  : "border-line bg-surface hover:border-line-strong hover:bg-subtle"
               }`}
             >
               <input
@@ -155,12 +187,12 @@ export function CardRadioGroup({ name, value, onChange, options, legend, columns
                 className="mt-0.5 h-4 w-4 shrink-0"
               />
               <span className="min-w-0">
-                <span className="flex items-center gap-1.5 text-sm font-medium text-ink">
-                  {option.icon && <Icon name={option.icon} size={15} className="text-brand" />}
+                <span className="flex items-center gap-2 text-sm font-semibold text-ink">
+                  {option.icon && <Icon name={option.icon} size={16} className="text-ink-2" />}
                   {option.title}
                 </span>
                 {option.hint && (
-                  <span className="mt-0.5 block text-xs leading-relaxed text-ink-3">
+                  <span className="mt-1 block text-xs leading-relaxed text-ink-3">
                     {option.hint}
                   </span>
                 )}

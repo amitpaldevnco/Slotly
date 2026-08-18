@@ -16,7 +16,7 @@ export function SegmentedControl({
     <div
       role="tablist"
       aria-label={label}
-      className={`inline-flex shrink-0 items-center gap-0.5 rounded-md border border-line bg-canvas p-0.5 ${
+      className={`inline-flex shrink-0 items-center gap-1 rounded-md border border-line bg-subtle p-1 ${
         fill ? "w-full" : ""
       } ${className}`}
     >
@@ -32,11 +32,11 @@ export function SegmentedControl({
             aria-selected={active}
             aria-controls={panelId}
             onClick={() => onChange(option.id)}
-            className={`inline-flex min-h-9 items-center justify-center gap-1.5 rounded-[0.3125rem] px-3 text-[0.8125rem] font-medium transition ${
+            className={`inline-flex min-h-9 cursor-pointer items-center justify-center gap-2 rounded-sm px-3.5 text-[0.8125rem] font-medium transition ${
               fill ? "flex-1" : ""
             } ${
               active
-                ? "bg-surface text-ink shadow-raise"
+                ? "bg-surface font-semibold text-ink shadow-raise"
                 : "text-ink-2 hover:text-ink"
             }`}
           >
@@ -75,10 +75,10 @@ export function FilterTabs({ options, value, onChange, panelId, label, className
             aria-selected={active}
             aria-controls={panelId}
             onClick={() => onChange(option.id)}
-            className={`inline-flex min-h-9 shrink-0 items-center gap-1.5 rounded-full border px-3 text-[0.8125rem] font-medium transition ${
+            className={`inline-flex min-h-9 shrink-0 cursor-pointer items-center gap-2 rounded-full border px-4 text-[0.8125rem] font-medium transition ${
               active
                 ? "border-brand bg-brand text-white"
-                : "border-line bg-surface text-ink-2 hover:border-ink-3/40 hover:text-ink"
+                : "border-line bg-surface text-ink-2 hover:border-line-strong hover:bg-subtle hover:text-ink"
             }`}
           >
             <span className="max-w-[14rem] truncate">{option.label}</span>

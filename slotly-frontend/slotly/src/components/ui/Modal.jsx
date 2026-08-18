@@ -1,4 +1,12 @@
-
+/**
+ * The app's one dialog: a focus trap, an overlay, and a close affordance.
+ *
+ * Everything modal in Slotly goes through here — confirming a cancellation,
+ * editing a service, rescheduling — so the keyboard behaviour is implemented
+ * once. A dialog that can be tabbed out of into the page behind it is a common
+ * and genuinely disorienting bug, which is what the trap below exists to
+ * prevent.
+ */
 import { useEffect, useRef } from "react";
 import Icon from "./Icon";
 import { iconButtonTouch } from "../../lib/ui";
@@ -135,14 +143,16 @@ export default function Modal({
         // rounded only at the top. A centred 24px-inset card on a 375px screen
         // wastes the width it most needs, and a sheet puts the actions where the
         // thumb already is.
-        className={`flex max-h-[92dvh] w-full flex-col rounded-t-xl border border-line bg-surface shadow-float outline-none sm:max-h-[85vh] sm:rounded-xl ${
+        className={`flex max-h-[92dvh] w-full flex-col rounded-t-lg border border-line bg-surface shadow-float outline-none sm:max-h-[85vh] sm:rounded-lg ${
           SIZES[size] || SIZES.md
         }`}
       >
-        <div className="flex items-start justify-between gap-3 border-b border-line px-4 py-3 sm:px-5">
+        <div className="flex items-start justify-between gap-3 border-b border-line px-5 py-4">
           <div className="min-w-0">
-            <h2 className="text-base font-semibold tracking-tight text-ink">{title}</h2>
-            {description && <p className="mt-0.5 text-xs text-ink-3">{description}</p>}
+            <h2 className="font-display text-lg font-semibold tracking-[-0.01em] text-ink">
+              {title}
+            </h2>
+            {description && <p className="mt-1 text-xs text-ink-3">{description}</p>}
           </div>
 
           {/* A full touch target: this is the first thing focus lands on when the
@@ -162,10 +172,10 @@ export default function Modal({
         {/* The body scrolls, not the dialog. With the whole panel scrolling, a
             long slot list pushed the footer's Confirm button out of reach and
             the title out of view. */}
-        <div className="min-h-0 flex-1 overflow-y-auto px-4 py-4 sm:px-5">{children}</div>
+        <div className="min-h-0 flex-1 overflow-y-auto px-5 py-5">{children}</div>
 
         {footer && (
-          <div className="flex flex-col-reverse gap-2 border-t border-line bg-subtle px-4 py-3 sm:flex-row sm:justify-end sm:px-5">
+          <div className="flex flex-col-reverse gap-2 border-t border-line bg-subtle px-5 py-4 sm:flex-row sm:justify-end">
             {footer}
           </div>
         )}

@@ -1,36 +1,55 @@
-// The Slotly logo.
+/**
+ * The Slotly logo.
+ *
+ * One image, used everywhere the brand appears. The hand-drawn SVG mark that
+ * used to live here has been removed: `assets/logo.png` is the real logo now,
+ * and keeping a second, different mark in the codebase is how two logos end up
+ * shipping on two different screens.
+ *
+ * The asset is a **lockup** — the mark and the word "Slotly" together — so
+ * nothing here renders the wordmark as text. Anywhere the old component was
+ * asked for `wordmark={false}`, there is no mark-only asset to fall back to;
+ * that prop is gone rather than silently ignored.
+ */
 
+import logoUrl from "../../assets/logo.png";
 
-/** The terracotta and cream of the mark itself. Not theme tokens — see above. */
-const MARK_BG = "#8A3F24";
-const MARK_SLOT = "#F1E0D5";
-
+/**
+ * Rendered heights.
+ *
+ * Generous, because the PNG carries a wide margin of its own: roughly a third of
+ * its height is transparent padding, so a 40px box draws a mark about 26px tall.
+ * Trim the asset and these can all come down a step.
+ */
 const SIZES = {
-  sm: { mark: 26, text: "text-[0.9375rem]", gap: "gap-2" },
-  md: { mark: 32, text: "text-lg", gap: "gap-2.5" },
-  lg: { mark: 40, text: "text-2xl", gap: "gap-3" },
+  sm: "h-10",
+  md: "h-12",
+  lg: "h-16",
 };
 
-export default function Logo({ size = "sm", wordmark = true, className = "" }) {
-  const { mark, text, gap } = SIZES[size] || SIZES.sm;
+export default function Logo({
+  size = "sm",
+  /** The "Professional Booking" strapline under the lockup, as in the sidebar. */
+  subtitle = false,
+  className = "",
+}) {
+  const height = SIZES[size] || SIZES.sm;
 
   return (
-    <span className={`inline-flex items-center ${gap} ${className}`}>
-      <svg
-        width={mark}
-        height={mark}
-        viewBox="0 0 40 40"
-        {...(wordmark
-          ? { "aria-hidden": "true" }
-          : { role: "img", "aria-label": "Slotly" })}
-        className="shrink-0"
-      >
-        <rect width="40" height="40" rx="10" fill={MARK_BG} />
-        <rect x="20" y="16" width="10" height="10" rx="2" fill={MARK_SLOT} />
-      </svg>
+    <span className={`inline-flex min-w-0 flex-col ${className}`}>
+      <img
+        src={logoUrl}
+        alt="Slotly"
+        // `w-auto` with a fixed height keeps the lockup's aspect ratio whatever
+        // the asset is later replaced with; `object-contain` stops a future
+        // non-matching ratio from cropping the wordmark off.
+        className={`${height} w-auto shrink-0 object-contain object-left`}
+      />
 
-      {wordmark && (
-        <span className={`font-semibold tracking-tight ${text}`}>Slotly</span>
+      {subtitle && (
+        <span className="mt-0.5 block font-caption text-caption text-on-surface-variant">
+          Professional Booking
+        </span>
       )}
     </span>
   );
