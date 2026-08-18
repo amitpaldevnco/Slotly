@@ -1,10 +1,42 @@
-//Client-side route guards.
+/**
+ * Client-side route guards.
+ *
+ * ## These are navigation, not security
+ *
+ * Worth stating plainly, because the file looks like an authorization layer and
+ * is not one. Nothing here protects data: every route below calls an API that
+ * re-checks the same question on the server, against the specific row being
+ * touched. A user who edited their way past these guards would reach a page that
+ * renders nothing but 403s.
+ *
+ * What they actually buy is that a user is never shown a screen that could only
+ * fail — the brief's "enforced on the server, not by hiding buttons in the UI",
+ * read the right way round.
+ *
+ * ## The one thing every guard has to get right
+ *
+ * `loading` must be handled before `user`. `useAuth` starts with no user while
+ * `GET /auth/me` is in flight, so a guard that checked `!user` first would
+ * redirect every signed-in person to the login page on a hard refresh, then
+ * bounce them back a moment later. That is why each guard below opens with the
+ * same `if (loading)` line rather than sharing a wrapper: the order is the
+ * correctness condition, and inlining it keeps it visible in all four.
+ */
 
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { PageLoader } from "./ui/Feedback";
 
 
+/**
+ * Requires a signed-in user with a role.
+ *
+ * Records where the user was heading in the redirect's `state.from`, so logging
+ * in returns them there instead of dumping them on the dashboard.
+ *
+ * @returns The child route, or a redirect to `/login` (no session) or
+ *   `/complete-profile` (a social sign-up that never finished choosing a role).
+ */
 export function ProtectedRoute() {
   const { user, loading } = useAuth();
   const location = useLocation();
@@ -25,6 +57,14 @@ export function ProtectedRoute() {
 }
 
 
+/**
+ * Requires a signed-in user of one particular role.
+ *
+ * @param {{role: "client"|"provider"}} props The role this branch of the app is
+ *   for. A user with the other one is sent to `/dashboard`, which renders the
+ *   right thing for whoever they actually are — a plain error page would be
+ *   accurate and useless.
+ */
 export function RoleRoute({ role }) {
   const { user, loading } = useAuth();
   const location = useLocation();
@@ -67,6 +107,12 @@ export function CompleteProfileRoute() {
 }
 
 
+/**
+ * For pages that only make sense signed out — login and registration.
+ *
+ * Sends a signed-in user onward rather than showing them a login form they have
+ * already used, and picks the destination by how far through setup they are.
+ */
 export function GuestOnlyRoute() {
   const { user, loading } = useAuth();
 
