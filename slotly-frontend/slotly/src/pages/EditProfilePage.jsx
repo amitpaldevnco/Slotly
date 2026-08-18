@@ -1,11 +1,29 @@
-// Profile and settings.
+/**
+ * Profile management — what other people see.
+ *
+ * A provider's profile is a public page: the photo, business name, category, bio
+ * and qualifications here are exactly what a client reads in the directory
+ * before deciding to book. A client's profile is much smaller, because nothing
+ * about a client is published — only their photo and phone number, and the phone
+ * number only reaches the providers they book with.
+ *
+ * The timezone is deliberately *not* editable here. It is an account setting
+ * rather than a public detail, it lives on `/settings`, and having one field
+ * with two save buttons on two pages is how two pages start disagreeing.
+ *
+ * The design's Office Location, Years of Experience and Primary Speciality
+ * fields are absent for the same reason: there are no such columns on `users`
+ * and no endpoint that would store them.
+ */
+
 import { useState, useEffect, useMemo } from "react";
-import { useNavigate } from "react-router-dom";
-import TimezoneSelect from "react-timezone-select";
+import { Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import { useToast } from "../context/ToastContext";
+import { useNotifications } from "../context/NotificationsContext";
 import { imageUrl, parseApiError } from "../api/client";
 import * as authApi from "../api/auth";
-import Page, { PageHeader, Section, SplitLayout } from "../components/ui/Page";
+import Page, { PageHeader, SectionNav } from "../components/ui/Page";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import Field, { Input, Textarea, Select, CharCount } from "../components/ui/Field";
@@ -14,17 +32,9 @@ import {
   primaryButton,
   secondaryButton,
   buttonSm,
-  fileInputClasses,
-  hintClasses,
-  linkClasses,
+  cardClasses,
   zoneName,
 } from "../lib/ui";
-import {
-  buildTimezonesWithCountry,
-  normalizeTimezone,
-  timezoneSelectClassNames,
-  timezoneSelectMenuProps,
-} from "../lib/timezones";
 
 const BUSINESS_TYPES = [
   "Healthcare",
@@ -49,11 +59,10 @@ const MAX_QUALIFICATIONS = 500;
 export default function EditProfilePage() {
   const navigate = useNavigate();
   const { user, setUser } = useAuth();
-
-  const timezonesWithCountry = useMemo(() => buildTimezonesWithCountry(), []);
+  const toast = useToast();
+  const { reload: reloadNotifications } = useNotifications();
 
   const [phoneNumber, setPhoneNumber] = useState("");
-  const [timezone, setTimezone] = useState("");
   const [bio, setBio] = useState("");
   const [qualifications, setQualifications] = useState("");
   const [businessName, setBusinessName] = useState("");
@@ -66,13 +75,11 @@ export default function EditProfilePage() {
   const [formError, setFormError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
 
-  // Load user data on mount
+  const isProvider = user?.role === "provider";
+
   useEffect(() => {
     if (user) {
       setPhoneNumber(user.phone_number || "");
-      setTimezone(
-        normalizeTimezone(user.timezone || Intl.DateTimeFormat().resolvedOptions().timeZone)
-      );
       setBio(user.bio || "");
       setQualifications(user.qualifications || "");
       setBusinessName(user.business_name || "");
@@ -83,8 +90,20 @@ export default function EditProfilePage() {
     }
   }, [user, navigate]);
 
-  const handleFileChange = (e) => {
-    const file = e.target.files[0];
+  const sections = useMemo(() => {
+    const list = [{ id: "basic-info", label: "Basic information" }];
+    if (isProvider) {
+      list.push({ id: "business", label: "Business details" });
+      list.push({ id: "professional-info", label: "Bio & qualifications" });
+      list.push({ id: "preview", label: "Public page" });
+    }
+    return list;
+  }, [isProvider]);
+
+  const active = useActiveSection(sections);
+
+  const handleFileChange = (event) => {
+    const file = event.target.files[0];
     if (!file) return;
 
     if (file.size > 5 * 1024 * 1024) {
@@ -108,8 +127,8 @@ export default function EditProfilePage() {
     reader.readAsDataURL(file);
   };
 
-  const handleSubmit = async (e) => {
-    e.preventDefault();
+  const handleSubmit = async (event) => {
+    event.preventDefault();
     setLoading(true);
     setFormError("");
     setSuccessMessage("");
@@ -119,19 +138,9 @@ export default function EditProfilePage() {
       const formData = new FormData();
 
       if (phoneNumber) formData.append("phoneNumber", phoneNumber);
-      if (timezone) {
-        formData.append(
-          "timezone",
-          normalizeTimezone(typeof timezone === "string" ? timezone : timezone.value)
-        );
-      }
-      if (user.role === "provider" && bio !== undefined) {
+      if (user.role === "provider") {
         formData.append("bio", bio);
-      }
-      if (user.role === "provider") {
         formData.append("qualifications", qualifications);
-      }
-      if (user.role === "provider") {
         if (businessName) formData.append("businessName", businessName);
         if (businessType) formData.append("businessType", businessType);
       }
@@ -143,9 +152,13 @@ export default function EditProfilePage() {
 
       setSuccessMessage("Profile updated.");
       setUser(updated);
+      toast.success("Profile updated.");
+      // A bio or business name that was missing may no longer be, and the bell
+      // is still carrying the warning that said so.
+      reloadNotifications();
     } catch (err) {
       const parsed = parseApiError(err, "Something went wrong. Please try again.");
-      
+
       if (Object.keys(parsed.fieldErrors).length > 0) {
         setErrors(parsed.fieldErrors);
       } else {
@@ -158,13 +171,15 @@ export default function EditProfilePage() {
 
   if (!user) return <PageLoader label="Loading your profile…" />;
 
-  const isProvider = user.role === "provider";
-
   return (
     <Page>
       <PageHeader
-        title="Profile & settings"
-        description="Your account details, and — for providers — what clients see on your public page."
+        title="Profile"
+        description={
+          isProvider
+            ? "Your public page — what clients read before deciding to book with you."
+            : "Your photo and contact details, shared only with the providers you book."
+        }
         actions={
           isProvider && (
             <a
@@ -180,123 +195,107 @@ export default function EditProfilePage() {
         }
       />
 
-      <form onSubmit={handleSubmit} noValidate>
-        <SplitLayout
-          aside={
-            <>
-              <Section title="Photo">
-                <div className="flex items-center gap-3">
-                  <Avatar
-                    src={profilePicturePreview || user.avatar_url}
-                    name={user.name}
-                    size="xl"
-                  />
-                  <div className="min-w-0">
-                    <p className="truncate text-sm font-medium text-ink">{user.name}</p>
-                    <p className="truncate text-xs text-ink-3">{user.email}</p>
-                  </div>
-                </div>
+      <div className="grid items-start gap-8 lg:grid-cols-[13rem_minmax(0,1fr)]">
+        <SectionNav items={sections} active={active} />
 
-                <input
-                  type="file"
-                  aria-label="Profile picture"
-                  accept="image/jpeg,image/png"
-                  onChange={handleFileChange}
-                  className={`${fileInputClasses} mt-3`}
+        <form onSubmit={handleSubmit} noValidate className="min-w-0 space-y-10">
+          {/* Basic information */}
+          <ProfileSection
+            id="basic-info"
+            title="Basic information"
+            description="Your name and email come from the account you signed in with."
+          >
+            <div className="flex flex-col gap-6 sm:flex-row sm:items-start">
+              <div className="flex shrink-0 flex-col items-center gap-3">
+                <Avatar
+                  src={profilePicturePreview || user.avatar_url}
+                  name={user.name}
+                  size="2xl"
+                  className="border border-line"
                 />
-                <p className={hintClasses}>JPG or PNG, max 5MB.</p>
+
+                {/* A label styled as a button, because a native file input cannot
+                    be made to match the rest of the controls on this page and a
+                    label is the one element that already forwards its click. */}
+                <label className={`${secondaryButton} ${buttonSm} cursor-pointer`}>
+                  <Icon name="camera" size={14} />
+                  Change photo
+                  <input
+                    type="file"
+                    accept="image/jpeg,image/png"
+                    onChange={handleFileChange}
+                    className="sr-only"
+                  />
+                </label>
+
+                <p className="text-center text-xs text-ink-3">JPG or PNG, max 5MB</p>
+
                 {errors.profilePicture && (
-                  <p className="mt-1.5 flex items-start gap-1 text-xs text-danger">
+                  <p className="flex items-start gap-1.5 text-xs text-danger">
                     <Icon name="alert" size={13} className="mt-px" />
                     <span>{errors.profilePicture}</span>
                   </p>
                 )}
-              </Section>
+              </div>
 
-              <Section title="Account" flush>
-                <dl className="divide-y divide-line-soft text-sm">
-                  <div className="flex items-baseline justify-between gap-3 px-3 py-2">
-                    <dt className="text-xs text-ink-3">Role</dt>
-                    <dd className="text-[0.8125rem] capitalize text-ink">{user.role}</dd>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-3 px-3 py-2">
-                    <dt className="text-xs text-ink-3">Email</dt>
-                    <dd className="min-w-0 truncate text-[0.8125rem] text-ink">{user.email}</dd>
-                  </div>
-                  <div className="flex items-baseline justify-between gap-3 px-3 py-2">
-                    <dt className="text-xs text-ink-3">Timezone</dt>
-                    <dd className="text-right text-[0.8125rem] text-ink">{zoneName(user.timezone)}</dd>
-                  </div>
-                </dl>
-                {/* Your role is fixed after setup, and someone will look for a way
-                    to change it. Saying so is kinder than leaving them hunting. */}
-                <p className="border-t border-line-soft px-3 py-2 text-xs leading-relaxed text-ink-3">
-                  Your role cannot be changed after setup — it decides which half of
-                  Slotly your account uses.
-                </p>
-              </Section>
-            </>
-          }
-        >
-          <Section title="Your details" description="Only you and the people you book with see these.">
-            <div className="space-y-4">
-              <Field id="phoneNumber" label="Phone number" error={errors.phoneNumber}>
-                <Input
+              <div className="min-w-0 flex-1 space-y-5">
+                <div className="grid gap-5 sm:grid-cols-2">
+                  <ReadOnlyField label="Full name" value={user.name} />
+                  <ReadOnlyField label="Email" value={user.email} />
+                </div>
+
+                <Field
                   id="phoneNumber"
-                  type="tel"
-                  autoComplete="tel"
-                  placeholder="+91 98765 43210"
-                  value={phoneNumber}
-                  onChange={(e) => setPhoneNumber(e.target.value)}
-                />
-              </Field>
+                  label="Phone number"
+                  error={errors.phoneNumber}
+                  hint={
+                    isProvider
+                      ? "Shared with the clients who book you, for when an appointment has to change at short notice."
+                      : "Shared with the providers you book, for when an appointment has to change at short notice."
+                  }
+                >
+                  <Input
+                    id="phoneNumber"
+                    type="tel"
+                    autoComplete="tel"
+                    placeholder="+91 98765 43210"
+                    value={phoneNumber}
+                    onChange={(event) => setPhoneNumber(event.target.value)}
+                  />
+                </Field>
 
-              <Field
-                id="timezone"
-                label="Timezone"
-                error={errors.timezone}
-                hint={
-                  <>
-                    Every appointment time in Slotly is shown in this zone. Change it while
-                    travelling and your appointments follow — they do not move, the clock does.{" "}
-                    <span className="text-ink-2">
-                      See how it reads on{" "}
-                      <a href="/dashboard" className={linkClasses}>
-                        your dashboard
-                      </a>
-                      .
-                    </span>
-                  </>
-                }
-              >
-                <TimezoneSelect
-                  inputId="timezone"
-                  value={timezone}
-                  onChange={setTimezone}
-                  labelStyle="original"
-                  timezones={timezonesWithCountry}
-                  unstyled
-                  classNames={timezoneSelectClassNames}
-                  {...timezoneSelectMenuProps}
-                />
-              </Field>
+                <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-subtle px-4 py-3">
+                  <p className="flex items-center gap-2 text-[0.8125rem] text-ink-2">
+                    <Icon name="globe" size={15} className="text-ink-3" />
+                    Timezone: <span className="font-medium text-ink">{zoneName(user.timezone)}</span>
+                  </p>
+                  <Link
+                    to="/settings"
+                    className="text-xs font-semibold text-ink underline underline-offset-2"
+                  >
+                    Change in Settings
+                  </Link>
+                </div>
+              </div>
             </div>
-          </Section>
+          </ProfileSection>
 
           {isProvider && (
-            <Section
-              title="Your public page"
-              description="Shown to anyone browsing the provider directory."
-            >
-              <div className="space-y-4">
-                <div className="grid gap-4 sm:grid-cols-2">
+            <>
+              {/* Business details */}
+              <ProfileSection
+                id="business"
+                title="Business details"
+                description="How you are listed in the provider directory."
+              >
+                <div className="grid gap-5 sm:grid-cols-2">
                   <Field id="businessName" label="Business name" error={errors.businessName}>
                     <Input
                       id="businessName"
                       type="text"
                       placeholder="e.g. Sharma Skin Clinic"
                       value={businessName}
-                      onChange={(e) => setBusinessName(e.target.value)}
+                      onChange={(event) => setBusinessName(event.target.value)}
                     />
                   </Field>
 
@@ -304,7 +303,7 @@ export default function EditProfilePage() {
                     <Select
                       id="businessType"
                       value={businessType}
-                      onChange={(e) => setBusinessType(e.target.value)}
+                      onChange={(event) => setBusinessType(event.target.value)}
                       className={businessType === "" ? "text-ink-3" : ""}
                     >
                       <option value="" disabled>
@@ -318,74 +317,184 @@ export default function EditProfilePage() {
                     </Select>
                   </Field>
                 </div>
+              </ProfileSection>
 
-                <Field
-                  id="bio"
-                  label="Bio"
-                  error={errors.bio}
-                  hint="A sentence or two on what you do. Shown under your name."
-                  action={<CharCount value={bio} max={MAX_BIO} />}
-                >
-                  <Textarea
+              {/* Bio and qualifications */}
+              <ProfileSection
+                id="professional-info"
+                title="Bio & qualifications"
+                description="The two pieces of writing on your public page."
+              >
+                <div className="space-y-6">
+                  <Field
                     id="bio"
-                    placeholder="Tell clients what you do and who you work with."
-                    value={bio}
-                    onChange={(e) => setBio(e.target.value.slice(0, MAX_BIO))}
-                    rows={3}
-                  />
-                </Field>
+                    label="Professional bio"
+                    error={errors.bio}
+                    hint="A sentence or two on what you do and who you work with. Shown under your name."
+                    action={<CharCount value={bio} max={MAX_BIO} />}
+                  >
+                    <Textarea
+                      id="bio"
+                      placeholder="Tell clients what you do and who you work with."
+                      value={bio}
+                      onChange={(event) => setBio(event.target.value.slice(0, MAX_BIO))}
+                      rows={4}
+                    />
+                  </Field>
 
-                <Field
-                  id="qualifications"
-                  label="Qualifications & experience"
-                  error={errors.qualifications}
-                  // Line breaks survive to the public page, so the field should say
-                  // so — otherwise providers write one dense line.
-                  hint="Shown on your public page. Line breaks are kept, so a list stays a list."
-                  action={<CharCount value={qualifications} max={MAX_QUALIFICATIONS} />}
-                >
-                  <Textarea
+                  <Field
                     id="qualifications"
-                    placeholder={
-                      "One per line, e.g.\n\nBPT, MPT (Sports Physiotherapy)\n12 years in practice\nCertified in dry needling"
-                    }
-                    value={qualifications}
-                    onChange={(e) => setQualifications(e.target.value.slice(0, MAX_QUALIFICATIONS))}
-                    rows={4}
-                  />
-                </Field>
-              </div>
-            </Section>
+                    label="Qualifications & experience"
+                    error={errors.qualifications}
+                    // Line breaks survive to the public page, so the field should
+                    // say so — otherwise providers write one dense line.
+                    hint="Line breaks are kept, so a list stays a list."
+                    action={<CharCount value={qualifications} max={MAX_QUALIFICATIONS} />}
+                  >
+                    <Textarea
+                      id="qualifications"
+                      placeholder={
+                        "One per line, e.g.\n\nBPT, MPT (Sports Physiotherapy)\n12 years in practice\nCertified in dry needling"
+                      }
+                      value={qualifications}
+                      onChange={(event) =>
+                        setQualifications(event.target.value.slice(0, MAX_QUALIFICATIONS))
+                      }
+                      rows={5}
+                    />
+                  </Field>
+                </div>
+              </ProfileSection>
+
+              {/* Public page */}
+              <ProfileSection
+                id="preview"
+                title="Public page"
+                description="This is what a client sees before they book."
+              >
+                <div className="rounded-lg border border-line bg-subtle p-5">
+                  <div className="flex items-start gap-4">
+                    <Avatar
+                      src={profilePicturePreview || user.avatar_url}
+                      name={user.name}
+                      size="lg"
+                    />
+                    <div className="min-w-0 flex-1">
+                      <p className="truncate font-display text-base font-semibold text-ink">
+                        {businessName || user.name}
+                      </p>
+                      <p className="truncate text-xs text-ink-3">
+                        {businessName ? user.name : businessType || "Provider"}
+                      </p>
+                      {bio ? (
+                        <p className="mt-2 line-clamp-3 text-[0.8125rem] leading-relaxed text-ink-2">
+                          {bio}
+                        </p>
+                      ) : (
+                        <p className="mt-2 text-[0.8125rem] italic text-ink-3">
+                          No bio yet — clients see this space empty.
+                        </p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <a
+                  href={`/providers/${user.id}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className={`mt-4 ${secondaryButton} ${buttonSm}`}
+                >
+                  <Icon name="external" size={14} />
+                  Open the live page
+                </a>
+              </ProfileSection>
+            </>
           )}
 
           {formError && <Alert tone="error">{formError}</Alert>}
           {successMessage && (
-            <Alert tone="success" action={
-              <button
-                type="button"
-                onClick={() => navigate("/dashboard")}
-                className={`${secondaryButton} ${buttonSm}`}
-              >
-                Go to dashboard
-              </button>
-            }>
+            <Alert
+              tone="success"
+              action={
+                <button
+                  type="button"
+                  onClick={() => navigate("/dashboard")}
+                  className={`${secondaryButton} ${buttonSm}`}
+                >
+                  Go to dashboard
+                </button>
+              }
+            >
               {successMessage}
             </Alert>
           )}
-          <div className="sticky bottom-0 -mx-4 flex flex-wrap items-center justify-end gap-2 border-t border-line bg-canvas/90 px-4 py-3 backdrop-blur sm:mx-0 sm:rounded-lg sm:border sm:px-4">
-            <button
-              type="button"
-              onClick={() => navigate("/dashboard")}
-              className={secondaryButton}
-            >
+
+          <div className="sticky bottom-0 -mx-4 flex flex-wrap items-center justify-end gap-3 border-t border-line bg-canvas/90 px-4 py-4 backdrop-blur sm:mx-0 sm:rounded-lg sm:border sm:px-5">
+            <button type="button" onClick={() => navigate("/dashboard")} className={secondaryButton}>
               Cancel
             </button>
             <button type="submit" disabled={loading} className={primaryButton}>
               {loading ? "Saving…" : "Save changes"}
             </button>
           </div>
-        </SplitLayout>
-      </form>
+        </form>
+      </div>
     </Page>
   );
+}
+
+/** A heading outside the card, the fields inside it. Matches Settings. */
+function ProfileSection({ id, title, description, children }) {
+  return (
+    <section id={id} className="scroll-mt-[calc(var(--spacing-topbar)+1.5rem)]">
+      <div className="mb-4">
+        <h2 className="font-display text-xl font-semibold tracking-[-0.01em] text-ink">{title}</h2>
+        {description && <p className="mt-1 text-sm text-ink-2">{description}</p>}
+      </div>
+      <div className={`${cardClasses} p-5 sm:p-6`}>{children}</div>
+    </section>
+  );
+}
+
+/**
+ * A value that came from the identity provider and cannot be edited here.
+ *
+ * Rendered to look like a disabled input rather than as plain text, because in a
+ * column of fields a bare paragraph reads as something that failed to render.
+ */
+function ReadOnlyField({ label, value }) {
+  return (
+    <div>
+      <p className="mb-2 block text-[0.8125rem] font-medium text-ink">{label}</p>
+      <p className="flex min-h-11 items-center truncate rounded-md border border-line bg-subtle px-3 text-sm text-ink-2 sm:min-h-10">
+        {value || "—"}
+      </p>
+    </div>
+  );
+}
+
+/** Which section the reader is currently in, for the anchor list's active state. */
+function useActiveSection(sections) {
+  const [active, setActive] = useState(sections[0]?.id);
+
+  useEffect(() => {
+    const elements = sections.map((section) => document.getElementById(section.id)).filter(Boolean);
+    if (elements.length === 0) return undefined;
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        const visible = entries
+          .filter((entry) => entry.isIntersecting)
+          .sort((a, b) => a.boundingClientRect.top - b.boundingClientRect.top);
+        if (visible.length > 0) setActive(visible[0].target.id);
+      },
+      { rootMargin: "-20% 0px -70% 0px", threshold: 0 }
+    );
+
+    elements.forEach((element) => observer.observe(element));
+    return () => observer.disconnect();
+  }, [sections]);
+
+  return active;
 }
