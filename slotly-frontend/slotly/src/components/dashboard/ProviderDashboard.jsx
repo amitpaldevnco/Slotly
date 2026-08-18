@@ -1,508 +1,509 @@
-//  The provider's schedule: a day/week calendar and a filterable table of the same bookings.
-import { useEffect, useMemo, useRef, useState } from "react";
-import { Views } from "react-big-calendar";
-import { Link, useNavigate } from "react-router-dom";
+/**
+ * The provider's dashboard — `provider_dashboard`.
+ *
+ * Transcribed from the reference: a greeting, a row of five metric tiles, then a
+ * twelve-column split with Today's Schedule on the left and Quick Actions and
+ * Recent Messages stacked on the right.
+ *
+ * Two tiles differ from the reference's labels, because the reference asks for
+ * figures Slotly does not record. There is no "Revenue (This Month)" — a booking
+ * carries a price but the app takes no payments, so the tile shows lifetime
+ * earnings from `GET /bookings/summary` and says so. There is no aggregate
+ * rating on this endpoint either, so "Average Rating" is replaced by the active
+ * service count, which is the number a provider on this screen can act on.
+ *
+ * The calendar and the bookings table that used to live here now have routes of
+ * their own — `/calendar` and `/appointments` — matching the reference's sidebar.
+ */
+
+import { useMemo } from "react";
+import { Link } from "react-router-dom";
 import { DateTime } from "luxon";
 import * as bookingsApi from "../../api/bookings";
 import * as providersApi from "../../api/providers";
-import * as availabilityApi from "../../api/availability";
+import * as messagesApi from "../../api/messages";
 import { useApiResource } from "../../hooks/useApiResource";
-import { fromDisplayDate, toDisplayDate } from "../../lib/time";
-import ProviderCalendar from "./ProviderCalendar";
-import TodaySchedule from "./TodaySchedule";
-import BookingsTable from "../bookings/BookingsTable";
+import { useNotifications } from "../../context/NotificationsContext";
+import Avatar from "../ui/Avatar";
 import Icon from "../ui/Icon";
-import Page, { PageHeader, Section, SplitLayout, Toolbar } from "../ui/Page";
-import { SegmentedControl } from "../ui/Tabs";
-import { Select } from "../ui/Field";
-import EmptyState, { Alert, SkeletonBlock, SkeletonRows } from "../ui/Feedback";
-import Pagination, { usePagination } from "../ui/Pagination";
-import {
-  inputClasses,
-  ghostButton,
-  secondaryButton,
-  buttonSm,
-  chipClasses,
-  cardClasses,
-  metric,
-  formatPrice,
-  zoneName,
-} from "../../lib/ui";
-
-const STATUS_OPTIONS = [
-  { value: "", label: "All statuses" },
-  { value: "booked", label: "Booked" },
-  { value: "rescheduled", label: "Rescheduled" },
-  { value: "cancelled", label: "Cancelled" },
-  { value: "completed", label: "Completed" },
-  { value: "no_show", label: "No-show" },
-];
-
-/** Rows per page in the table. Twenty compact rows is roughly one screen. */
-const PAGE_SIZE = 20;
-
-
-function initialCalendarView() {
-  // `matchMedia` is guarded for a non-browser render; 768px is Tailwind's `md`,
-  // the same breakpoint the rest of the layout switches on.
-  if (typeof window !== "undefined" && window.matchMedia?.("(max-width: 767px)").matches) {
-    return Views.DAY;
-  }
-  return Views.WEEK;
-}
+import { SkeletonBlock, SkeletonRows } from "../ui/Feedback";
+import { countdownTo, formatTime, greeting, relativeTime } from "../../lib/time";
+import { container, formatPrice, formatDuration, statusStyle, zoneName } from "../../lib/ui";
 
 export default function ProviderDashboard({ user }) {
-  const navigate = useNavigate();
+  // The account-health warnings are already loaded once per session by the
+  // shell, so this screen reads them rather than repeating the requests.
+  const { warnings, unread } = useNotifications();
 
-  const [mode, setMode] = useState("calendar");
-
-  // The zone the whole calendar is drawn in: the provider's saved zone, read
-  // from their user row. Nothing on this screen consults the device's zone.
+  // The zone everything on this screen is drawn in: the provider's saved zone,
+  // read from their user row. Nothing here consults the device's zone.
   const timezone = user.timezone || "UTC";
 
   const { data: overview, loading: overviewLoading } = useApiResource(
     async ({ signal }) => {
-      const [services, summary, health] = await Promise.all([
+      const [services, summary] = await Promise.all([
         providersApi.listServices(user.id, { signal }).catch(() => []),
         bookingsApi.summary({ signal }).catch(() => null),
-        // Non-fatal: the "needs attention" panel is an extra, and the dashboard
-        // must still render its schedule if this one call fails.
-        availabilityApi.getHealth({ signal }).catch(() => null),
       ]);
-      return { services, summary, health };
+      return { services, summary };
     },
     { deps: [user.id] }
   );
 
   const services = overview?.services ?? [];
   const summary = overview?.summary ?? null;
-  const health = overview?.health ?? null;
 
-  const [calendarDate, setCalendarDate] = useState(() => toDisplayDate(new Date(), timezone));
-  const [calendarView, setCalendarView] = useState(initialCalendarView);
-  // Table state
-  const [filters, setFilters] = useState({ status: "", serviceId: "", from: "", to: "" });
-
-  const anchoredZone = useRef(timezone);
-  useEffect(() => {
-    if (anchoredZone.current === timezone) return;
-    anchoredZone.current = timezone;
-    setCalendarDate(toDisplayDate(new Date(), timezone));
-  }, [timezone]);
-
-  // Today's appointments, fetched independently of the calendar window.
-
+  // Today's appointments, fetched independently of anything else on the screen.
   const { data: todayData, loading: todayLoading } = useApiResource(
     ({ signal }) => {
       const dayStart = DateTime.now().setZone(timezone).startOf("day");
-      return bookingsApi
-        .list(
-          { from: dayStart.toUTC().toISO(), to: dayStart.plus({ days: 1 }).toUTC().toISO() },
-          { signal }
-        )
-        // Today's panel is a convenience over the calendar beside it; a failure
-        // here must not surface as a page-level error.
-        .catch(() => ({ bookings: [] }));
+      return (
+        bookingsApi
+          .list(
+            { from: dayStart.toUTC().toISO(), to: dayStart.plus({ days: 1 }).toUTC().toISO() },
+            { signal }
+          )
+          // Today's panel is a convenience; a failure here must not surface as a
+          // page-level error.
+          .catch(() => ({ bookings: [] }))
+      );
     },
     { deps: [timezone] }
   );
 
-  const todayBookings = todayData?.bookings ?? [];
-
-  // The window the calendar needs: the visible day or week, padded a day either
-  // side so an appointment on a boundary is never clipped.
-
-  const calendarRange = useMemo(() => {
-    const anchor = fromDisplayDate(calendarDate, timezone);
-    const unit = calendarView === Views.DAY ? "day" : "week";
-
-    return {
-      from: anchor.startOf(unit).minus({ days: 1 }).toUTC().toISO(),
-      to: anchor.endOf(unit).plus({ days: 1 }).toUTC().toISO(),
-    };
-  }, [calendarDate, calendarView, timezone]);
-
-
-  const {
-    data: calendarData,
-    loading: calendarLoading,
-    error: calendarError,
-    reload: loadCalendar,
-  } = useApiResource(
-    ({ signal }) => bookingsApi.list({ from: calendarRange.from, to: calendarRange.to }, { signal }),
-    {
-      enabled: mode === "calendar",
-      deps: [mode, calendarRange],
-      fallback: "Could not load your calendar.",
-    }
+  // Genuinely the most recently active conversations, from
+  // `GET /bookings/recent-messages`. This panel used to list *upcoming bookings*
+  // and stamp each row with the appointment time, so a box headed "Recent
+  // Messages" showed rows reading "in 2 days" — a message that had not been sent,
+  // dated in the future. Non-fatal: the dashboard must not fail on this panel.
+  const { data: recentData, loading: conversationsLoading } = useApiResource(
+    ({ signal }) => messagesApi.recent(3, { signal }).catch(() => ({ conversations: [] })),
+    { deps: [], initialData: { conversations: [] } }
   );
 
-  const {
-    data: listData,
-    loading: listLoading,
-    error: listError,
-    reload: loadList,
-  } = useApiResource(
-    ({ signal }) =>
-      // Empty filters are dropped rather than sent as blanks, which the API
-      // would otherwise have to interpret.
-      bookingsApi.list(
-        Object.fromEntries(Object.entries(filters).filter(([, value]) => value !== "")),
-        { signal }
-      ),
-    { enabled: mode === "list", deps: [mode, filters], fallback: "Could not load your bookings." }
+  const todayBookings = useMemo(
+    () =>
+      (todayData?.bookings ?? [])
+        .filter((booking) => booking.status !== "cancelled")
+        .sort((a, b) => a.startsAt.localeCompare(b.startsAt)),
+    [todayData]
   );
 
-  const calendarBookings = calendarData?.bookings ?? [];
-  const listBookings = listData?.bookings ?? [];
-
-  // Only the view actually on screen can raise a page-level error.
-  const error = mode === "calendar" ? calendarError : listError;
-
-  const updateFilter = (field) => (event) =>
-    setFilters((current) => ({ ...current, [field]: event.target.value }));
-
-  const clearFilters = () => setFilters({ status: "", serviceId: "", from: "", to: "" });
-  const activeFilterCount = Object.values(filters).filter(Boolean).length;
-  const hasFilters = activeFilterCount > 0;
-
-  const { pageItems, page, pageCount, setPage, total, from, to } = usePagination(
-    listBookings,
-    PAGE_SIZE
-  );
+  const firstName = user.name?.split(" ")[0];
+  const activeServiceCount = services.filter((service) => service.isActive !== false).length;
 
   return (
-    <Page>
-      <PageHeader
-        title="Schedule"
-        description="Everything booked with you. Every time on this page is drawn in your own timezone."
-        meta={
-          <span className={chipClasses}>
-            <Icon name="globe" size={12} />
-            {zoneName(timezone)}
-          </span>
-        }
-        actions={
-          <SegmentedControl
-            label="How to view your bookings"
-            panelId="schedule-panel"
-            value={mode}
-            onChange={setMode}
-            options={[
-              { id: "calendar", label: "Calendar", icon: "calendar" },
-              { id: "list", label: "List", icon: "list" },
-            ]}
-          />
-        }
-      />
+    <div className={`${container} py-margin-mobile md:py-margin-desktop`}>
+      {/* Welcome */}
+      <div className="mb-8">
+        <h1 className="font-h1-mobile text-h1-mobile text-primary md:font-h1 md:text-h1">
+          {firstName ? `${greeting(timezone)}, ${firstName}` : "Your schedule"}
+        </h1>
+        <p className="mt-2 font-body-lg text-body-lg text-on-surface-variant">
+          Here&apos;s what&apos;s happening with your practice today.
+        </p>
+      </div>
 
-      {error && (
-        <Alert
-          tone="error"
-          className="mb-4"
-          action={
-            <button
-              type="button"
-              onClick={mode === "calendar" ? loadCalendar : loadList}
-              className={`${secondaryButton} ${buttonSm}`}
-            >
-              <Icon name="refresh" size={14} />
-              Retry
-            </button>
-          }
-        >
-          {error}
-        </Alert>
+      {/* Warnings. The reference has no panel for these, but the application
+          does raise them and they block bookings — so they sit directly under
+          the greeting, where the eye already is. */}
+      {warnings.length > 0 && (
+        <div className="mb-8 overflow-hidden rounded-lg border border-outline-variant bg-surface">
+          <div className="flex items-center gap-2 border-b border-outline-variant bg-surface-container-low px-6 py-3">
+            <Icon name="warning" size={18} className="text-error" />
+            <p className="font-small text-small font-semibold text-on-surface">Needs attention</p>
+          </div>
+          <ul className="divide-y divide-outline-variant/50">
+            {warnings.map((warning) => (
+              <li key={warning.id}>
+                <Link
+                  to={warning.to}
+                  className="flex items-start gap-3 px-6 py-4 transition-colors hover:bg-surface-container-lowest"
+                >
+                  <Icon
+                    name={warning.icon}
+                    size={20}
+                    className="mt-0.5 shrink-0 text-on-surface-variant"
+                  />
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-small text-small font-semibold text-on-surface">
+                      {warning.title}
+                    </span>
+                    <span className="mt-1 block font-caption text-caption text-on-surface-variant">
+                      {warning.body}
+                    </span>
+                  </span>
+                  <span className="mt-0.5 flex shrink-0 items-center gap-1 font-caption text-caption font-semibold text-primary">
+                    {warning.actionLabel}
+                    <Icon name="arrow_forward" size={14} />
+                  </span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </div>
       )}
 
-      <div id="schedule-panel" role="tabpanel" aria-labelledby={`tab-${mode}`}>
-        {mode === "calendar" ? (
-          <SplitLayout
-            aside={
-              <>
-                {/* First in the sidebar: these are the things stopping bookings
-                    from happening at all, so they outrank today's schedule and
-                    the running totals. */}
-                <NeedsAttentionPanel
-                  health={health}
-                  user={user}
-                  services={services}
-                  loading={overviewLoading}
-                />
-                <TodaySchedule
-                  bookings={todayBookings}
-                  timezone={timezone}
-                  loading={todayLoading}
-                />
-                <SummaryPanel
-                  summary={summary}
-                  activeServiceCount={services.filter((s) => s.is_active !== false).length}
-                  loading={overviewLoading}
-                />
-              </>
-            }
-          >
-            {calendarLoading && calendarBookings.length === 0 ? (
-              <CalendarSkeleton />
-            ) : (
-              <ProviderCalendar
-                bookings={calendarBookings}
-                timezone={timezone}
-                date={calendarDate}
-                view={calendarView}
-                loading={calendarLoading}
-                onNavigate={setCalendarDate}
-                onView={setCalendarView}
-                onSelectBooking={(booking) => navigate(`/bookings/${booking.id}`)}
-              />
-            )}
-          </SplitLayout>
-        ) : (
-          <div className="space-y-3">
-            
-            <Toolbar>
-              <Icon name="sliders" size={15} className="text-ink-3" />
-
-              <Select
-                aria-label="Filter by status"
-                value={filters.status}
-                onChange={updateFilter("status")}
-                className="w-auto min-w-[9.5rem]"
-              >
-                {STATUS_OPTIONS.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </Select>
-
-              <Select
-                aria-label="Filter by service"
-                value={filters.serviceId}
-                onChange={updateFilter("serviceId")}
-                className="w-auto min-w-[10rem] max-w-[16rem]"
-              >
-                <option value="">All services</option>
-                {services.map((service) => (
-                  <option key={service.id} value={service.id}>
-                    {service.service_name}
-                    {service.is_active === false ? " (retired)" : ""}
-                  </option>
-                ))}
-              </Select>
-
-              <div className="flex items-center gap-1.5">
-                <input
-                  type="date"
-                  aria-label="From date"
-                  value={filters.from}
-                  onChange={updateFilter("from")}
-                  className={`${inputClasses} w-auto`}
-                />
-                <span aria-hidden="true" className="text-xs text-ink-3">
-                  to
-                </span>
-                <input
-                  type="date"
-                  aria-label="To date"
-                  value={filters.to}
-                  onChange={updateFilter("to")}
-                  className={`${inputClasses} w-auto`}
-                />
-              </div>
-
-              {hasFilters && (
-                <button
-                  type="button"
-                  onClick={clearFilters}
-                  className={`${ghostButton} ${buttonSm} ml-auto`}
-                >
-                  <Icon name="close" size={14} />
-                  Clear {activeFilterCount}
-                </button>
-              )}
-            </Toolbar>
-
-            {listLoading ? (
-              <div className={`${cardClasses} overflow-hidden`}>
-                <SkeletonRows count={8} variant="table" className="space-y-0" />
-              </div>
-            ) : listBookings.length === 0 ? (
-              <EmptyState
-                icon={hasFilters ? "search" : "calendar"}
-                title={hasFilters ? "No bookings match those filters" : "No bookings yet"}
-                description={
-                  hasFilters
-                    ? "Try widening the date range or clearing a filter."
-                    : "Once clients start booking, their appointments appear here."
-                }
-                {...(hasFilters
-                  ? { actionLabel: "Clear filters", onAction: clearFilters }
-                  : { actionLabel: "Set up a service", actionTo: "/services" })}
-              />
-            ) : (
-              <>
-                <BookingsTable bookings={pageItems} timezone={timezone} />
-                <Pagination
-                  page={page}
-                  pageCount={pageCount}
-                  onChange={setPage}
-                  total={total}
-                  from={from}
-                  to={to}
-                  unit="booking"
-                />
-              </>
-            )}
-          </div>
-        )}
+      {/* Metrics */}
+      <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-5 md:gap-gutter">
+        <MetricTile
+          label="Today's Appointments"
+          icon="calendar_today"
+          value={todayLoading ? null : todayBookings.length}
+        />
+        <MetricTile
+          label="Upcoming"
+          icon="event_upcoming"
+          value={summary?.upcomingBookings}
+          loading={overviewLoading}
+        />
+        <MetricTile
+          label="Total Bookings"
+          icon="check_circle"
+          value={summary?.completedBookings}
+          loading={overviewLoading}
+        />
+        <MetricTile
+          label="Total Earnings"
+          icon="payments"
+          value={summary ? formatPrice(summary.totalEarnings) : null}
+          loading={overviewLoading}
+        />
+        <MetricTile
+          label="Active Services"
+          icon="category"
+          value={overviewLoading ? null : activeServiceCount}
+          className="col-span-2 lg:col-span-1"
+        />
       </div>
-    </Page>
+
+      {/* Main layout */}
+      <div className="grid grid-cols-1 gap-gutter lg:grid-cols-12">
+        {/* Today's Schedule */}
+        <div className="rounded-lg border border-outline-variant bg-surface p-6 md:p-8 lg:col-span-8">
+          <div className="mb-6 flex items-center justify-between gap-4">
+            <h3 className="font-h3 text-h3 text-primary">Today&apos;s Schedule</h3>
+            <Link
+              to="/calendar"
+              className="rounded-md border border-outline-variant px-4 py-2 font-small text-small text-primary transition-colors hover:bg-surface-container-low"
+            >
+              View Full Calendar
+            </Link>
+          </div>
+
+          {todayLoading ? (
+            <SkeletonRows count={3} variant="line" />
+          ) : todayBookings.length === 0 ? (
+            <div className="rounded-md border border-dashed border-outline-variant px-6 py-12 text-center">
+              <Icon name="event_available" size={28} className="mx-auto text-on-surface-variant" />
+              <p className="mt-3 font-small text-small font-semibold text-on-surface">
+                Nothing booked today
+              </p>
+              <p className="mt-1 font-caption text-caption text-on-surface-variant">
+                Clients can only book times inside your published hours.
+              </p>
+              <Link
+                to="/availability"
+                className="mt-4 inline-flex rounded-md border border-outline-variant px-4 py-2 font-small text-small text-primary transition-colors hover:bg-surface-container-low"
+              >
+                Check availability
+              </Link>
+            </div>
+          ) : (
+            <div className="space-y-4">
+              {todayBookings.map((booking, index) => (
+                <ScheduleRow
+                  key={booking.id}
+                  booking={booking}
+                  timezone={timezone}
+                  isNext={booking.id === nextOf(todayBookings)?.id}
+                  gapBefore={gapBetween(todayBookings[index - 1], booking)}
+                />
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Right column */}
+        <div className="space-y-gutter lg:col-span-4">
+          {/* Quick Actions */}
+          <div className="rounded-lg border border-outline-variant bg-surface p-6">
+            <h3 className="mb-4 font-h3 text-h3 text-primary">Quick Actions</h3>
+            <div className="space-y-3">
+              <QuickAction to="/services?new=1" icon="add_circle" label="Add Service" />
+              <QuickAction to="/availability" icon="edit_calendar" label="Edit Availability" />
+              <QuickAction
+                to={`/providers/${user.id}`}
+                icon="account_circle"
+                label="View Public Profile"
+                trailingIcon="open_in_new"
+                external
+              />
+            </div>
+          </div>
+
+          {/* Recent Messages */}
+          <div className="rounded-lg border border-outline-variant bg-surface p-6">
+            <div className="mb-4 flex items-center justify-between gap-3">
+              <h3 className="font-h3 text-[20px] leading-tight text-primary">Recent Messages</h3>
+              <Link
+                to="/messages"
+                className="font-caption text-caption text-primary hover:underline"
+              >
+                View All
+              </Link>
+            </div>
+
+            <RecentConversations
+              conversations={recentData?.conversations ?? []}
+              loading={conversationsLoading}
+              unread={unread}
+            />
+          </div>
+
+          {/* Timezone note. Every time on this screen depends on it. */}
+          <p className="flex items-center gap-2 px-1 font-caption text-caption text-on-surface-variant">
+            <Icon name="public" size={14} />
+            Times shown in {zoneName(timezone)}
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/** The next appointment still to come today, if there is one. */
+function nextOf(bookings) {
+  const now = Date.now();
+  return bookings.find((booking) => new Date(booking.startsAt).getTime() > now);
+}
+
+/**
+ * The reference draws an italic "1 hour break" between two rows that are not
+ * adjacent. This reports a real gap rather than a decorative one, and only when
+ * it is at least a quarter of an hour.
+ */
+function gapBetween(previous, booking) {
+  if (!previous) return null;
+
+  const minutes = Math.round(
+    (new Date(booking.startsAt).getTime() - new Date(previous.endsAt).getTime()) / 60000
+  );
+  if (minutes < 15) return null;
+
+  return formatDuration(minutes);
+}
+
+function MetricTile({ label, icon, value, loading = false, className = "" }) {
+  return (
+    <div
+      className={`flex flex-col justify-between rounded-lg border border-outline-variant bg-surface p-4 md:p-6 ${className}`}
+    >
+      <div className="mb-4 flex items-start justify-between gap-2">
+        <p className="font-small text-small text-on-surface-variant">{label}</p>
+        <Icon name={icon} size={20} className="shrink-0 text-primary" />
+      </div>
+      {loading || value == null ? (
+        <SkeletonBlock className="h-8 w-20" />
+      ) : (
+        <p className="font-h2 text-h2 text-primary">{value}</p>
+      )}
+    </div>
+  );
+}
+
+function ScheduleRow({ booking, timezone, isNext, gapBefore }) {
+  const status = statusStyle(booking.status);
+  const done = booking.status === "completed" || booking.status === "no_show";
+
+  return (
+    <>
+      {gapBefore && (
+        <div className="flex items-center gap-4 px-4 py-2">
+          <div className="w-16 shrink-0 text-right" />
+          <div className="mx-2 hidden h-4 w-px border-l border-dashed border-outline-variant sm:block" />
+          <p className="font-caption text-caption italic text-on-surface-variant">
+            {gapBefore} break
+          </p>
+        </div>
+      )}
+
+      <div
+        className={`relative flex items-start gap-4 overflow-hidden rounded-md border p-4 ${
+          isNext
+            ? "border-primary/20 bg-primary/5"
+            : done
+              ? "border-outline-variant/50 bg-surface-container-low opacity-75"
+              : "border-outline-variant bg-surface"
+        }`}
+      >
+        {isNext && <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-primary" />}
+
+        <div className="w-16 shrink-0 pt-1 text-right">
+          <p
+            className={`font-small text-small ${
+              isNext ? "font-semibold text-primary" : "text-on-surface-variant"
+            }`}
+          >
+            {formatTime(booking.startsAt, timezone)}
+          </p>
+          {/* Only on the next one, and only while it is still ahead. Repeating
+              a countdown beside every row of a day's schedule is noise, and
+              printing one against an appointment that already happened would be
+              worse than noise. */}
+          {isNext && !done && (
+            <p className="mt-0.5 font-caption text-[10px] font-semibold text-primary">
+              {countdownTo(booking.startsAt)}
+            </p>
+          )}
+        </div>
+
+        <div className="mx-2 hidden h-12 w-px bg-outline-variant/50 sm:block" />
+
+        <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <p
+              className={`truncate font-body-lg text-body-lg font-semibold text-on-surface ${
+                done ? "line-through" : ""
+              }`}
+            >
+              {booking.client.name}
+            </p>
+            <p className="truncate font-caption text-caption text-on-surface-variant">
+              {booking.service.name} · {formatDuration(booking.service.duration)}
+            </p>
+          </div>
+
+          <div className="flex shrink-0 items-center gap-3">
+            <span className={status.className}>{status.label}</span>
+            <Link
+              to={`/messages/${booking.id}`}
+              title="Message client"
+              aria-label={`Message ${booking.client.name}`}
+              className="rounded-md border border-outline-variant p-2 text-on-surface-variant transition-colors hover:bg-surface"
+            >
+              <Icon name="chat" size={18} />
+            </Link>
+          </div>
+        </div>
+      </div>
+    </>
+  );
+}
+
+function QuickAction({ to, icon, label, trailingIcon = "chevron_right", external = false }) {
+  return (
+    <Link
+      to={to}
+      {...(external ? { target: "_blank", rel: "noreferrer" } : {})}
+      className="group flex w-full items-center justify-between rounded-md border border-outline-variant p-3 transition-all hover:border-primary hover:bg-surface-container-lowest"
+    >
+      <span className="flex items-center gap-3">
+        <Icon
+          name={icon}
+          size={20}
+          className="text-on-surface-variant transition-colors group-hover:text-primary"
+        />
+        <span className="font-small text-small text-on-surface">{label}</span>
+      </span>
+      <Icon name={trailingIcon} size={18} className="text-outline-variant" />
+    </Link>
   );
 }
 
 /**
- * The one place that says "something here needs you".
+ * The conversations behind the most recent appointments.
  *
- * These warnings were previously either nowhere (an incomplete profile) or
- * buried on the screen that causes them (a service whose hours cannot yield a
- * slot, which only appears once you open Availability and pick that service's
- * tab). Both share a property that makes a dashboard the right home: a provider
- * has no reason to go looking for them, because from where they are standing
- * nothing looks wrong — the calendar is simply empty.
- *
- * Each entry is one sentence and one link to the screen that fixes it. The full
- * explanation — which day, which buffer, what to change — stays on the
- * Availability page, where the controls are. Repeating it here would turn a
- * glance into a read, and the panel is meant to be glanceable.
- *
- * Renders nothing when there is nothing wrong, rather than an empty "all good"
- * card: a permanent panel that is usually blank stops being looked at.
+ * The reference previews the last message in each thread. Slotly cannot: there
+ * is no conversations endpoint, and fetching a thread is what marks it read — so
+ * a preview here would silently clear the unread badge just by loading the
+ * dashboard. Each row therefore carries the appointment it belongs to instead,
+ * which is real and is what the thread is about.
  */
-function NeedsAttentionPanel({ health, user, services, loading }) {
-  if (loading) return null;
+/**
+ * The most recently active threads: who it was with, what was last said, and
+ * when it was said.
+ *
+ * Every value here comes from a message. The panel previously rendered upcoming
+ * *bookings* — the name was the appointment's client, the timestamp was the
+ * appointment's start, and the order was by appointment date — which meant a box
+ * headed "Recent Messages" routinely showed a future time like "in 2 days" for a
+ * message nobody had sent.
+ *
+ * Unread threads are marked in place rather than summarised in a banner above
+ * the list, so it is clear *which* conversation is waiting.
+ */
+function RecentConversations({ conversations, loading, unread }) {
+  if (loading) return <SkeletonRows count={3} />;
 
-  const items = [];
-
-  // Ordered by how badly each one blocks a booking, most blocking first.
-  if (services.length > 0 && services.every((s) => s.is_active === false)) {
-    items.push({
-      icon: "tag",
-      text: "None of your services are active, so nothing can be booked.",
-      to: "/services",
-      action: "Manage services",
-    });
+  if (conversations.length === 0) {
+    return (
+      <p className="py-6 text-center font-caption text-caption text-on-surface-variant">
+        {unread > 0
+          ? "No conversations to show."
+          : "No messages yet. A thread opens as soon as someone books with you."}
+      </p>
+    );
   }
-
-  for (const name of health?.servicesWithoutHours ?? []) {
-    items.push({
-      icon: "clock",
-      text: `${name} has no hours set, so clients cannot book it.`,
-      to: "/availability",
-      action: "Set hours",
-    });
-  }
-
-  for (const service of health?.misconfiguredServices ?? []) {
-    const day = service.problemDays[0];
-    items.push({
-      icon: "alert",
-      // Deliberately short. The provider needs to know *that* it is broken and
-      // where to go; the Availability page tells them why and what to change.
-      text: day
-        ? `${service.serviceName} offers no times — your ${day.weekdayName} hours are too short for it once buffers are counted.`
-        : `${service.serviceName} offers no bookable times with its current hours.`,
-      to: "/availability",
-      action: "Fix hours",
-    });
-  }
-
-  if (!user.bio?.trim()) {
-    items.push({
-      icon: "user",
-      text: "Your profile has no bio yet — clients see it when choosing a provider.",
-      to: "/profile",
-      action: "Add a bio",
-    });
-  }
-
-  if (items.length === 0) return null;
 
   return (
-    <Section title="Needs attention" tone="warn" flush>
-      <ul className="divide-y divide-line-soft">
-        {items.map((item) => (
-          <li key={item.text} className="px-3 py-2.5">
-            <p className="flex gap-2 text-[0.8125rem] leading-relaxed text-ink-2">
-              <Icon name={item.icon} size={14} className="mt-0.5 shrink-0 text-warn-ink" />
-              <span>{item.text}</span>
-            </p>
-            <Link
-              to={item.to}
-              className="mt-1 ml-6 inline-flex items-center gap-1 text-xs font-medium text-brand transition hover:text-brand-strong"
-            >
-              {item.action}
-              <Icon name="arrowRight" size={13} />
-            </Link>
-          </li>
-        ))}
-      </ul>
-    </Section>
-  );
-}
-
-function SummaryPanel({ summary, activeServiceCount, loading }) {
-  if (!loading && !summary) return null;
-
-  const figures = [
-    { label: "Upcoming", icon: "calendar", value: summary && summary.upcomingBookings },
-    { label: "Completed", icon: "check", value: summary && summary.completedBookings },
-    { label: "Active services", icon: "tag", value: summary && activeServiceCount },
-    { label: "Total earnings", icon: "spark", value: summary && formatPrice(summary.totalEarnings) },
-  ];
-
-  return (
-    <Section title="At a glance" flush>
-      <dl className="divide-y divide-line-soft">
-        {figures.map((figure) => (
-          <div key={figure.label} className="flex items-center justify-between gap-3 px-3 py-2">
-            <dt className="flex items-center gap-2 text-[0.8125rem] text-ink-2">
-              <Icon name={figure.icon} size={14} className="text-ink-3" />
-              {figure.label}
-            </dt>
-            <dd className={metric}>
-              {figure.value == null ? <SkeletonBlock className="h-4 w-12" /> : figure.value}
-            </dd>
-          </div>
-        ))}
-      </dl>
-
-      <div className="border-t border-line-soft px-3 py-2">
+    <div className="divide-y divide-outline-variant/30">
+      {conversations.map((conversation) => (
         <Link
-          to="/services"
-          className="flex items-center justify-between text-xs font-medium text-brand transition hover:text-brand-strong"
+          key={conversation.bookingId}
+          to={`/messages/${conversation.bookingId}`}
+          className="-mx-2 flex cursor-pointer items-start gap-3 rounded-md px-2 py-3 transition-colors hover:bg-surface-container-lowest"
         >
-          Manage services
-          <Icon name="arrowRight" size={14} />
+          <Avatar
+            src={conversation.withUser.avatarUrl}
+            name={conversation.withUser.name}
+            size="md"
+            className="border border-outline-variant"
+          />
+
+          <span className="min-w-0 flex-1">
+            <span className="mb-0.5 flex items-baseline justify-between gap-2">
+              <span className="truncate font-small text-small font-semibold text-on-surface">
+                {conversation.withUser.name}
+              </span>
+              {/* The time the message was sent — always in the past, so this
+                  reads "2 hours ago" rather than the "in 2 days" the old
+                  appointment-based version produced. */}
+              <span className="shrink-0 font-caption text-[10px] text-on-surface-variant">
+                {relativeTime(conversation.lastMessage.at)}
+              </span>
+            </span>
+
+            <span className="flex items-center gap-2">
+              <span
+                className={`block min-w-0 flex-1 truncate font-caption text-caption ${
+                  conversation.unread > 0
+                    ? "font-semibold text-on-surface"
+                    : "text-on-surface-variant"
+                }`}
+              >
+                {/* "You:" is what makes a thread list scannable — without it a
+                    provider cannot tell whether they are waiting on a reply or
+                    owe one. */}
+                {conversation.lastMessage.fromMe && (
+                  <span className="text-on-surface-variant">You: </span>
+                )}
+                {conversation.lastMessage.preview}
+              </span>
+
+              {conversation.unread > 0 && (
+                <span className="inline-flex h-5 min-w-5 shrink-0 items-center justify-center rounded-full bg-primary px-1.5 font-caption text-[10px] font-bold text-on-primary">
+                  {conversation.unread > 9 ? "9+" : conversation.unread}
+                </span>
+              )}
+            </span>
+
+            <span className="mt-0.5 block truncate font-caption text-[10px] text-outline">
+              {conversation.serviceName}
+            </span>
+          </span>
         </Link>
-      </div>
-    </Section>
-  );
-}
-
-
-function CalendarSkeleton() {
-  return (
-    <div className={`${cardClasses} overflow-hidden`} aria-hidden="true">
-      <div className="flex items-center justify-between border-b border-line bg-subtle px-3 py-2.5">
-        <SkeletonBlock className="h-6 w-48" />
-        <SkeletonBlock className="h-6 w-28 rounded-md" />
-      </div>
-      <div className="grid grid-cols-7 gap-1 p-3">
-        {Array.from({ length: 7 }, (_, i) => (
-          <SkeletonBlock key={i} className="h-[520px] w-full rounded-md" />
-        ))}
-      </div>
+      ))}
     </div>
   );
 }
