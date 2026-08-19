@@ -371,6 +371,34 @@ length would be tidier arithmetic and worse for the client, who would be shown
 09:05, 10:15, 11:25 the moment the service had a five-minute buffer. The trade-off
 is that a candidate that does not land on the grid is not offered at all.
 
+**Booking is real time.** The only reason a generated slot is withheld for being
+too soon is that it has already started. A client can take an appointment later
+today, and one inside the next hour, exactly as the list offers it.
+
+This replaced a minimum-notice rule that measured notice in whole *calendar
+days*: the provider's entire current date was off the table however much of it
+remained, so at 08:00 nobody could book 17:00 the same day. That is not a
+scheduling constraint so much as an artefact of counting in dates, and it cost
+providers the last-minute bookings that fill a gap left by a cancellation.
+
+`MIN_BOOKING_LEAD_MINUTES` in `services/slotEngine.js` is the single knob, it is
+zero, and `earliestBookableInstant()` is the only place it is read. It is a
+rolling instant (`now + lead`) rather than a date boundary, so the answer moves
+continuously with the clock instead of jumping at midnight. Both the slot list
+and `POST /bookings` go through the same two gates — "has it started?" and "does
+it clear the lead time?" — so a client cannot POST past a rule the list applied.
+
+Two consequences worth knowing:
+
+- **The slot list goes stale while it is on screen.** The booking page drops a
+  time once it passes, on a one-minute clock tick. That is a local comparison and
+  not a poll: no request is made, and the server still decides what is bookable.
+- **A provider's cancellation cutoff can already have passed at the moment of
+  booking.** A client who books 40 minutes ahead under a 24-hour cutoff cannot
+  cancel it themselves. That is the provider's policy applying as written, and it
+  is reported through the usual `CANCELLATION_WINDOW_CLOSED` refusal rather than
+  being special-cased.
+
 ---
 
 ## No double-booking
@@ -475,6 +503,34 @@ on the event object, so everything the user clicks acts on real data.
 picker at signup. Someone travelling should not see their appointments jump
 around because their laptop changed zone.
 
+**Changing a *provider's* timezone is checked first.** For a client the timezone
+is a lens and nothing more. For a provider it is load-bearing: their weekly hours
+are a weekday plus a wall-clock time, read in whatever zone their account
+currently says, so changing the zone slides every working window along the real
+timeline. The appointments do not move — they are fixed instants — which is
+exactly the problem. A 9 AM appointment can land at 4 AM inside the new working
+day, outside the hours the provider has just declared, and
+`POST /bookings/:id/reschedule` validates against the *current* zone, so it is
+then an appointment they cannot move without widening their hours first.
+
+So the change is assessed before it is written, by
+`services/timezoneChange.js`:
+
+- Every active appointment that has not finished is judged **twice** — under the
+  zone in force now, and under the candidate zone — and reported only when it
+  fits today and would not fit afterwards. An appointment already outside the
+  provider's hours (because they trimmed their own day after it was booked) is
+  left out: that is not this change's doing, and no choice of zone fixes it.
+- `GET /availability/timezone-impact` answers the question with no write, so the
+  Settings page can name the affected appointments — with both clock readings of
+  the same unmoved instant — **before** Save is pressed.
+- `PATCH /auth/profile` runs the same assessment next to the write and refuses
+  with **409 `TIMEZONE_CONFLICT`**, carrying that report in `details`. Nothing at
+  all is written on a refusal, including any other field in the same request.
+- **There is no override.** The provider cancels or reschedules what the report
+  names, or keeps their current zone. A forced change would silently misalign a
+  live calendar, which is the outcome the whole check exists to prevent.
+
 ---
 
 ## Daylight saving
@@ -578,22 +634,29 @@ folder prefix.
 npm test
 ```
 
-**115 tests across 6 suites, Vitest.** `npm run test:watch` for watch mode.
+**334 tests across 13 suites, Vitest.** `npm run test:watch` for watch mode.
 
-Four of the six suites talk to a real PostgreSQL — the same one the app uses,
+Nine of the thirteen suites talk to a real PostgreSQL — the same one the app uses,
 read from `.env`, or any database named by `DATABASE_URL`. That is deliberate rather than lazy: the double-booking
 guarantee *is* a database constraint and the account-linking guarantee *is* a
-unique index, so mocking either would leave the actual mechanism untested. Both
+unique index, so mocking either would leave the actual mechanism untested. Those
 suites create their own fixtures under a namespaced email prefix
-(`slotly_test_…@test.invalid`) and remove them afterwards, so neither depends on
+(`slotly_test_…@test.invalid`) and remove them afterwards, so none depends on
 nor disturbs whatever else is in the database.
+
+The table below is the load-bearing coverage rather than a full inventory; the
+remaining `tests/api.*.test.js` suites exercise the HTTP layer — auth, service
+CRUD, parameter validation — and `tests/api.docs.test.js` fails the build if the
+OpenAPI document drifts from the routes and error codes the app actually serves.
 
 | File | Covers |
 |---|---|
-| `tests/slotEngine.test.js` | Slot generation from rules and buffers; **the appointment *and both buffers* fitting inside the window**, including the exactly-fits and one-minute-short cases; the candidate grid; exceptions (full-day, partial, multi-day, extra opening, block-beats-open); collision with existing bookings including the half-open boundary and buffer-only collisions; timezone conversion in both directions; **DST across both transitions**, including the shortened and lengthened window, gap and ambiguous boundaries, and a non-observing zone; the minimum-notice date floor; the range cap; the performance guard. |
+| `tests/slotEngine.test.js` | Slot generation from rules and buffers; **the appointment *and both buffers* fitting inside the window**, including the exactly-fits and one-minute-short cases; the candidate grid; exceptions (full-day, partial, multi-day, extra opening, block-beats-open); collision with existing bookings including the half-open boundary and buffer-only collisions; timezone conversion in both directions; **DST across both transitions**, including the shortened and lengthened window, gap and ambiguous boundaries, and a non-observing zone; **real-time booking** — the rest of today offered, a slot inside the next hour offered, a slot dropped the moment it starts, and the lead-time gate still honoured when a lead is asked for; the range cap; the performance guard. |
 | `tests/bookingRules.test.js` | The **cancellation cutoff at its exact boundary** — one second before, exactly on, one second after; the snapshot rule in both directions; a zero-hour cutoff; provider transitions; two-zone rendering including a date-line crossing and a DST offset change. |
 | `tests/booking.concurrency.test.js` | The **double-booking guard against a real database**: two simultaneous attempts, ten simultaneous attempts, partial overlap, buffer-only overlap, legal back-to-back, release on cancellation, retention on completion and no-show, provider isolation, and the reschedule path — including two reschedules racing for one slot. |
 | `tests/accountLinking.test.js` | **One user per email address**, against a real database: a password account signing in with Google for the first time, both social providers on one address in either order, and the profile, role and password surviving the link. |
+| `tests/api.booking.test.js` | The double-booking guard **one layer up**, as ten clients racing over HTTP: exactly one 201, the rest a distinguishable 409 `SLOT_TAKEN`. Plus the off-grid guard, and **real-time booking through the API** — every un-started slot left today is offered and no others, and one inside the next hour books successfully. |
+| `tests/api.lifecycle.test.js` | Cancellation and its cutoff, rescheduling, status transitions and the audit timeline, all request-shaped. Plus **the timezone-change guard**: the refusal and the report it carries, that nothing is written when it refuses (not even another field in the same request), that cancelling the stranded appointment unblocks it, that a harmless move and a re-save of the current zone both go through, that a pre-existing conflict is not blamed on the change, and that a client is never blocked. |
 
 Every time-dependent test injects `now` explicitly, so the suite cannot start
 failing in six months.
@@ -694,6 +757,28 @@ So a 60-minute service can offer starts every 30 minutes, and so buffers do not
 push start times onto ragged numbers. See
 [the candidate grid](#how-availability-is-modelled).
 
+**Why can a provider be blocked from changing their own timezone?**
+Because their timezone is not a display preference — it is the zone their weekly
+hours are interpreted in, so moving it moves their whole working day relative to
+appointments that cannot move. The alternatives were both worse: allow it
+silently and a provider discovers, later, that an appointment sits outside hours
+they can no longer reschedule it into; or warn and allow anyway, which is the
+same outcome with a dismissed dialog in front of it. Refusing is the only option
+that keeps the calendar and the hours in agreement, and it costs the provider
+nothing they cannot undo — the affected appointments are named, linked, and
+either cancelled or rescheduled in a couple of clicks.
+
+Two details make the refusal fair rather than obstructive. It reports only
+conflicts the *change* causes, never appointments already outside the hours; and
+it never fires when the posted zone is the one already saved, which is what the
+settings form sends on every unrelated save.
+
+**Why report the affected appointments rather than a count?**
+"3 appointments conflict" is a dead end. Each conflict carries the client, the
+service, and both clock readings of the one unmoved instant — "Tue 9 Jun, 9:00 AM
+→ 4:00 AM" — because that is the sentence that makes the problem legible, and a
+link straight to the booking is the shortest path to fixing it.
+
 ---
 
 ## Known limitations
@@ -704,6 +789,11 @@ push start times onto ragged numbers. See
   per the brief. Confirmations and cancellations surface as toasts, not messages.
 - **The slot list is not live.** It refreshes on navigation and after a lost race,
   but does not poll or hold a socket open — a deliberate choice, explained above.
+  Real-time booking sharpens the trade: today's remaining times are on the list,
+  so a page left open drifts further from the truth than it used to. The booking
+  screen drops a time once it passes, on a local clock tick, which handles the
+  common case; a slot someone else takes still only surfaces on the next
+  interaction.
 - **No rate limiting.** The login and registration endpoints would need it before
   facing the public internet.
 - **Uploads go to local disk.** Fine for a single instance; multiple instances

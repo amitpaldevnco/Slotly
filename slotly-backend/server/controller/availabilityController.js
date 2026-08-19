@@ -11,6 +11,7 @@ import {
 } from "../responseController/responseHandler.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
 import { diagnoseSlotFeasibility } from "../services/slotEngine.js";
+import { assessTimezoneChange, isResolvableTimezone } from "../services/timezoneChange.js";
 import { parseId } from "../middleware/validateParams.js";
 
 /**
@@ -507,7 +508,7 @@ export const validateAvailabilityConfiguration = async (req, res) => {
  *
  * ## What it deliberately ignores
  *
- * Bookings, one-off exceptions and the minimum-notice rule. None of those are
+ * Bookings, one-off exceptions and the booking lead time. None of those are
  * things the provider can change from the form in front of them, and a day that
  * is empty only because it is fully booked is not a misconfiguration. The
  * question being answered is about the recurring weekly shape.
@@ -643,6 +644,57 @@ export const getAvailabilityHealth = async (req, res) => {
   } catch (err) {
     console.error("getAvailabilityHealth error:", err.message);
     return errorResponse(res, "Could not check your availability", 500);
+  }
+};
+
+/**
+ * GET /api/availability/timezone-impact — provider only.
+ *
+ * Query: `timezone` (IANA).
+ *
+ * Answers "what would happen to my calendar if I moved to this zone?" without
+ * changing anything. This is the *preview*: the UI calls it as soon as the
+ * provider picks a zone from the list, so the affected appointments are on
+ * screen before they press Save rather than after.
+ *
+ * It is not the guard. `PATCH /auth/profile` runs the same assessment again on
+ * the write path, because a preview is advice — the provider's calendar can gain
+ * a booking between looking and saving, and only the check next to the UPDATE
+ * decides. Sharing one service means the two can never disagree about what
+ * counts as a conflict.
+ *
+ * @returns 200 always when the zone is valid, with `safe` saying whether the
+ *   change may go ahead. A conflict is not an error here — it is the answer to
+ *   the question that was asked. 400 for a zone Luxon cannot resolve.
+ */
+export const getTimezoneChangeImpact = async (req, res) => {
+  try {
+    const timezone = req.query.timezone;
+
+    if (!timezone) {
+      return validationErrorResponse(res, "Please fix the errors below", [
+        { field: "timezone", message: "Tell us which timezone you are considering" },
+      ]);
+    }
+    if (!isResolvableTimezone(timezone)) {
+      return validationErrorResponse(res, "Please fix the errors below", [
+        { field: "timezone", message: "That is not a timezone we recognise" },
+      ]);
+    }
+
+    const impact = await assessTimezoneChange({
+      providerId: req.user.userId,
+      timezone: String(timezone),
+    });
+
+    return successResponse(
+      res,
+      impact.safe ? "This timezone change is clear" : "This timezone change would strand appointments",
+      impact
+    );
+  } catch (err) {
+    console.error("getTimezoneChangeImpact error:", err.message);
+    return errorResponse(res, "Could not check that timezone change", 500);
   }
 };
 

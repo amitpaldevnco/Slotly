@@ -34,6 +34,20 @@
  *     can see which one went.
  *
  * That turns a lost race into an ordinary, legible outcome instead of an error.
+ *
+ * ## The one thing that *is* removed without being asked: a time that has passed
+ *
+ * Booking is real time, so today's remaining slots are on the list and the
+ * earliest of them can be minutes away. A response held on screen therefore goes
+ * stale in a way it never used to: leave this page open through 10:00 and the
+ * 10:00 button is still sitting there, and pressing it can only fail.
+ *
+ * A slot whose time has *gone* is treated differently from one someone else took,
+ * because the two are not the same event. Nobody took it; there is nothing to
+ * explain and nobody to be surprised by. So `usableSlots` drops it on a one-minute
+ * tick — see `useMinuteTick` — which is a clock, not a poll: no request is made,
+ * and the server is still the only thing that decides what is bookable. Removing
+ * it is strictly kinder than leaving a button that cannot work.
  */
 import { useEffect, useMemo, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
@@ -71,6 +85,31 @@ const WEEKDAY_INITIALS = ["S", "M", "T", "W", "T", "F", "S"];
  * beside it would jump every time the client paged.
  */
 const GRID_CELLS = 42;
+
+/** How often the page re-checks which of the times on screen have gone by. */
+const TICK_MS = 60_000;
+
+/**
+ * A value that changes once a minute, for re-deriving "has this time passed?".
+ *
+ * Deliberately a clock and not a poll. It issues no request and learns nothing
+ * new from the server — it only re-runs the comparison the page can already make
+ * for itself, so a slot that has quietly gone by stops being offered. Refreshing
+ * the *list* on a timer would be the polling this page explicitly does not do.
+ *
+ * The interval is cleared on unmount, so nothing keeps ticking behind a page the
+ * client has navigated away from.
+ */
+function useMinuteTick() {
+  const [tick, setTick] = useState(() => Date.now());
+
+  useEffect(() => {
+    const id = setInterval(() => setTick(Date.now()), TICK_MS);
+    return () => clearInterval(id);
+  }, []);
+
+  return tick;
+}
 
 export default function BookServicePage() {
   const { providerId, serviceId } = useParams();
@@ -153,19 +192,46 @@ export default function BookServicePage() {
     if (data) setFetchedAt(new Date());
   }, [data]);
 
+  // The instant "has this passed?" is judged against, re-read on the minute so
+  // times that have gone by drop off the list without a request. See
+  // useMinuteTick().
+  const now = useMinuteTick();
+
   /**
-   * Date → its free slots.
+   * Date → its free slots, with anything already started left out.
    *
    * The endpoint only returns dates that have something free, so membership of
-   * this map *is* availability — a calendar cell needs no second question.
+   * this map *is* availability — a calendar cell needs no second question. A day
+   * whose every remaining time has passed drops out of the map entirely, which is
+   * what makes its calendar cell go quiet by itself rather than staying clickable
+   * over an empty pane.
+   *
+   * The comparison is instant against instant: `startsAt` is the UTC instant the
+   * server sent, and `now` is a reading of the same clock. No wall-clock string,
+   * and no timezone, is involved in deciding this — the viewer's zone affects
+   * only how the surviving times are *labelled*.
+   *
+   * `now` is the ticking value rather than a fresh `Date.now()` because it is
+   * what makes this recompute at all: `data` has not changed when a slot lapses,
+   * so the tick is the dependency that notices.
    */
   const slotsByDate = useMemo(() => {
     const map = new Map();
-    for (const day of data?.days ?? []) map.set(day.date, day.slots);
-    return map;
-  }, [data]);
 
-  const firstAvailable = data?.days?.[0]?.date ?? null;
+    for (const day of data?.days ?? []) {
+      const stillAhead = day.slots.filter((slot) => Date.parse(slot.startsAt) > now);
+      if (stillAhead.length > 0) map.set(day.date, stillAhead);
+    }
+
+    return map;
+  }, [data, now]);
+
+  // Taken from the filtered map rather than from `data.days`, which is why it is
+  // not simply `data.days[0].date`: today can be the first day the server
+  // returned and still have nothing left on it by the time the client looks. The
+  // map is built in the server's ascending date order, so its first key is the
+  // earliest date that genuinely still has a time on offer.
+  const firstAvailable = slotsByDate.keys().next().value ?? null;
 
   // Land on the first day that actually has times. Without this, a month whose
   // 1st is closed opens on an empty pane and looks like a provider with no
@@ -183,6 +249,13 @@ export default function BookServicePage() {
   useEffect(() => {
     setSelectedSlot(null);
   }, [selectedDate]);
+
+  // Nor does a time that has since gone by, even if it is still selected. Letting
+  // it stay selected would leave Confirm Booking enabled over a slot the list no
+  // longer shows, and the only possible outcome would be a refusal.
+  useEffect(() => {
+    setSelectedSlot((current) => (current && Date.parse(current.startsAt) <= now ? null : current));
+  }, [now]);
 
   const daySlots = selectedDate ? (slotsByDate.get(selectedDate) ?? []) : [];
 
@@ -244,16 +317,14 @@ export default function BookServicePage() {
         });
         loadSlots();
       } else if (parsed.code === "SLOT_UNAVAILABLE") {
+        // Covers both "outside the provider's hours" and "that moment has now
+        // gone" — the second of which is reachable here in a way it was not when
+        // the earliest bookable time was a day away. Either way the honest thing
+        // is to say the time is no longer offered and reload, which is also what
+        // brings the rest of today's list up to date.
         setSelectedSlot(null);
         toast.error("That time is no longer offered. The list has been refreshed.");
         loadSlots();
-      } else if (parsed.code === "MINIMUM_NOTICE_REQUIRED") {
-        // Shouldn't happen through this picker — generateSlots() already
-        // excludes same-day slots — but the server enforces it independently,
-        // so a direct API call or a stale cached page can still hit it. The
-        // server's own message already names the earliest available date.
-        setSelectedSlot(null);
-        toast.error(parsed.message, { title: "A little more notice needed", duration: 8000 });
       } else {
         toast.error(parsed.message);
       }

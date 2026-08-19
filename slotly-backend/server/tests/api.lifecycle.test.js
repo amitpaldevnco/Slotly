@@ -374,12 +374,194 @@ describe("timezone changes never move an appointment", () => {
 
     const booking = await bookFirstFreeSlot(clientUser, moverService, mover);
 
-    await mover.agent.patch("/api/auth/profile").send({ timezone: "Asia/Tokyo" });
+    // Paris rather than Tokyo: the first free slot is 09:00 London, which reads
+    // 10:00 in Paris and is still inside a 09:00-17:00 day, so this move strands
+    // nothing and goes through. The describe below covers the move that would.
+    const changed = await mover.agent.patch("/api/auth/profile").send({ timezone: "Europe/Paris" });
+    expect(changed.status).toBe(200);
 
     const after = await clientUser.agent.get(`/api/bookings/${booking.id}`);
 
     expect(after.body.data.startsAt).toBe(booking.startsAt);
-    expect(after.body.data.time.provider.timezone).toBe("Asia/Tokyo");
+    expect(after.body.data.time.provider.timezone).toBe("Europe/Paris");
     expect(after.body.data.provider.timezoneAtBooking).toBe("Europe/London");
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("a provider's timezone change is checked against their calendar first", () => {
+  /**
+   * A provider open 09:00-17:00 every day, with one appointment booked at the
+   * first free slot - which is 09:00 in their own zone.
+   *
+   * Each test builds its own rather than sharing one, because half of them
+   * deliberately change the provider's zone and the other half assert it did not
+   * move; a shared fixture would leak that between them.
+   */
+  async function providerWithOneBooking(label) {
+    const prov = await createUser({ role: "provider", timezone: "Europe/London", label });
+    const svc = await createService(prov);
+    await setWeeklyHours(
+      prov,
+      [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startTime: "09:00", endTime: "17:00" }))
+    );
+    const booking = await bookFirstFreeSlot(clientUser, svc, prov);
+    return { prov, svc, booking };
+  }
+
+  it("refuses the change and names the appointments it would strand", async () => {
+    const { prov, booking } = await providerWithOneBooking("tzconflict");
+
+    // London 09:00 is 17:00 in Tokyo, and a 60-minute appointment starting at
+    // 17:00 runs past the end of a 09:00-17:00 day. The same instant as always,
+    // now outside the hours the provider would be declaring.
+    const response = await prov.agent.patch("/api/auth/profile").send({ timezone: "Asia/Tokyo" });
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("TIMEZONE_CONFLICT");
+    expect(response.body.details.safe).toBe(false);
+    expect(response.body.details.conflictCount).toBe(1);
+
+    const [conflict] = response.body.details.conflicts;
+    expect(conflict.bookingId).toBe(booking.id);
+    expect(conflict.reason).toBe("OUTSIDE_AVAILABILITY");
+    // Both clock readings of the one unmoved instant, so the provider can see
+    // exactly what the move does to it.
+    expect(conflict.startsAt).toBe(booking.startsAt);
+    expect(conflict.current.timezone).toBe("Europe/London");
+    expect(conflict.proposed.timezone).toBe("Asia/Tokyo");
+    expect(conflict.current.startsAt).not.toBe(conflict.proposed.startsAt);
+    // Enough to act on: who it is with, and what it is.
+    expect(conflict.client.name).toBeTruthy();
+    expect(conflict.service.name).toBeTruthy();
+  });
+
+  it("writes nothing when it refuses", async () => {
+    const { prov, booking } = await providerWithOneBooking("tzrollback");
+
+    await prov.agent.patch("/api/auth/profile").send({ timezone: "Asia/Tokyo" });
+
+    const me = await prov.agent.get("/api/auth/me");
+    expect(me.body.data.timezone).toBe("Europe/London");
+
+    const after = await clientUser.agent.get(`/api/bookings/${booking.id}`);
+    expect(after.body.data.startsAt).toBe(booking.startsAt);
+    expect(after.body.data.time.provider.timezone).toBe("Europe/London");
+  });
+
+  it("does not half-apply the request it refuses", async () => {
+    const { prov } = await providerWithOneBooking("tzatomic");
+
+    // A conflicting zone posted alongside a perfectly good bio. Refusing the
+    // request has to mean refusing all of it - saving the bio and dropping the
+    // timezone would leave the provider believing the whole form saved.
+    const response = await prov.agent
+      .patch("/api/auth/profile")
+      .send({ timezone: "Asia/Tokyo", bio: "Moving to Tokyo next month." });
+
+    expect(response.status).toBe(409);
+
+    const me = await prov.agent.get("/api/auth/me");
+    expect(me.body.data.timezone).toBe("Europe/London");
+    expect(me.body.data.bio).not.toBe("Moving to Tokyo next month.");
+  });
+
+  it("allows the change once the stranded appointment is cancelled", async () => {
+    const { prov, booking } = await providerWithOneBooking("tzcleared");
+
+    expect((await prov.agent.patch("/api/auth/profile").send({ timezone: "Asia/Tokyo" })).status).toBe(409);
+
+    // One of the two remedies the refusal asks for. A cancelled booking no longer
+    // occupies the calendar, so there is nothing left for the move to strand.
+    const cancelled = await prov.agent
+      .post(`/api/bookings/${booking.id}/cancel`)
+      .send({ reason: "Relocating - I will be in a different timezone." });
+    expect(cancelled.status).toBe(200);
+
+    const retry = await prov.agent.patch("/api/auth/profile").send({ timezone: "Asia/Tokyo" });
+    expect(retry.status).toBe(200);
+    expect(retry.body.data.timezone).toBe("Asia/Tokyo");
+  });
+
+  it("allows the change when it strands nothing", async () => {
+    const { prov } = await providerWithOneBooking("tzsafe");
+
+    const response = await prov.agent.patch("/api/auth/profile").send({ timezone: "Europe/Paris" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.timezone).toBe("Europe/Paris");
+  });
+
+  it("previews the same verdict before anything is saved", async () => {
+    const { prov, booking } = await providerWithOneBooking("tzpreview");
+
+    const bad = await prov.agent.get("/api/availability/timezone-impact?timezone=Asia/Tokyo");
+    // A conflict is the answer to the question asked here, not an error.
+    expect(bad.status).toBe(200);
+    expect(bad.body.data.safe).toBe(false);
+    expect(bad.body.data.conflicts.map((c) => c.bookingId)).toEqual([booking.id]);
+    expect(bad.body.data.upcomingCount).toBeGreaterThanOrEqual(1);
+
+    const good = await prov.agent.get("/api/availability/timezone-impact?timezone=Europe/Paris");
+    expect(good.body.data.safe).toBe(true);
+    expect(good.body.data.conflicts).toEqual([]);
+
+    // Looking changed nothing.
+    const me = await prov.agent.get("/api/auth/me");
+    expect(me.body.data.timezone).toBe("Europe/London");
+  });
+
+  it("treats re-saving the current zone as nothing to check", async () => {
+    const { prov } = await providerWithOneBooking("tznoop");
+
+    const impact = await prov.agent.get("/api/availability/timezone-impact?timezone=Europe/London");
+    expect(impact.body.data.changed).toBe(false);
+    expect(impact.body.data.safe).toBe(true);
+
+    // The settings form posts the zone with every save, so a provider editing an
+    // unrelated field sends their unchanged zone too. That must never be refused.
+    const saved = await prov.agent
+      .patch("/api/auth/profile")
+      .send({ timezone: "Europe/London", bio: "Still in London." });
+    expect(saved.status).toBe(200);
+  });
+
+  it("ignores appointments already outside the provider's hours", async () => {
+    // Not every appointment outside the hours is this change's doing. Here the
+    // provider trims their own day after the booking was made, so the appointment
+    // is already stranded - and an unrelated zone change must not be blamed for
+    // it, nor blocked by it, since no choice of zone would fix it.
+    const { prov } = await providerWithOneBooking("tzpreexisting");
+
+    await setWeeklyHours(
+      prov,
+      [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startTime: "13:00", endTime: "17:00" }))
+    );
+
+    const response = await prov.agent.patch("/api/auth/profile").send({ timezone: "Asia/Tokyo" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.timezone).toBe("Asia/Tokyo");
+  });
+
+  it("rejects a zone it could never have stored", async () => {
+    const { prov } = await providerWithOneBooking("tzbogus");
+
+    const response = await prov.agent.get("/api/availability/timezone-impact?timezone=Mars/Olympus_Mons");
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_FAILED");
+  });
+
+  it("does not stand in a client's way", async () => {
+    // A client's timezone drives display only. Nothing is interpreted in it, so
+    // there is nothing it can strand.
+    const traveller = await createUser({ role: "client", timezone: "Europe/London", label: "tzclient" });
+    await bookFirstFreeSlot(traveller);
+
+    const response = await traveller.agent.patch("/api/auth/profile").send({ timezone: "Asia/Tokyo" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.timezone).toBe("Asia/Tokyo");
   });
 });

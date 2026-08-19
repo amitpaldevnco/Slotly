@@ -28,6 +28,15 @@
  * instant was 09:00 in this zone on this date?", which is the question the
  * provider actually means.
  *
+ * ## Booking lead time: real time, with no day floor
+ *
+ * The only thing standing between a generated slot and a client is whether it
+ * has already started. There is no minimum notice: a slot later today is
+ * offered, and so is one forty minutes from now. `MIN_BOOKING_LEAD_MINUTES` is
+ * the single knob, it is zero, and `earliestBookableInstant()` is where it is
+ * read. Both the slot list and the create endpoint go through the same two
+ * gates, so a client can never POST their way past a rule the list enforced.
+ *
  * ## Daylight-saving policy (documented in the README too)
  *
  * - A window keeps its *wall-clock* boundaries across a DST change. A provider
@@ -58,16 +67,22 @@ const MINUTE_MS = 60_000;
 export const DEFAULT_SLOT_INTERVAL = 30;
 
 /**
- * Minimum number of full calendar days, in the provider's timezone, that must
- * stand between "now" and a client-bookable slot's calendar date.
+ * Minutes of lead time a client-bookable slot must still have ahead of it.
  *
- * This is a business rule, not a technical one: a slot ten minutes from now is
- * a perfectly real future instant and would pass `hasInstantPassed()`, but
- * same-day bookings are not offered at all — a provider needs at least until
- * the start of their next day to prepare, however early in the current day
- * "now" happens to be.
+ * Zero: **Slotly books in real time.** A slot forty minutes from now is a real
+ * future instant on the provider's calendar, and it is offered as one. This
+ * replaced a calendar-day floor that took the provider's entire current day off
+ * the table however much of it remained — at 08:00 a provider could not be
+ * booked at 17:00 the same day, which is not a scheduling constraint so much as
+ * an artefact of measuring notice in whole dates.
+ *
+ * It stays a named constant rather than being inlined as a literal 0 because it
+ * is the one place a lead time would be reintroduced, and because
+ * `earliestBookableInstant()` reads better with a name than with a bare
+ * argument. The only remaining floor is `hasInstantPassed()`: a slot must not
+ * have started yet.
  */
-export const MIN_BOOKING_NOTICE_DAYS = 1;
+export const MIN_BOOKING_LEAD_MINUTES = 0;
 
 /**
  * Resolves a wall-clock minute-of-day on a given local date to a real instant.
@@ -292,34 +307,34 @@ export function hasInstantPassed(instant, timezone, now = new Date()) {
 }
 
 /**
- * The earliest instant a client may book, given the minimum notice policy.
+ * The earliest instant a client may book — a rolling point in time.
  *
- * This is deliberately a **calendar-date** floor, not a rolling "24 hours from
- * now" window — the two sound similar but behave very differently near a day
- * boundary, and the rule specifically wants the calendar-date behaviour:
+ * This used to be a **calendar-date** floor: local midnight, one or more whole
+ * days after `now`'s date in the provider's zone. That is what made same-day
+ * booking impossible, and it is gone. The floor is now `now` itself plus
+ * `leadMinutes`, which at the default of zero means "anything that has not
+ * already started", so a 16:30 slot is bookable at 15:55 and a client who wants
+ * an appointment inside the hour gets one.
  *
- *   - At 00:05 on the provider's 7th, the floor is 00:00 on the 8th — 23h55m
- *     away.
- *   - At 23:55 on the same 7th, the floor is *still* 00:00 on the 8th — 5
- *     minutes away.
+ * A rolling instant rather than a date boundary is the whole point: the answer
+ * moves continuously with the clock instead of jumping at midnight, so nothing
+ * about how much of the current day remains changes what is on offer.
  *
- * In both cases "today" is entirely off the table; how much of today remains
- * is irrelevant. A rolling window (`now + 24h`) would instead let the 23:55
- * caller book as early as 23:55 the next day, which is a different rule than
- * the one described. Anchoring on `now`'s local *date* — via `startOf("day")`
- * — and adding whole days is what makes it a date floor rather than a moving
- * point in time.
+ * `timezone` no longer affects the result — an instant plus a duration is the
+ * same instant in every zone — but it is still taken, and the return value is
+ * still expressed in it, because every caller-facing message built from this
+ * ("the earliest time available is …") has to be rendered in the provider's
+ * zone, and because a signature change would silently reinterpret the third
+ * positional argument at call sites that still passed days.
  *
  * @param {Date} now Instant to treat as "the present".
- * @param {string} timezone Provider's IANA zone — whose calendar date counts,
- *   since the provider is who this notice period protects.
- * @param {number} [noticeDays] Days of notice required. Defaults to
- *   MIN_BOOKING_NOTICE_DAYS.
- * @returns {DateTime} Local midnight, `noticeDays` days after `now`'s date in
- *   `timezone` — a real instant, not a wall-clock string.
+ * @param {string} timezone Provider's IANA zone. Used for rendering only.
+ * @param {number} [leadMinutes] Minutes of lead time required. Defaults to
+ *   MIN_BOOKING_LEAD_MINUTES (zero — real-time booking).
+ * @returns {DateTime} `now` plus `leadMinutes`, read in `timezone`.
  */
-export function earliestBookableInstant(now, timezone, noticeDays = MIN_BOOKING_NOTICE_DAYS) {
-  return toDateTime(now).setZone(timezone).startOf("day").plus({ days: noticeDays });
+export function earliestBookableInstant(now, timezone, leadMinutes = MIN_BOOKING_LEAD_MINUTES) {
+  return toDateTime(now).setZone(timezone).plus({ minutes: leadMinutes });
 }
 
 /**
@@ -352,11 +367,10 @@ export function earliestBookableInstant(now, timezone, noticeDays = MIN_BOOKING_
  * @param {Date} [args.now] Instant to treat as "the present". Injectable so
  *   tests are not at the mercy of the wall clock.
  * @param {number} [args.stepMinutes] Overrides the service's slot_interval.
- * @param {number} [args.minNoticeDays] Overrides MIN_BOOKING_NOTICE_DAYS — the
- *   number of full calendar days, in the provider's timezone, required between
- *   `now` and a bookable slot. Same-day slots are never offered even when
- *   `noticeDays` is small and hours remain in the current day; see
- *   `earliestBookableInstant()`.
+ * @param {number} [args.minLeadMinutes] Overrides MIN_BOOKING_LEAD_MINUTES — the
+ *   minutes of lead time a slot must still have ahead of it. Defaults to zero,
+ *   which is real-time booking: every slot that has not yet started is offered,
+ *   including ones later today and ones inside the next hour.
  * @returns {Array<{startsAt:string,endsAt:string,blockedFrom:string,blockedTo:string}>}
  *   ISO-8601 UTC strings, ascending. Empty array if nothing is bookable.
  * @throws {Error} If the range exceeds MAX_RANGE_DAYS or the timezone is invalid.
@@ -371,7 +385,7 @@ export function generateSlots({
   busy = [],
   now = new Date(),
   stepMinutes,
-  minNoticeDays = MIN_BOOKING_NOTICE_DAYS,
+  minLeadMinutes = MIN_BOOKING_LEAD_MINUTES,
 }) {
   const rangeStartMs = toDateTime(rangeStart).toMillis();
   const rangeEndMs = toDateTime(rangeEnd).toMillis();
@@ -422,7 +436,7 @@ export function generateSlots({
   // `timezone` changes as the loop walks the grid, so there is nothing to gain
   // by recomputing this inside it — and computing it here keeps the loop body
   // reading as two independent, named gates rather than inline arithmetic.
-  const earliestBookableMs = earliestBookableInstant(now, timezone, minNoticeDays).toMillis();
+  const earliestBookableMs = earliestBookableInstant(now, timezone, minLeadMinutes).toMillis();
 
   for (const window of windows) {
     // Candidate starts come from the shared helper rather than being computed
@@ -440,12 +454,15 @@ export function generateSlots({
       //  1. The slot has not already happened for the provider. See
       //     hasInstantPassed() for exactly why this can never become a
       //     wall-clock comparison.
-      //  2. It clears the minimum booking notice — an entire calendar day, in
-      //     the provider's timezone, regardless of how much of "today" is
-      //     still ahead. See earliestBookableInstant(). This gate is strictly
-      //     stronger than (1) whenever minNoticeDays >= 1 (the floor is always
-      //     later than `now`), but both are kept and named separately so the
-      //     policy stays correct even if minNoticeDays is ever reduced to 0.
+      //  2. It clears the minimum lead time. At the default of zero minutes
+      //     this is the same question as (1) and never rejects anything (1)
+      //     accepted — which is exactly what real-time booking means. Both are
+      //     kept and named separately so that reintroducing a lead time is a
+      //     one-constant change rather than a rewrite of this loop.
+      //
+      // Note what is *not* here any more: a calendar-day floor that removed the
+      // provider's whole current date. Slots later today, and slots inside the
+      // next hour, now reach the client.
       //
       // `startMs` is already a real UTC instant (it came from
       // wallClockToInstant().toMillis() when the window was built), so both
@@ -552,7 +569,7 @@ export function minimumWindowMinutes({ duration, bufferBefore, bufferAfter, step
  *
  * This powers the provider-side warning. It deliberately answers a question
  * about the *recurring weekly configuration*, not about any particular date:
- * bookings, one-off blocks, the minimum-notice rule and "is it in the past" are
+ * bookings, one-off blocks, the booking lead time and "is it in the past" are
  * all left out, because none of them are things the provider can fix by editing
  * the settings in front of them. A day that is empty only because it is fully
  * booked is not a misconfiguration and must not be reported as one.

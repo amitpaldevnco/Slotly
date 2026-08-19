@@ -90,6 +90,21 @@ export const completeProfile = (payload) =>
  * Changing `timezone` here re-renders every appointment in the new zone without
  * moving any of them — a booking is a fixed instant, and only the reader changed.
  *
+ * ## For a provider, `timezone` can be refused
+ *
+ * A provider's zone is what their weekly availability rules are read in, so
+ * moving it slides every working window along the timeline while the
+ * appointments already booked stay put. Rejects 409 `TIMEZONE_CONFLICT` when the
+ * new zone would leave an upcoming appointment outside those hours, with
+ * `details` carrying the full report — `conflicts`, each naming the booking, the
+ * client, and both clock readings of the one unmoved instant. **Nothing is
+ * written on a refusal, including any other field in the same request**, so the
+ * form should treat it as "no save happened" rather than a partial one.
+ *
+ * There is no override. The provider cancels or reschedules what the report
+ * names, or keeps their current zone. `availability.timezoneImpact()` asks the
+ * same question ahead of time so the answer can be on screen before they save.
+ *
  * @param {FormData} formData Any of `phoneNumber`, `timezone`, `bio`,
  *   `businessName`, `businessType`, `qualifications`, `profilePicture`.
  */

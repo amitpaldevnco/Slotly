@@ -73,7 +73,7 @@ export const openApiDocument = {
               "CONFLICT",
               "SLOT_TAKEN",
               "SLOT_UNAVAILABLE",
-              "MINIMUM_NOTICE_REQUIRED",
+              "TIMEZONE_CONFLICT",
               "CANCELLATION_WINDOW_CLOSED",
               "BOOKING_NOT_ACTIVE",
               "APPOINTMENT_NOT_STARTED",
@@ -116,6 +116,75 @@ export const openApiDocument = {
           timezone: { type: "string", example: "Europe/London" },
           formatted: { type: "string", example: "13 Jan 2025, 9:00 AM" },
           offset: { type: "string", example: "GMT" },
+        },
+      },
+
+      TimezoneImpact: {
+        type: "object",
+        description:
+          "What a provider's timezone change would do to appointments already booked. " +
+          "Returned by GET /availability/timezone-impact, and carried in `details` on a " +
+          "409 TIMEZONE_CONFLICT from PATCH /auth/profile — one shape, so a client renders " +
+          "the preview and the refusal with the same code.",
+        properties: {
+          currentTimezone: { type: "string", example: "Europe/London" },
+          timezone: { type: "string", description: "The candidate zone.", example: "America/New_York" },
+          changed: {
+            type: "boolean",
+            description: "False when the candidate is the zone already stored — nothing to check.",
+          },
+          safe: {
+            type: "boolean",
+            description: "The one field to branch on. True means the change may proceed.",
+          },
+          upcomingCount: {
+            type: "integer",
+            description: "Active appointments that have not finished yet, conflicting or not.",
+          },
+          conflictCount: { type: "integer" },
+          conflicts: {
+            type: "array",
+            description:
+              "Appointments that fit inside the provider's hours today and would not " +
+              "afterwards. Each carries both clock readings of the same unmoved instant, " +
+              "so the provider can see what the change does to it.",
+            items: { $ref: "#/components/schemas/TimezoneConflict" },
+          },
+        },
+      },
+      TimezoneConflict: {
+        type: "object",
+        properties: {
+          bookingId: { type: "integer" },
+          status: { type: "string", enum: ["booked", "rescheduled"] },
+          startsAt: {
+            type: "string",
+            format: "date-time",
+            description: "The instant, unchanged. A timezone edit never moves it.",
+          },
+          endsAt: { type: "string", format: "date-time" },
+          service: { type: "object" },
+          client: { type: "object" },
+          current: {
+            type: "object",
+            description: "How the appointment reads in the zone in force now.",
+            properties: {
+              timezone: { type: "string" },
+              startsAt: { type: "string", example: "Mon 9 Jun 2025, 9:00 AM" },
+              endsAt: { type: "string", example: "10:00 AM" },
+            },
+          },
+          proposed: {
+            type: "object",
+            description: "How the same instant would read in the candidate zone.",
+            properties: {
+              timezone: { type: "string" },
+              startsAt: { type: "string", example: "Mon 9 Jun 2025, 4:00 AM" },
+              endsAt: { type: "string", example: "5:00 AM" },
+            },
+          },
+          reason: { type: "string", enum: ["OUTSIDE_AVAILABILITY"] },
+          detail: { type: "string", description: "A sentence the UI can show as-is." },
         },
       },
 
@@ -408,7 +477,9 @@ export const openApiDocument = {
       patch: {
         tags: ["Auth"],
         summary: "Update the signed-in user's profile",
-        description: `${bearerNote} multipart/form-data. The optional \`profilePicture\` file is validated by sniffing its header — JPG or PNG, 5MB cap — never by its extension.`,
+        description: `${bearerNote} multipart/form-data. The optional \`profilePicture\` file is validated by sniffing its header — JPG or PNG, 5MB cap — never by its extension.
+
+**A provider's \`timezone\` is a guarded field.** It is the zone their availability rules are interpreted in, so changing it can leave appointments already on the calendar outside their working hours. The change is assessed before anything is written and refused with 409 \`TIMEZONE_CONFLICT\` when it would strand any upcoming appointment, with the full report — the same shape \`GET /availability/timezone-impact\` returns — in \`details\`. Nothing at all is written on a refusal, including an uploaded photo in the same request. There is no override: the provider cancels or reschedules the named appointments, or keeps their current zone. A client's timezone drives display only and is never refused.`,
         requestBody: {
           content: {
             "multipart/form-data": {
@@ -430,6 +501,9 @@ export const openApiDocument = {
           200: { description: "Updated" },
           400: errorRef("VALIDATION_FAILED, including a rejected upload"),
           401: errorRef("No session"),
+          409: errorRef(
+            "TIMEZONE_CONFLICT — a provider's new zone would leave upcoming appointments outside their working hours. `details` carries the TimezoneImpact report naming them."
+          ),
         },
       },
     },
@@ -503,7 +577,7 @@ export const openApiDocument = {
         tags: ["Slots"],
         summary: "Bookable slots for one service",
         description:
-          "Slots are derived from the provider's hours, the service's duration and buffers, and existing bookings. `from` and `to` are calendar dates read in `timezone`, and `to` is inclusive. Ranges wider than 62 days are refused with RANGE_TOO_WIDE.",
+          "Slots are derived from the provider's hours, the service's duration and buffers, and existing bookings. `from` and `to` are calendar dates read in `timezone`, and `to` is inclusive. Ranges wider than 62 days are refused with RANGE_TOO_WIDE.\n\nBooking is real time: the only slot excluded for being too soon is one that has already started, so a range beginning today returns the rest of today, including slots inside the next hour. Because of that, a response held on screen goes stale — it carries no expiry, and the client should re-request rather than trust an old list.",
         security: [],
         parameters: [
           { name: "id", in: "path", required: true, schema: { type: "integer" } },
@@ -805,7 +879,7 @@ It exists because the service form cannot answer the question locally. Duration,
 
 Routed through the same \`diagnoseSlotFeasibility()\` the validation endpoint uses, which walks the same \`candidateStartsInWindow()\` the real slot list walks — so the count previewed here is the count that will be offered.
 
-**Ignores bookings, one-off exceptions and the minimum-notice rule**, none of which the provider can change from the form in front of them. A day empty only because it is fully booked is not a misconfiguration.`,
+**Ignores bookings, one-off exceptions and the booking lead time**, none of which the provider can change from the form in front of them. A day empty only because it is fully booked is not a misconfiguration.`,
         requestBody: {
           required: true,
           content: {
@@ -887,7 +961,7 @@ Routed through the same \`diagnoseSlotFeasibility()\` the validation endpoint us
 
 The same feasibility check as \`POST /availability/validate\`, run against what is already stored rather than a draft, once per active service. This is what powers the dashboard warning that a service is configured so that it can never be booked.
 
-Like the dry run, it deliberately ignores bookings, one-off blocks and the minimum-notice rule: none of those are things a provider can fix by editing their settings, and reporting a fully-booked day as a misconfiguration would be noise.`,
+Like the dry run, it deliberately ignores bookings, one-off blocks and the booking lead time: none of those are things a provider can fix by editing their settings, and reporting a fully-booked day as a misconfiguration would be noise.`,
         responses: {
           200: {
             description: "One entry per active service.",
@@ -929,6 +1003,41 @@ Like the dry run, it deliberately ignores bookings, one-off blocks and the minim
               },
             },
           },
+          403: errorRef("Not a provider"),
+        },
+      },
+    },
+
+    "/availability/timezone-impact": {
+      get: {
+        tags: ["Availability"],
+        summary: "What would changing timezone do to my calendar?",
+        description: `${bearerNote} Provider role required.
+
+A dry run of a timezone change, with no write. Weekly hours are stored as a weekday plus a wall-clock time and are read in the provider's *current* zone, so changing that zone slides every working window along the timeline while appointments already booked stay on the exact instants they were booked for. An appointment can end up outside the hours the provider has just declared.
+
+Every active appointment that has not finished yet is judged twice — under the zone in force now, and under the candidate zone — and reported only when it fits today and would not fit afterwards. An appointment already outside the provider's hours is left out: that is not something this change caused, and no choice of zone fixes it.
+
+A conflict is a 200 here, not an error: it is the answer to the question asked. The enforcement lives on \`PATCH /auth/profile\`, which runs the same assessment again next to the write, because a preview cannot account for a booking that arrives between looking and saving.`,
+        parameters: [
+          {
+            name: "timezone",
+            in: "query",
+            required: true,
+            schema: { type: "string" },
+            description: "The candidate IANA zone.",
+          },
+        ],
+        responses: {
+          200: {
+            description: "The assessment. Branch on `safe`.",
+            content: {
+              "application/json": {
+                schema: { $ref: "#/components/schemas/TimezoneImpact" },
+              },
+            },
+          },
+          400: errorRef("VALIDATION_FAILED — missing timezone, or one Luxon cannot resolve"),
           403: errorRef("Not a provider"),
         },
       },
@@ -1072,7 +1181,7 @@ Like the dry run, it deliberately ignores bookings, one-off blocks and the minim
             },
           },
           400: errorRef(
-            "VALIDATION_FAILED, the time has already passed, or MINIMUM_NOTICE_REQUIRED (same-day bookings are never offered — see the minimum notice policy in the README)"
+            "VALIDATION_FAILED, or SLOT_UNAVAILABLE because the time has already passed. There is no minimum notice: a slot later today, or inside the next hour, is bookable the moment the slot list offers it."
           ),
           403: errorRef("Not a client account"),
           404: errorRef("No such service, or it has been retired"),

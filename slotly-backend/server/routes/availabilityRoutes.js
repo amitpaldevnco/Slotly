@@ -18,6 +18,7 @@ import {
   validateAvailabilityConfiguration,
   previewServiceSlots,
   getAvailabilityHealth,
+  getTimezoneChangeImpact,
 } from "../controller/availabilityController.js";
 import { verifyToken, requireProviderRole } from "../middleware/authMiddleware.js";
 import { registerNumericParams } from "../middleware/validateParams.js";
@@ -38,6 +39,10 @@ router.post("/validate", validateAvailabilityConfiguration);
 // which is what the service form needs while someone types a duration.
 router.post("/preview", previewServiceSlots);
 router.get("/health", getAvailabilityHealth);
+// A dry run of a timezone change. It lives here rather than under /auth because
+// what it inspects is availability — the provider's hours re-read in another
+// zone — even though the write it guards is on the profile endpoint.
+router.get("/timezone-impact", getTimezoneChangeImpact);
 router.delete("/rules/service/:serviceId", clearServiceAvailabilityOverride);
 router.post("/exceptions", createAvailabilityException);
 router.delete("/exceptions/:id", deleteAvailabilityException);

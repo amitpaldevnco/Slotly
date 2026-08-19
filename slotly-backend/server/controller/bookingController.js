@@ -29,7 +29,6 @@ import {
   computeBookingSpan,
   isOfferedSlotStart,
   hasInstantPassed,
-  earliestBookableInstant,
 } from "../services/slotEngine.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
 import { parseId } from "../middleware/validateParams.js";
@@ -265,35 +264,26 @@ export const createBooking = async (req, res) => {
     }
     const svc = service.rows[0];
 
+    // The only time-based floor on a booking: has this instant already gone?
+    //
+    // Slotly books in real time. There is no minimum notice — no "a day ahead",
+    // no rolling 24-hour window — so a client can take a slot later today, or
+    // one inside the next hour, exactly as the slot list offers it. What remains
+    // is that the appointment must still be ahead of the provider.
+    //
     // The provider owns the calendar, so "has this already happened?" is
     // always answered in the provider's timezone, never the caller's — a
     // client 16 hours ahead of the provider can see a slot as tomorrow while
     // it is already this afternoon, and past, for the provider.
+    //
+    // Checked here and not only in the slot list, because a client could
+    // otherwise POST a time the list would never have shown them.
     if (hasInstantPassed(start, svc.provider_timezone)) {
       return errorResponse(
         res,
         "That appointment time has already passed",
         400,
         ERROR_CODES.SLOT_UNAVAILABLE
-      );
-    }
-
-    // Minimum booking notice: a client can never book an appointment that
-    // falls on the provider's *current* calendar day, however much of that day
-    // is still ahead of them — only from the provider's next local day onward.
-    // This is checked here, on the write path, and not only in the slot list,
-    // because a client could otherwise bypass the rule with a direct API call;
-    // see earliestBookableInstant() for why it is a calendar-date floor rather
-    // than a rolling "24 hours from now" window.
-    const earliestBookable = earliestBookableInstant(new Date(), svc.provider_timezone);
-    if (start.getTime() < earliestBookable.toMillis()) {
-      return errorResponse(
-        res,
-        `Bookings need at least a day's notice. The earliest available date is ${earliestBookable.toFormat(
-          "d LLLL yyyy"
-        )}.`,
-        400,
-        ERROR_CODES.MINIMUM_NOTICE_REQUIRED
       );
     }
 
@@ -766,12 +756,10 @@ export const rescheduleBooking = async (req, res) => {
       return errorResponse(res, "Pick a time in the future", 400, ERROR_CODES.SLOT_UNAVAILABLE);
     }
 
-    // The minimum booking notice (earliestBookableInstant) deliberately does
-    // NOT apply here. That rule protects a provider from a *client* booking
-    // something on their current calendar day; a provider moving their own
-    // appointment onto later today is the provider managing their own
-    // schedule, not a client claiming last-minute time. Only "not in the past"
-    // applies to a reschedule, checked above.
+    // "Not in the past" is the only time-based floor here, checked above — the
+    // same one the create path applies now that Slotly books in real time. A
+    // provider moving an appointment onto later this afternoon is ordinary
+    // schedule management, and so is a client booking that same slot directly.
 
     // Keep the booking's own snapshotted duration rather than the service's
     // current one: rescheduling should move an appointment, not silently resize

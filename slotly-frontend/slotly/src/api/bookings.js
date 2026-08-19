@@ -12,9 +12,13 @@
  *
  * - `SLOT_TAKEN` (409) — someone else booked it first. The booking page shows
  *   "that slot just went" and refreshes the list rather than a generic error.
- * - `SLOT_UNAVAILABLE` (409/400) — the time is outside the provider's hours, or
- *   is not one of the start times they publish.
- * - `MINIMUM_NOTICE_REQUIRED` (400) — same-day bookings are not offered.
+ * - `SLOT_UNAVAILABLE` (409/400) — the time is outside the provider's hours, is
+ *   not one of the start times they publish, or has already started. There is no
+ *   minimum-notice code to branch on: booking is real time, so a slot later today
+ *   or inside the next hour is bookable, and the only time-based refusal left is
+ *   that the moment has gone. Since it can go while the client is looking at it,
+ *   this is a code the booking screen should refresh on rather than treat as a
+ *   dead end.
  * - `CANCELLATION_WINDOW_CLOSED` (409) — past the provider's cutoff;
  *   `details.deadline` says when it was.
  * - `BOOKING_NOT_ACTIVE` (409) — already cancelled or completed.

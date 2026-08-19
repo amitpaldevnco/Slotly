@@ -90,3 +90,26 @@ export const deleteException = (exceptionId) =>
 /** Booking policy — currently how late a client may still cancel. */
 export const updateSettings = (payload) =>
   api.patch("/availability/settings", payload).then(unwrap);
+
+/**
+ * What moving to another timezone would do to appointments already booked.
+ *
+ * Weekly hours are a weekday plus a wall-clock time, read in the provider's
+ * *current* zone. Change the zone and every window slides along the timeline
+ * while the appointments stay on the instants they were booked for — so a 9 AM
+ * appointment can end up outside the working day the provider has just declared.
+ *
+ * Read-only, and safe to call while someone is still browsing the timezone list:
+ * this is what lets the settings form show the affected appointments *before*
+ * the save rather than after it. The server runs the same assessment again next
+ * to the write, so this is advice, not the decision.
+ *
+ * @param {string} timezone Candidate IANA zone.
+ * @param {{signal?: AbortSignal}} [options]
+ * @returns {Promise<{currentTimezone: string, timezone: string, changed: boolean,
+ *   safe: boolean, upcomingCount: number, conflictCount: number,
+ *   conflicts: Array<object>}>} Branch on `safe`. `changed` is false when the
+ *   candidate is the zone already saved, so there was nothing to check.
+ */
+export const timezoneImpact = (timezone, options = {}) =>
+  api.get("/availability/timezone-impact", { params: { timezone }, ...options }).then(unwrap);

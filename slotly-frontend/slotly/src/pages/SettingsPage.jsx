@@ -14,7 +14,8 @@
  *   change at all (`completeProfile` returns 409 on a second attempt).
  * - Timezone — `PATCH /auth/profile`. The single setting that makes every time
  *   in the app read correctly or incorrectly, which is why it gets a section of
- *   its own here rather than a field on a form about something else.
+ *   its own here rather than a field on a form about something else. For a
+ *   provider it is also the only *guarded* field on this page; see below.
  * - Booking policy — `PATCH /availability/settings`, providers only. The same
  *   control appears on the Availability page beside the hours it constrains;
  *   both edit one value through one endpoint, so they cannot disagree.
@@ -25,6 +26,34 @@
  * qualifications — lives on `/profile`, because those are what other people
  * read rather than settings the account runs on. No field is editable in both
  * places.
+ *
+ * ## Why a provider's timezone cannot always be saved
+ *
+ * For a client the timezone is a lens: it changes how appointments are written
+ * out and nothing else. For a provider it is load-bearing. Their weekly hours are
+ * stored as a weekday and a wall-clock time ("Tuesdays, 09:00–17:00") and are
+ * read in whatever zone their account currently says, so changing the zone slides
+ * every working window along the real timeline. The appointments do not move —
+ * they are fixed instants — which is precisely the problem: a 9 AM appointment
+ * can end up at 4 AM inside the new working day, outside the hours the provider
+ * has just declared and no longer reschedulable without widening them.
+ *
+ * So this page never lets a provider walk into that. Two things do the work:
+ *
+ *   1. **The check runs while they browse.** Picking a zone from the list fires
+ *      `GET /availability/timezone-impact` (debounced), and any appointment the
+ *      change would strand is named on screen before Save is pressed — with both
+ *      clock readings of the same instant, because "9:00 AM becomes 4:00 AM" is
+ *      the sentence that makes the problem legible.
+ *   2. **Save is refused, not warned about.** While there are conflicts the
+ *      submit button is disabled, and the server refuses the write anyway with
+ *      409 `TIMEZONE_CONFLICT`, whose report is rendered through exactly the same
+ *      panel. The provider's two ways forward are the two the panel offers: open
+ *      each appointment and cancel or reschedule it, or keep their current zone.
+ *
+ * There is deliberately no "change it anyway". A forced change would silently
+ * misalign a real calendar, which is the outcome the whole check exists to
+ * prevent — and it is not a trade a form can reasonably offer.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -39,6 +68,7 @@ import * as authApi from "../api/auth";
 import * as availabilityApi from "../api/availability";
 import * as providersApi from "../api/providers";
 import { useApiResource } from "../hooks/useApiResource";
+import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import Page, { PageHeader, SectionNav } from "../components/ui/Page";
 import Icon from "../components/ui/Icon";
 import Field, { Input } from "../components/ui/Field";
@@ -74,10 +104,72 @@ export default function SettingsPage() {
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState(null);
 
+  // The verdict on the zone currently selected: null until one has been asked
+  // about. Set either by the live check below or by a 409 from the save, which
+  // return the same shape on purpose.
+  const [impact, setImpact] = useState(null);
+  const [checkingImpact, setCheckingImpact] = useState(false);
+
   useEffect(() => {
     if (!user) return;
     setTimezone(normalizeTimezone(user.timezone || "UTC"));
   }, [user]);
+
+  // `react-timezone-select` hands back either a bare zone name or an option
+  // object depending on how the value was set, so every read of the selection
+  // goes through this one place rather than repeating the narrowing.
+  const resolvedZone = typeof timezone === "string" ? timezone : timezone?.value;
+  const savedZone = user?.timezone ? normalizeTimezone(user.timezone) : null;
+  const zoneIsNew = Boolean(resolvedZone && savedZone && resolvedZone !== savedZone);
+
+  /**
+   * Asks the server what the selected zone would do to the provider's calendar.
+   *
+   * Debounced, because a `react-timezone-select` menu emits a change per arrow
+   * key and each one would otherwise be a request. Aborted on the way out, so
+   * paging through the list cannot let a slower earlier answer land last and
+   * report on a zone that is no longer selected.
+   *
+   * Only providers, and only when the selection actually differs from what is
+   * saved: for a client there is nothing to check, and re-selecting your own zone
+   * is not a change.
+   */
+  const debouncedZone = useDebouncedValue(resolvedZone, 350);
+
+  useEffect(() => {
+    if (!isProvider || !debouncedZone || debouncedZone === savedZone) {
+      setImpact(null);
+      setCheckingImpact(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setCheckingImpact(true);
+
+    availabilityApi
+      .timezoneImpact(debouncedZone, { signal: controller.signal })
+      .then((result) => setImpact(result))
+      // A failed check must not masquerade as "all clear", but neither should it
+      // block a provider over an unrelated network problem — the server checks
+      // again on the write, which is the answer that counts.
+      .catch(() => setImpact(null))
+      .finally(() => {
+        if (!controller.signal.aborted) setCheckingImpact(false);
+      });
+
+    return () => controller.abort();
+  }, [isProvider, debouncedZone, savedZone]);
+
+  const conflicts = impact && !impact.safe ? impact.conflicts : [];
+  const blocked = conflicts.length > 0;
+
+  /** Puts the form back on the saved zone — the "cancel the change" way out. */
+  const keepCurrentTimezone = () => {
+    setImpact(null);
+    setFormError("");
+    setErrors({});
+    if (savedZone) setTimezone(savedZone);
+  };
 
   const sections = useMemo(() => {
     const list = [
@@ -94,6 +186,14 @@ export default function SettingsPage() {
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+
+    // Belt as well as braces: the button is already disabled while conflicts are
+    // on screen, but a form can also be submitted with the keyboard.
+    if (blocked) {
+      setFormError("Deal with the appointments below, or keep your current timezone.");
+      return;
+    }
+
     setSaving(true);
     setErrors({});
     setFormError("");
@@ -107,21 +207,31 @@ export default function SettingsPage() {
 
       const updated = await authApi.updateProfile(formData);
       setUser(updated);
+      setImpact(null);
       setSavedAt(Date.now());
       toast.success("Settings saved.");
       reloadNotifications();
     } catch (err) {
       const parsed = parseApiError(err, "Could not save your settings.");
-      if (Object.keys(parsed.fieldErrors).length > 0) setErrors(parsed.fieldErrors);
-      else setFormError(parsed.message);
+
+      if (parsed.code === "TIMEZONE_CONFLICT") {
+        // The authoritative refusal — reachable even after a clear preview, if an
+        // appointment was booked in between. `details` is the same report the
+        // preview returns, so the panel below renders it without a second branch.
+        setImpact(parsed.details ?? null);
+        setFormError(parsed.message);
+        toast.error(parsed.message, { title: "Timezone not changed", duration: 9000 });
+      } else if (Object.keys(parsed.fieldErrors).length > 0) {
+        setErrors(parsed.fieldErrors);
+      } else {
+        setFormError(parsed.message);
+      }
     } finally {
       setSaving(false);
     }
   };
 
   if (!user) return <PageLoader label="Loading your settings…" />;
-
-  const resolvedZone = typeof timezone === "string" ? timezone : timezone?.value;
 
   return (
     <Page>
@@ -197,6 +307,17 @@ export default function SettingsPage() {
                 Local time now: <LocalClock zone={resolvedZone} />
               </span>
             </div>
+
+            {isProvider && (
+              <TimezoneImpactPanel
+                checking={checkingImpact}
+                zoneIsNew={zoneIsNew}
+                impact={impact}
+                conflicts={conflicts}
+                savedZone={savedZone}
+                onKeepCurrent={keepCurrentTimezone}
+              />
+            )}
           </SettingsSection>
 
           {/* Notifications */}
@@ -298,13 +419,135 @@ export default function SettingsPage() {
             >
               Cancel
             </button>
-            <button type="submit" disabled={saving} className={primaryButton}>
+            <button
+              type="submit"
+              disabled={saving || blocked}
+              // Said out loud rather than left to the disabled state, which on its
+              // own tells someone nothing about why.
+              title={blocked ? "Resolve the affected appointments first" : undefined}
+              className={primaryButton}
+            >
               {saving ? "Saving…" : "Save changes"}
             </button>
           </div>
         </form>
       </div>
     </Page>
+  );
+}
+
+/**
+ * What the selected timezone would do to appointments already booked.
+ *
+ * Three states, and the quiet one matters as much as the loud one:
+ *
+ *   - **checking** — a plain line, no spinner over the whole section. The
+ *     provider is mid-decision and a flashing panel would be worse than a pause.
+ *   - **clear** — said explicitly, and only once a *different* zone is selected.
+ *     Silence would be ambiguous: the provider cannot tell "nothing is wrong"
+ *     from "nothing was checked", and this is a change they are about to make to
+ *     a live calendar. It also names how many appointments were examined, so the
+ *     reassurance is evidence rather than an assertion.
+ *   - **conflicts** — every affected appointment, each with both clock readings
+ *     of the same unmoved instant, and a link straight to it. The two ways
+ *     forward are the two the panel offers, because they are the only two there
+ *     are: sort the appointments out, or keep the current zone.
+ *
+ * Rendering the *appointments* rather than a count is the whole point of this
+ * component. "3 appointments conflict" is a dead end; "Tue 9 Jun, 9:00 AM with
+ * Priya Sharma → 4:00 AM" is something a provider can act on.
+ */
+function TimezoneImpactPanel({ checking, zoneIsNew, impact, conflicts, savedZone, onKeepCurrent }) {
+  if (!zoneIsNew) return null;
+
+  if (checking) {
+    return (
+      <p className="mt-4 flex items-center gap-2 text-xs text-ink-3">
+        <Icon name="refresh" size={14} />
+        Checking your upcoming appointments against this timezone…
+      </p>
+    );
+  }
+
+  if (impact?.safe) {
+    return (
+      <div className="mt-4 flex items-start gap-3 rounded-md border border-success-line bg-success-soft px-4 py-3.5">
+        <Icon name="checkCircle" size={18} className="mt-0.5 shrink-0 text-success-ink" />
+        <div>
+          <p className="text-sm font-semibold text-success-ink">Nothing clashes with this change</p>
+          <p className="mt-1 text-xs leading-relaxed text-success-ink/85">
+            {impact.upcomingCount === 0
+              ? "You have no upcoming appointments, so there is nothing this could affect."
+              : `All ${impact.upcomingCount} of your upcoming appointment${
+                  impact.upcomingCount === 1 ? "" : "s"
+                } still fall inside your working hours in ${zoneName(impact.timezone)}.`}
+          </p>
+        </div>
+      </div>
+    );
+  }
+
+  if (conflicts.length === 0) return null;
+
+  return (
+    <div className="mt-4 overflow-hidden rounded-md border border-danger-line">
+      <div className="border-b border-danger-line bg-danger-soft px-4 py-3.5">
+        <p className="flex items-center gap-2 text-sm font-semibold text-danger-ink">
+          <Icon name="alert" size={17} />
+          {conflicts.length} appointment{conflicts.length === 1 ? "" : "s"} would fall outside your
+          working hours
+        </p>
+        <p className="mt-1.5 text-xs leading-relaxed text-danger-ink/85">
+          These appointments do not move — they stay at the exact moment they were booked for. Your
+          working hours are what moves, because they are stored as clock times in your timezone. In{" "}
+          {zoneName(impact?.timezone)} the times below land outside the hours you keep.
+        </p>
+      </div>
+
+      <ul className="divide-y divide-line-soft">
+        {conflicts.map((conflict) => (
+          <li key={conflict.bookingId} className="px-4 py-3.5">
+            <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
+              <p className="text-sm font-medium text-ink">
+                {conflict.service?.name || "Appointment"}
+                {conflict.client?.name && (
+                  <span className="font-normal text-ink-2"> with {conflict.client.name}</span>
+                )}
+              </p>
+              <Link
+                to={`/bookings/${conflict.bookingId}`}
+                className="flex shrink-0 items-center gap-1 text-xs font-semibold text-ink underline underline-offset-2"
+              >
+                Cancel or reschedule
+                <Icon name="arrowRight" size={13} />
+              </Link>
+            </div>
+
+            {/* The comparison, spelled out. Both readings are of one instant, so
+                the arrow is the change to the clock face and not to the booking. */}
+            <p className="mt-1.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-ink-2">
+              <span className="tabular-nums">{conflict.current?.startsAt}</span>
+              <span className="text-ink-3">in {zoneName(conflict.current?.timezone)}</span>
+              <Icon name="arrowRight" size={13} className="text-ink-3" />
+              <span className="font-semibold tabular-nums text-danger-ink">
+                {conflict.proposed?.startsAt}
+              </span>
+              <span className="text-ink-3">in {zoneName(conflict.proposed?.timezone)}</span>
+            </p>
+          </li>
+        ))}
+      </ul>
+
+      <div className="flex flex-wrap items-center justify-between gap-3 border-t border-danger-line bg-subtle px-4 py-3">
+        <p className="text-xs leading-relaxed text-ink-2">
+          Cancel or reschedule {conflicts.length === 1 ? "it" : "them"}, then change your timezone —
+          or keep the timezone you have.
+        </p>
+        <button type="button" onClick={onKeepCurrent} className={`${secondaryButton} ${buttonSm}`}>
+          Keep {zoneName(savedZone)}
+        </button>
+      </div>
+    </div>
   );
 }
 

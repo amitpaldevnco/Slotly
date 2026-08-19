@@ -25,7 +25,7 @@
  *
  * ## What it deliberately does not count
  *
- * Existing bookings, one-off blocks and the minimum-notice rule. None of those
+ * Existing bookings, one-off blocks and the booking lead time. None of those
  * can be changed from this form, and a day that is empty only because it is
  * fully booked is not a misconfiguration to warn someone about. This is the
  * recurring weekly shape.

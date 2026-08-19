@@ -32,6 +32,7 @@ import {
   diagnoseSlotFeasibility,
   minimumWindowMinutes,
   MAX_RANGE_DAYS,
+  MIN_BOOKING_LEAD_MINUTES,
 } from "../services/slotEngine.js";
 
 // ---------------------------------------------------------------------------
@@ -127,7 +128,6 @@ describe("generateSlots — availability boundaries and duration", () => {
       service: service(),
       ...localDay("2025-06-02", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     // 09:00 through 16:00 — eight starts. 17:00 is not offered, because a
@@ -146,7 +146,6 @@ describe("generateSlots — availability boundaries and duration", () => {
       service: service(),
       ...localDay("2025-06-03", zone), // Tuesday
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots).toEqual([]);
@@ -160,7 +159,6 @@ describe("generateSlots — availability boundaries and duration", () => {
       service: service({ duration: 90 }),
       ...localDay("2025-06-02", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots).toEqual([]);
@@ -176,7 +174,6 @@ describe("generateSlots — availability boundaries and duration", () => {
       service: service({ duration: 90, slot_interval: 30 }),
       ...localDay("2025-06-02", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(clockIn(slots[0].startsAt, zone)).toBe("09:00");
@@ -208,7 +205,6 @@ describe("generateSlots — buffers must fit inside the window, not just the app
       service: service({ duration: 60, buffer_before: 15, buffer_after: 15, slot_interval: 15 }),
       ...localDay("2025-06-02", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(clockIn(slots[0].startsAt, zone)).toBe("09:15");
@@ -224,7 +220,6 @@ describe("generateSlots — buffers must fit inside the window, not just the app
       service: service({ duration: 60, buffer_before: 15, buffer_after: 15, slot_interval: 15 }),
       ...localDay("2025-06-02", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     // 15:45 + 60 + 15 lands exactly on 17:00. 16:00 would overrun it.
@@ -241,7 +236,6 @@ describe("generateSlots — buffers must fit inside the window, not just the app
       service: service({ duration: 60, buffer_before: 15, buffer_after: 15, slot_interval: 15 }),
       ...localDay("2025-06-02", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots).toHaveLength(1);
@@ -259,7 +253,6 @@ describe("generateSlots — buffers must fit inside the window, not just the app
       service: service({ duration: 60, buffer_before: 15, buffer_after: 15, slot_interval: 15 }),
       ...localDay("2025-06-02", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots).toEqual([]);
@@ -275,7 +268,6 @@ describe("generateSlots — buffers must fit inside the window, not just the app
       service: service({ duration: 60, buffer_before: 5, buffer_after: 0, slot_interval: 30 }),
       ...localDay("2025-06-02", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(clockIn(slots[0].startsAt, zone)).toBe("09:30");
@@ -298,7 +290,6 @@ describe("generateSlots — exceptions", () => {
       service: service(),
       ...localDay("2025-06-02", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots).toEqual([]);
@@ -315,7 +306,6 @@ describe("generateSlots — exceptions", () => {
       service: service(),
       ...localDay("2025-06-02", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     const times = slots.map((s) => clockIn(s.startsAt, zone));
@@ -333,7 +323,6 @@ describe("generateSlots — exceptions", () => {
       service: service(),
       ...localDays("2025-06-02", zone, 4),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     // The 2nd, 3rd and 4th are blocked; only the 5th survives.
@@ -352,7 +341,6 @@ describe("generateSlots — exceptions", () => {
       service: service(),
       ...localDay("2025-06-01", zone), // Sunday
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots.map((s) => clockIn(s.startsAt, zone))).toEqual(["10:00", "11:00"]);
@@ -371,7 +359,6 @@ describe("generateSlots — exceptions", () => {
       service: service(),
       ...localDay("2025-06-01", zone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots).toEqual([]);
@@ -394,7 +381,6 @@ describe("generateSlots — collision with existing bookings", () => {
         { blocked_from: new Date("2025-06-02T10:00:00Z"), blocked_to: new Date("2025-06-02T11:00:00Z") },
       ],
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots.map((s) => clockIn(s.startsAt, zone))).not.toContain("11:00");
@@ -414,7 +400,6 @@ describe("generateSlots — collision with existing bookings", () => {
         { blocked_from: new Date("2025-06-02T09:00:00Z"), blocked_to: new Date("2025-06-02T10:00:00Z") },
       ],
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots.map((s) => clockIn(s.startsAt, zone))).toContain("11:00");
@@ -436,7 +421,6 @@ describe("generateSlots — collision with existing bookings", () => {
         { blocked_from: new Date("2025-06-02T10:00:00Z"), blocked_to: new Date("2025-06-02T10:15:00Z") },
       ],
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots.map((s) => clockIn(s.startsAt, zone))).not.toContain("10:00");
@@ -463,7 +447,6 @@ describe("timezone conversion, in both directions", () => {
       service: service(),
       ...localDay("2025-06-02", providerZone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     // 09:00 EDT is 13:00 UTC.
@@ -478,7 +461,6 @@ describe("timezone conversion, in both directions", () => {
       service: service(),
       ...localDay("2025-06-02", providerZone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     // 13:00 UTC is 18:30 in Kolkata — the +05:30 offset, which is the case that
@@ -497,7 +479,6 @@ describe("timezone conversion, in both directions", () => {
       service: service(),
       ...localDay("2025-06-02", providerZone),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     const last = slots.at(-1);
@@ -531,7 +512,6 @@ describe("daylight saving", () => {
       service: service(),
       ...localDay("2025-03-23", london), // Sunday before the change, GMT
       now: NOW,
-      minNoticeDays: 0,
     });
 
     const after = generateSlots({
@@ -541,7 +521,6 @@ describe("daylight saving", () => {
       service: service(),
       ...localDay("2025-04-06", london), // Sunday after the change, BST
       now: NOW,
-      minNoticeDays: 0,
     });
 
     // Same local reading …
@@ -563,7 +542,6 @@ describe("daylight saving", () => {
       service: service(),
       ...localDay("2025-03-30", london),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     const ordinaryDay = generateSlots({
@@ -573,7 +551,6 @@ describe("daylight saving", () => {
       service: service(),
       ...localDay("2025-03-23", london),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(ordinaryDay).toHaveLength(6);
@@ -590,7 +567,6 @@ describe("daylight saving", () => {
       service: service(),
       ...localDay("2025-10-26", london),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(transitionDay).toHaveLength(7);
@@ -623,7 +599,6 @@ describe("daylight saving", () => {
       service: service(),
       ...localDay("2025-03-23", london),
       now: NOW,
-      minNoticeDays: 0,
     });
     const after = generateSlots({
       rules: [{ weekday: SUNDAY, start_minute: 540, end_minute: 1020 }],
@@ -632,7 +607,6 @@ describe("daylight saving", () => {
       service: service(),
       ...localDay("2025-04-06", london),
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(clockIn(before[0].startsAt, kolkata)).toBe("14:30"); // 09:00 GMT
@@ -649,7 +623,7 @@ describe("daylight saving", () => {
 });
 
 // ---------------------------------------------------------------------------
-describe("the past, and the minimum booking notice", () => {
+describe("the past, and real-time booking", () => {
   const zone = "Europe/London";
 
   it("compares real instants, not wall-clock readings", () => {
@@ -673,7 +647,6 @@ describe("the past, and the minimum booking notice", () => {
       ...localDay("2025-06-02", zone),
       // 12:30 London on the day itself.
       now: new Date("2025-06-02T11:30:00Z"),
-      minNoticeDays: 0,
     });
 
     const times = slots.map((s) => clockIn(s.startsAt, zone));
@@ -682,15 +655,32 @@ describe("the past, and the minimum booking notice", () => {
     expect(times).toContain("13:00");
   });
 
-  it("treats the notice period as a calendar-date floor, not a rolling 24 hours", () => {
-    // Late in the evening, the floor is still the *start* of the next local day
-    // — only minutes away — rather than the same time tomorrow.
-    const lateEvening = new Date("2025-06-02T22:55:00Z"); // 23:55 London
-    const floor = earliestBookableInstant(lateEvening, zone, 1);
-    expect(floor.toISO()).toBe(DateTime.fromISO("2025-06-03T00:00:00", { zone }).toISO());
+  it("requires no lead time at all", () => {
+    // Pinned rather than assumed: this constant is the whole of Slotly's booking
+    // notice policy, and a non-zero value here would quietly put same-hour
+    // appointments back out of reach.
+    expect(MIN_BOOKING_LEAD_MINUTES).toBe(0);
   });
 
-  it("excludes the provider's current day entirely at the default notice", () => {
+  it("puts the booking floor at `now`, not at the start of some later day", () => {
+    // The floor is a rolling instant. Late in the evening it is 23:55, five
+    // minutes ago's slots are gone and tonight's remaining ones are not — where
+    // the old calendar-date floor would have jumped to 00:00 tomorrow and taken
+    // the rest of the evening with it.
+    const lateEvening = new Date("2025-06-02T22:55:00Z"); // 23:55 London
+    expect(earliestBookableInstant(lateEvening, zone).toMillis()).toBe(lateEvening.getTime());
+
+    // And it stays a rolling instant when a lead time is asked for, rather than
+    // rounding out to a date boundary.
+    expect(earliestBookableInstant(lateEvening, zone, 90).toMillis()).toBe(
+      lateEvening.getTime() + 90 * 60_000
+    );
+  });
+
+  it("offers the rest of the provider's current day", () => {
+    // The rule this replaced took the provider's whole current date off the
+    // table however early in it "now" was: at 08:00 nothing that day could be
+    // booked, not even 4 PM. Real-time booking offers all of it.
     const slots = generateSlots({
       rules: [0, 1, 2].map((d) => rule(d, 540, 1020)),
       exceptions: [],
@@ -698,12 +688,58 @@ describe("the past, and the minimum booking notice", () => {
       service: service(),
       ...localDays("2025-06-02", zone, 2),
       now: new Date("2025-06-02T07:00:00Z"), // 08:00 London, before the day's slots
-      // minNoticeDays left at its default of 1.
     });
 
     const dates = new Set(slots.map((s) => DateTime.fromISO(s.startsAt).setZone(zone).toISODate()));
-    expect(dates.has("2025-06-02")).toBe(false);
+    expect(dates.has("2025-06-02")).toBe(true);
     expect(dates.has("2025-06-03")).toBe(true);
+
+    const today = slots
+      .filter((s) => DateTime.fromISO(s.startsAt).setZone(zone).toISODate() === "2025-06-02")
+      .map((s) => clockIn(s.startsAt, zone));
+    expect(today[0]).toBe("09:00");
+  });
+
+  it("offers a slot inside the next hour", () => {
+    // The headline case: it is 09:20 and the 10:00 appointment is bookable now.
+    const slots = generateSlots({
+      rules: [rule(MONDAY, 540, 1020)],
+      exceptions: [],
+      timezone: zone,
+      service: service(),
+      ...localDay("2025-06-02", zone),
+      now: new Date("2025-06-02T08:20:00Z"), // 09:20 London
+    });
+
+    expect(slots.map((s) => clockIn(s.startsAt, zone))[0]).toBe("10:00");
+  });
+
+  it("still drops a slot the moment it starts, and honours a lead time when one is set", () => {
+    // The one floor that remains. A slot starting exactly now has started, so it
+    // is not on offer; the next one is.
+    const onTheHour = generateSlots({
+      rules: [rule(MONDAY, 540, 1020)],
+      exceptions: [],
+      timezone: zone,
+      service: service(),
+      ...localDay("2025-06-02", zone),
+      now: new Date("2025-06-02T09:00:00Z"), // exactly 10:00 London
+    });
+    expect(onTheHour.map((s) => clockIn(s.startsAt, zone))[0]).toBe("11:00");
+
+    // MIN_BOOKING_LEAD_MINUTES is zero, but the gate it feeds is still wired up:
+    // asking for two hours' lead at 09:20 pushes the first offer from 10:00 to
+    // 12:00. Kept as a test so reintroducing a lead time stays a one-line change.
+    const withLead = generateSlots({
+      rules: [rule(MONDAY, 540, 1020)],
+      exceptions: [],
+      timezone: zone,
+      service: service(),
+      ...localDay("2025-06-02", zone),
+      now: new Date("2025-06-02T08:20:00Z"), // 09:20 London
+      minLeadMinutes: 120,
+    });
+    expect(withLead.map((s) => clockIn(s.startsAt, zone))[0]).toBe("12:00");
   });
 });
 
@@ -1094,7 +1130,6 @@ describe("performance", () => {
       ...localDays("2025-06-02", zone, 7),
       busy,
       now: NOW,
-      minNoticeDays: 0,
     });
     const elapsed = performance.now() - started;
 
@@ -1126,7 +1161,6 @@ describe("diagnoseSlotFeasibility", () => {
       ...localDays("2025-06-02", zone, 7), // Monday-to-Sunday, no DST in this zone.
       busy: [],
       now: NOW,
-      minNoticeDays: 0,
     }).length;
   }
 
@@ -1252,7 +1286,6 @@ describe("diagnoseSlotFeasibility", () => {
       ...localDay("2025-06-02", zone),
       busy,
       now: NOW,
-      minNoticeDays: 0,
     });
 
     expect(slots).toHaveLength(0);
@@ -1275,7 +1308,6 @@ describe("diagnoseSlotFeasibility", () => {
       ...day,
       busy: [],
       now: NOW,
-      minNoticeDays: 0,
     });
     expect(before.map((s) => clockIn(s.startsAt, zone))).toEqual(["09:30", "10:00"]);
 
@@ -1292,7 +1324,6 @@ describe("diagnoseSlotFeasibility", () => {
       ...day,
       busy: [{ blocked_from: booked.blockedFrom, blocked_to: booked.blockedTo }],
       now: NOW,
-      minNoticeDays: 0,
     });
 
     // 10:00 would need 09:50–10:40, which runs into the booked span's trailing

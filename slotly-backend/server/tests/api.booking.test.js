@@ -178,41 +178,70 @@ describe("a booking must land on a start the slot list published", () => {
     expect(response.body.code).toBe("SLOT_UNAVAILABLE");
   });
 
-  it("never offers a slot on the provider's current local day", async () => {
-    // The minimum-notice rule is a calendar-date floor in the *provider's* zone:
-    // today is off the table however much of it remains. Asserting on the
-    // listing rather than on a crafted POST keeps this independent of what time
-    // the suite happens to run at.
+  it("offers every slot still ahead on the provider's current local day", async () => {
+    // Real-time booking, asserted against the listing rather than a crafted POST
+    // so it holds whatever time the suite runs at. Every slot the provider has
+    // left today is on offer; none that have started are.
     const { DateTime } = await import("luxon");
-    const providerToday = DateTime.now().setZone("Europe/London").toFormat("yyyy-MM-dd");
+    const zone = "Europe/London";
+    const now = DateTime.now().setZone(zone);
+    const today = now.toFormat("yyyy-MM-dd");
 
     const slots = await fetchSlots(clients[5].agent, provider.id, service.id, {
-      from: DateTime.now().setZone("Europe/London").toFormat("yyyy-MM-dd"),
-      to: DateTime.now().setZone("Europe/London").plus({ days: 7 }).toFormat("yyyy-MM-dd"),
+      from: today,
+      to: now.plus({ days: 7 }).toFormat("yyyy-MM-dd"),
     });
 
-    const onToday = slots.filter(
-      (s) => DateTime.fromISO(s.startsAt).setZone("Europe/London").toFormat("yyyy-MM-dd") === providerToday
-    );
-    expect(onToday).toEqual([]);
+    const onToday = slots
+      .map((s) => DateTime.fromISO(s.startsAt).setZone(zone))
+      .filter((start) => start.toFormat("yyyy-MM-dd") === today);
+
+    // The provider is open Monday to Friday, 09:00–17:00, on a 60-minute grid,
+    // so which starts remain depends on the clock: after 16:00, or at a weekend,
+    // there are legitimately none. What must always hold is that the list is
+    // exactly the ones that have not started.
+    const openToday = now.weekday <= 5;
+    const expected = (openToday ? [9, 10, 11, 12, 13, 14, 15, 16] : [])
+      .map((hour) => now.set({ hour, minute: 0, second: 0, millisecond: 0 }))
+      .filter((start) => start > now);
+
+    expect(onToday.map((s) => s.toISO())).toEqual(expected.map((s) => s.toISO()));
+    expect(onToday.every((start) => start > now)).toBe(true);
   });
 
-  it("enforces the notice rule on the write path, not only in the listing", async () => {
-    // A client could otherwise skip the picker and POST a same-day time
-    // directly. Which guard answers first depends on the clock — a time already
-    // past for the provider is SLOT_UNAVAILABLE, one still to come today is
-    // MINIMUM_NOTICE_REQUIRED, and one outside 09:00–17:00 is off the grid — so
-    // the assertion is that it is refused, with a code that says why.
+  it("accepts a booking on the provider's current day, straight through the API", async () => {
+    // The write path has no notice rule left either. Booking the next start still
+    // ahead today must succeed — this is the requirement in one assertion.
     const { DateTime } = await import("luxon");
-    const noonToday = DateTime.now().setZone("Europe/London").set({ hour: 12, minute: 0, second: 0, millisecond: 0 });
+    const zone = "Europe/London";
+    const now = DateTime.now().setZone(zone);
+    const today = now.toFormat("yyyy-MM-dd");
 
-    const response = await clients[5].agent
+    // An isolated provider open every day, so the test does not fall over at a
+    // weekend or in the last hour of the fixture provider's day.
+    const sameDay = await createUser({ role: "provider", timezone: zone, label: "sameday" });
+    const sameDayService = await createService(sameDay);
+    await setWeeklyHours(
+      sameDay,
+      [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startTime: "00:00", endTime: "24:00" }))
+    );
+
+    const slots = await fetchSlots(clients[7].agent, sameDay.id, sameDayService.id, {
+      from: today,
+      to: today,
+    });
+
+    const nextToday = slots.find((s) => DateTime.fromISO(s.startsAt) > now);
+    expect(nextToday).toBeTruthy();
+    // Within the next hour on a 60-minute grid across a 24-hour day.
+    expect(DateTime.fromISO(nextToday.startsAt).diff(now, "minutes").minutes).toBeLessThanOrEqual(60);
+
+    const response = await clients[7].agent
       .post("/api/bookings")
-      .send({ serviceId: service.id, startsAt: noonToday.toUTC().toISO() });
+      .send({ serviceId: sameDayService.id, startsAt: nextToday.startsAt });
 
-    expect(response.status).toBeGreaterThanOrEqual(400);
-    expect(response.status).toBeLessThan(500);
-    expect(["MINIMUM_NOTICE_REQUIRED", "SLOT_UNAVAILABLE"]).toContain(response.body.code);
+    expect(response.status).toBe(201);
+    expect(response.body.data.startsAt).toBe(nextToday.startsAt);
   });
 
   it("accepts every start the list offers, and consumes exactly one per booking", async () => {

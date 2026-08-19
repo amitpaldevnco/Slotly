@@ -26,7 +26,7 @@ export const ERROR_CODES = {
   CONFLICT: "CONFLICT",
   SLOT_TAKEN: "SLOT_TAKEN",
   SLOT_UNAVAILABLE: "SLOT_UNAVAILABLE",
-  MINIMUM_NOTICE_REQUIRED: "MINIMUM_NOTICE_REQUIRED",
+  TIMEZONE_CONFLICT: "TIMEZONE_CONFLICT",
   CANCELLATION_WINDOW_CLOSED: "CANCELLATION_WINDOW_CLOSED",
   BOOKING_NOT_ACTIVE: "BOOKING_NOT_ACTIVE",
   APPOINTMENT_NOT_STARTED: "APPOINTMENT_NOT_STARTED",
@@ -42,6 +42,11 @@ export const ERROR_CODES = {
   SERVER_ERROR: "SERVER_ERROR",
 };
 
+// MINIMUM_NOTICE_REQUIRED was removed for the same reason set out below: Slotly
+// books in real time, so there is no notice rule left for any controller to
+// refuse a booking under. The only remaining time floor is "that time has
+// already passed", which is SLOT_UNAVAILABLE. See services/slotEngine.js.
+//
 // There was a SERVICE_IN_USE here, and the OpenAPI document advertised it, but
 // nothing ever emitted it — deleting a service that has bookings is not an
 // error, it retires the service and returns 200 with `retired: true`. A code

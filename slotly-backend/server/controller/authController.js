@@ -41,6 +41,7 @@ import {
 import { validateUploadedImage, discardUpload } from "../utils/fileValidation.js";
 import { storeImage, deleteImage } from "../services/imageStorage.js";
 import { resolveSocialAccount } from "../services/accountLinking.js";
+import { assessTimezoneChange } from "../services/timezoneChange.js";
 import {
   frontendBaseUrl,
   sessionCookieOptions,
@@ -678,10 +679,29 @@ export const loginUser = async (req, res) => {
  * replacement is safely stored, so a failure part-way through leaves the user
  * with a photo rather than none.
  *
+ * ## A provider's timezone is not a free edit
+ *
+ * For a provider, the timezone is not just a display preference — it is the zone
+ * their weekly availability rules are read in, so moving it slides every working
+ * window along the timeline while the appointments already booked stay exactly
+ * where they are. A change can therefore leave a real appointment sitting
+ * outside the hours the provider has just declared.
+ *
+ * So a provider's zone change is checked before it is written, and refused with
+ * 409 `TIMEZONE_CONFLICT` when it would strand anything, with the affected
+ * appointments in `details.conflicts`. The provider then either cancels or
+ * reschedules those appointments and tries again, or leaves their timezone
+ * alone. There is no force flag; see `services/timezoneChange.js`.
+ *
+ * Clients are unaffected — a client's timezone drives display only, and nothing
+ * is interpreted in it.
+ *
  * @returns 200 with the updated row. 400 for an invalid phone number, timezone,
  *   over-long bio, or a rejected upload. 404 if the session names a user that no
- *   longer exists. 500 on an unexpected failure, after discarding the temporary
- *   upload so a rejected request leaves nothing behind on disk.
+ *   longer exists. 409 TIMEZONE_CONFLICT when a provider's new zone would strand
+ *   upcoming appointments — nothing is written in that case. 500 on an unexpected
+ *   failure, after discarding the temporary upload so a rejected request leaves
+ *   nothing behind on disk.
  */
 export async function updateProfile(req, res) {
   try {
@@ -714,6 +734,30 @@ export async function updateProfile(req, res) {
           { field: "timezone", message: "That is not a timezone we recognise" },
         ]);
       }
+
+      // Providers only, and checked here — before the avatar is stored and long
+      // before the UPDATE — so a refused change leaves the account exactly as it
+      // was rather than half-applied. `assessTimezoneChange` returns safe
+      // immediately when the zone is the one already stored, so a provider
+      // saving an unrelated field pays nothing for this.
+      if (role === "provider") {
+        const impact = await assessTimezoneChange({ providerId: userId, timezone });
+
+        if (!impact.safe) {
+          await discardUpload(req.file);
+          return errorResponse(
+            res,
+            `Moving to ${timezone} would leave ${impact.conflictCount} upcoming ` +
+              `appointment${impact.conflictCount === 1 ? "" : "s"} outside your working hours. ` +
+              `Cancel or reschedule ${impact.conflictCount === 1 ? "it" : "them"}, or keep your ` +
+              `current timezone.`,
+            409,
+            ERROR_CODES.TIMEZONE_CONFLICT,
+            impact
+          );
+        }
+      }
+
       updateData.timezone = timezone;
     }
 
