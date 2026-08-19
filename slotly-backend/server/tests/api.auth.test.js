@@ -251,10 +251,27 @@ describe("acting on another user's records", () => {
     expect(response.status).toBeGreaterThanOrEqual(400);
   });
 
-  it("stops the client rescheduling their own booking — that is the provider's call", async () => {
+  it("lets the client reschedule their own booking, and judges the time not the caller", async () => {
+    // A client moving their *own* appointment is allowed — see
+    // `evaluateClientReschedule`. This particular instant is an arbitrary point
+    // five days out rather than a published slot start, so it is still refused —
+    // but on the merits of the time, not on who asked. A 403 here would mean the
+    // client had been turned away at the door.
     const response = await clientA.agent
       .post(`/api/bookings/${booking.id}/reschedule`)
       .send({ startsAt: new Date(Date.now() + 5 * 86_400_000).toISOString(), reason: "moving it" });
+
+    expect(response.status).not.toBe(403);
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("SLOT_UNAVAILABLE");
+  });
+
+  it("still stops the client setting their own booking's status", async () => {
+    // Rescheduling opened up to clients; recording an outcome did not. Marking an
+    // appointment completed or no-show remains the provider's judgement alone.
+    const response = await clientA.agent
+      .patch(`/api/bookings/${booking.id}/status`)
+      .send({ status: "no_show" });
 
     expect(response.status).toBe(403);
   });

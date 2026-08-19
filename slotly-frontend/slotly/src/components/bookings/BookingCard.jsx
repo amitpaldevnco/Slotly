@@ -63,7 +63,7 @@ export default function BookingCard({ booking, viewerRole, highlight = false }) 
             {metaLine(
               zoneLabel(booking.startsAt, viewerZone),
               formatDuration(booking.service.duration),
-              formatPrice(booking.service.price),
+              formatPrice(booking.service.price, booking.service.currency),
               differentZones ? `${formatTime(booking.startsAt, otherZone)} their time` : null
             )}
           </p>

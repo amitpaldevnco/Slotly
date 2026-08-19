@@ -34,9 +34,11 @@ import { getEffectiveAvailability } from "../services/availabilityResolver.js";
 import { parseId } from "../middleware/validateParams.js";
 import {
   evaluateClientCancellation,
+  evaluateClientReschedule,
   evaluateProviderTransition,
   describeInstant,
   ACTIVE_STATUSES,
+  OUTCOME_GRACE_MINUTES,
 } from "../services/bookingRules.js";
 
 /** SQLSTATE raised by PostgreSQL when an exclusion constraint rejects a row. */
@@ -91,6 +93,12 @@ function serialiseBooking(row, { viewerRole } = {}) {
       id: row.service_id,
       name: row.service_name_snapshot,
       price: row.price_snapshot,
+      // Read live from the provider rather than snapshotted alongside
+      // `price_snapshot`. A provider setting this correctly after already taking
+      // bookings is fixing a label, not repricing anything: the amount charged
+      // never changed, only the currency it was always in. Snapshotting it would
+      // freeze the wrong answer onto every historic booking.
+      currency: row.provider_currency ?? "INR",
       duration: row.duration_snapshot,
       coverImage: row.cover_image ?? null,
       isActive: row.service_is_active ?? null,
@@ -120,25 +128,48 @@ function serialiseBooking(row, { viewerRole } = {}) {
     cancelledAt: row.cancelled_at,
     cancellationCutoffHours: row.cancellation_cutoff_hours_snapshot,
     // Precomputed so the UI never has to re-implement the cutoff rule to decide
-    // whether to show a Cancel button. The server still re-checks on the call.
+    // whether to show a Cancel or Reschedule button. The server still re-checks
+    // on the call — these are affordances, not the enforcement.
     canClientCancel:
       viewerRole === "client" ? evaluateClientCancellation(row, new Date()).allowed : undefined,
+    canClientReschedule:
+      viewerRole === "client" ? evaluateClientReschedule(row, new Date()).allowed : undefined,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
 }
 
 /**
- * Flips any booking that is still 'booked'/'rescheduled' but whose end time has
- * already passed over to 'completed'. The provider gets every chance to record
- * a real outcome (completed/no_show/cancelled) up to that point; once the
- * appointment is over and nothing was recorded, the default outcome is that it
- * happened. Runs lazily on read, scoped to whichever rows a given request
- * needs, and logs the transition as a 'system' actor in the audit trail.
+ * Flips any booking that is still 'booked'/'rescheduled' over to 'completed'
+ * once its outcome window has closed — that is, once it ended more than
+ * `OUTCOME_GRACE_MINUTES` ago. The provider owns the outcome inside that window
+ * and can still record completed, no-show or cancelled; after it, a booking
+ * nobody recorded is taken to have happened.
+ *
+ * The grace period is the whole point of this function's timing. Settling on
+ * `ends_at` exactly meant any read — including the dashboard list the provider
+ * opens in order to record the outcome — closed the window before they could
+ * act, which made 'no_show' unreachable. See OUTCOME_GRACE_MINUTES.
+ *
+ * Runs lazily on read, scoped to whichever rows a given request needs, and logs
+ * the transition as a 'system' actor in the audit trail.
  */
 async function autoCompleteExpired(whereClause, params) {
+  // Interval arithmetic in SQL rather than a JS cutoff instant, so the
+  // comparison uses the database's clock — the same one NOW() and every
+  // timestamp default already use.
+  //
+  // The grace is interpolated rather than bound because callers supply their own
+  // `$2`, `$3`… in `whereClause`, and inserting a placeholder here would silently
+  // renumber every one of them. Number() on our own module constant makes the
+  // interpolation inert: it is never request-derived, and a non-numeric value
+  // could not survive the coercion.
+  const graceMinutes = Number(OUTCOME_GRACE_MINUTES);
   const expired = await query(
-    `SELECT id, status FROM bookings WHERE status = ANY($1) AND ends_at <= NOW() AND ${whereClause}`,
+    `SELECT id, status FROM bookings
+     WHERE status = ANY($1)
+       AND ends_at <= NOW() - INTERVAL '${graceMinutes} minutes'
+       AND ${whereClause}`,
     [ACTIVE_STATUSES, ...params]
   );
   if (expired.rows.length === 0) return;
@@ -153,7 +184,7 @@ async function autoCompleteExpired(whereClause, params) {
         toStatus: "completed",
         actorId: null,
         actorRole: "system",
-        reason: "Automatically completed — the appointment time passed without the provider recording an outcome.",
+        reason: `Automatically completed — ${OUTCOME_GRACE_MINUTES} minutes passed after the appointment ended without the provider recording an outcome.`,
       });
     }
   });
@@ -175,6 +206,7 @@ const BOOKING_SELECT = `
          p.name AS provider_name, p.business_name AS provider_business_name,
          p.avatar_url AS provider_avatar,
          p.timezone AS provider_timezone_now,
+         p.currency AS provider_currency,
          s.cover_image, s.is_active AS service_is_active
   FROM bookings b
   JOIN users c ON c.id = b.client_id
@@ -686,7 +718,7 @@ export const cancelBooking = async (req, res) => {
 };
 
 /**
- * POST /api/bookings/:id/reschedule — provider only.
+ * POST /api/bookings/:id/reschedule — either party.
  *
  * Body: { startsAt, reason }
  *
@@ -696,26 +728,27 @@ export const cancelBooking = async (req, res) => {
  *
  * The booking's own row is excluded from the conflict by definition — it is the
  * row being updated, so its old span disappears in the same statement.
+ *
+ * ## Who may move an appointment, and on what terms
+ *
+ * Both parties, on deliberately different terms:
+ *
+ *   - **The provider** owns the calendar, so they may move any booking on it at
+ *     any time, and `reason` is mandatory — the client is being told their
+ *     appointment changed without asking for it, and deserves to know why.
+ *   - **The client** may move their own booking up to the same deadline that
+ *     governs cancelling it, and `reason` is optional. Without this a client
+ *     wanting a different time had to cancel and rebook, which released their
+ *     slot to the pool — so they could lose it to someone else between the two
+ *     requests — and split one appointment's history across two unrelated rows.
+ *     See `evaluateClientReschedule`.
+ *
+ * Authorization is resolved before the body is validated, so a stranger poking
+ * at someone else's booking gets "not found" rather than a field-level critique
+ * of a request they were never entitled to make.
  */
 export const rescheduleBooking = async (req, res) => {
   try {
-    const { startsAt, reason } = req.body;
-    const errors = [];
-
-    const start = new Date(startsAt);
-    if (!startsAt || Number.isNaN(start.getTime())) {
-      errors.push({ field: "startsAt", message: "startsAt must be an ISO-8601 instant" });
-    }
-    if (!reason || !String(reason).trim()) {
-      errors.push({ field: "reason", message: "Tell the client why you are moving the appointment" });
-    }
-    if (typeof reason === "string" && reason.length > 500) {
-      errors.push({ field: "reason", message: "Reason must be 500 characters or less" });
-    }
-    if (errors.length > 0) {
-      return validationErrorResponse(res, "Please fix the errors below", errors);
-    }
-
     // `provider_timezone_now` is joined in because availability is interpreted in
     // the provider's *current* zone — a weekly "Mondays 09:00" rule means 09:00
     // wherever the provider is today. The slot list already works that way, so
@@ -736,21 +769,47 @@ export const rescheduleBooking = async (req, res) => {
     }
 
     const booking = existing.rows[0];
-    if (booking.provider_id !== req.user.userId) {
-      return errorResponse(
-        res,
-        "Only the provider can reschedule a booking",
-        403,
-        ERROR_CODES.FORBIDDEN
-      );
+
+    // Neither party — indistinguishable from "no such booking", on purpose, so
+    // booking ids cannot be probed for existence.
+    const viewerRole = viewerRoleFor(booking, req.user.userId);
+    if (!viewerRole) {
+      return errorResponse(res, "Booking not found", 404, ERROR_CODES.NOT_FOUND);
     }
-    if (!ACTIVE_STATUSES.includes(booking.status)) {
+
+    if (viewerRole === "client") {
+      const verdict = evaluateClientReschedule(booking, new Date());
+      if (!verdict.allowed) {
+        return errorResponse(res, verdict.reason, 409, verdict.code, {
+          deadline: verdict.deadline,
+          cutoffHours: booking.cancellation_cutoff_hours_snapshot,
+        });
+      }
+    } else if (!ACTIVE_STATUSES.includes(booking.status)) {
       return errorResponse(
         res,
         `This booking is already ${booking.status.replace("_", "-")}.`,
         409,
         ERROR_CODES.BOOKING_NOT_ACTIVE
       );
+    }
+
+    const { startsAt, reason } = req.body;
+    const errors = [];
+
+    const start = new Date(startsAt);
+    if (!startsAt || Number.isNaN(start.getTime())) {
+      errors.push({ field: "startsAt", message: "startsAt must be an ISO-8601 instant" });
+    }
+    // Mandatory from the provider, optional from the client: see the note above.
+    if (viewerRole === "provider" && (!reason || !String(reason).trim())) {
+      errors.push({ field: "reason", message: "Tell the client why you are moving the appointment" });
+    }
+    if (typeof reason === "string" && reason.length > 500) {
+      errors.push({ field: "reason", message: "Reason must be 500 characters or less" });
+    }
+    if (errors.length > 0) {
+      return validationErrorResponse(res, "Please fix the errors below", errors);
     }
     if (hasInstantPassed(start, booking.provider_timezone_now)) {
       return errorResponse(res, "Pick a time in the future", 400, ERROR_CODES.SLOT_UNAVAILABLE);
@@ -791,7 +850,9 @@ export const rescheduleBooking = async (req, res) => {
     ) {
       return errorResponse(
         res,
-        "That time is not one of your available appointment times",
+        viewerRole === "provider"
+          ? "That time is not one of your available appointment times"
+          : "That time is not one of the provider's available appointment times",
         409,
         ERROR_CODES.SLOT_UNAVAILABLE
       );
@@ -818,8 +879,8 @@ export const rescheduleBooking = async (req, res) => {
         fromStartsAt: booking.starts_at,
         toStartsAt: span.startsAt,
         actorId: req.user.userId,
-        actorRole: "provider",
-        reason: String(reason).trim(),
+        actorRole: viewerRole,
+        reason: reason ? String(reason).trim() : null,
       });
 
       const full = await tx.query(`${BOOKING_SELECT} WHERE b.id = $1`, [booking.id]);
@@ -830,7 +891,7 @@ export const rescheduleBooking = async (req, res) => {
       return errorResponse(res, "This booking is no longer active", 409, ERROR_CODES.BOOKING_NOT_ACTIVE);
     }
 
-    return successResponse(res, "Booking rescheduled", serialiseBooking(updated, { viewerRole: "provider" }));
+    return successResponse(res, "Booking rescheduled", serialiseBooking(updated, { viewerRole }));
   } catch (err) {
     if (err.code === EXCLUSION_VIOLATION) {
       return errorResponse(

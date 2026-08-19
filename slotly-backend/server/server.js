@@ -16,6 +16,7 @@ import bookingRoutes from "./routes/bookingRoutes.js";
 import reviewRoutes from "./routes/reviewRoutes.js";
 import { openApiDocument, docsPage } from "./docs/openapi.js";
 import { allowedOrigins } from "./config/appConfig.js";
+import { apiLimiter } from "./middleware/rateLimit.js";
 import { query } from "./config/dbConfig.js";
 import {
   errorResponse,
@@ -111,6 +112,12 @@ app.get("/api/health/db", async (req, res) => {
 // API documentation: a browsable page and the raw OpenAPI document behind it.
 app.get("/api/docs", docsPage);
 app.get("/api/docs/openapi.json", (req, res) => res.json(openApiDocument));
+
+// Broad backstop across the whole API. Mounted after /api/docs so the reference
+// page stays readable while someone is clicking through it, and before the
+// routers so it runs ahead of any handler. The tighter per-endpoint credential
+// limits live on the auth router itself.
+app.use("/api", apiLimiter);
 
 app.use("/api/auth", authRoutes);
 app.use("/api/providers", providerRoutes);

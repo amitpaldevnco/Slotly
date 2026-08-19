@@ -27,7 +27,14 @@ export const ERROR_CODES = {
   SLOT_TAKEN: "SLOT_TAKEN",
   SLOT_UNAVAILABLE: "SLOT_UNAVAILABLE",
   TIMEZONE_CONFLICT: "TIMEZONE_CONFLICT",
+  // Too many requests from one address in the current window. Carries
+  // `details.retryAfterSeconds` so the UI can say when to try again.
+  RATE_LIMITED: "RATE_LIMITED",
   CANCELLATION_WINDOW_CLOSED: "CANCELLATION_WINDOW_CLOSED",
+  // A client tried to move a booking after the cutoff. Distinct from
+  // CANCELLATION_WINDOW_CLOSED so the UI can word the refusal correctly, even
+  // though both share one deadline — see evaluateClientReschedule.
+  RESCHEDULE_WINDOW_CLOSED: "RESCHEDULE_WINDOW_CLOSED",
   BOOKING_NOT_ACTIVE: "BOOKING_NOT_ACTIVE",
   APPOINTMENT_NOT_STARTED: "APPOINTMENT_NOT_STARTED",
   INVALID_TRANSITION: "INVALID_TRANSITION",

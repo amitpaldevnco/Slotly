@@ -57,6 +57,12 @@ export function serialiseService(row, { includeStats = false } = {}) {
     name: row.service_name,
     description: row.description,
     price: row.price,
+    // The ISO 4217 code `price` is denominated in. It lives on the provider, not
+    // on the service — a provider bills in one currency — so it arrives here via
+    // a join and is carried on the service purely so that any component holding
+    // a service can render its price without also having to hold the provider.
+    // Falls back to the column default when a query did not join it.
+    currency: row.currency ?? "INR",
     duration: row.duration,
     bufferBefore: row.buffer_before,
     bufferAfter: row.buffer_after,
@@ -256,7 +262,7 @@ export const createService = async (req, res) => {
          (provider_id, service_name, description, price, duration,
           buffer_before, buffer_after, slot_interval, cover_image)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING *`,
+       RETURNING *, (SELECT u.currency FROM users u WHERE u.id = services.provider_id) AS currency`,
       [
         req.user.userId,
         values.service_name,
@@ -339,7 +345,8 @@ export const updateService = async (req, res) => {
     const setClause = columns.map((col, idx) => `${col} = $${idx + 1}`).join(", ");
     const updated = await query(
       `UPDATE services SET ${setClause}, updated_at = NOW()
-       WHERE id = $${columns.length + 1} RETURNING *`,
+       WHERE id = $${columns.length + 1}
+       RETURNING *, (SELECT u.currency FROM users u WHERE u.id = services.provider_id) AS currency`,
       [...Object.values(updateData), req.params.id]
     );
 
@@ -450,7 +457,7 @@ export const reactivateService = async (req, res) => {
     const updated = await query(
       `UPDATE services SET is_active = TRUE, updated_at = NOW()
        WHERE id = $1 AND NOT is_active
-       RETURNING *`,
+       RETURNING *, (SELECT u.currency FROM users u WHERE u.id = services.provider_id) AS currency`,
       [service.id]
     );
 
@@ -487,12 +494,13 @@ export const getServicesByProvider = async (req, res) => {
 
     const result = isOwner
       ? await query(
-          `SELECT s.*,
+          `SELECT s.*, owner.currency,
                   COALESCE(b.total_bookings, 0)::int AS total_bookings,
                   COALESCE(b.completed_bookings, 0)::int AS completed_bookings,
                   COALESCE(b.upcoming_bookings, 0)::int AS upcoming_bookings,
                   COALESCE(b.total_earnings, 0) AS total_earnings
            FROM services s
+           JOIN users owner ON owner.id = s.provider_id
            LEFT JOIN (
              SELECT service_id,
                     COUNT(*) AS total_bookings,
@@ -507,8 +515,11 @@ export const getServicesByProvider = async (req, res) => {
           [req.params.id, ACTIVE_STATUSES]
         )
       : await query(
-          `SELECT * FROM services WHERE provider_id = $1 AND is_active
-           ORDER BY created_at DESC`,
+          `SELECT s.*, owner.currency
+           FROM services s
+           JOIN users owner ON owner.id = s.provider_id
+           WHERE s.provider_id = $1 AND s.is_active
+           ORDER BY s.created_at DESC`,
           [req.params.id]
         );
 

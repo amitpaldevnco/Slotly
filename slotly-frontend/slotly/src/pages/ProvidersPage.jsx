@@ -422,7 +422,11 @@ const ProviderCard = memo(function ProviderCard({ provider }) {
           className="h-16 w-16 border-2 border-surface text-lg sm:h-16 sm:w-16 sm:text-lg"
         />
 
-        <div className="flex-1 pt-1">
+        {/* `min-w-0` is what lets the `truncate` below actually engage. A flex
+            item defaults to `min-width: auto`, so without it this block refuses
+            to shrink under its min-content width and the card's name and service
+            count spill past the card edge on a phone rather than eliding. */}
+        <div className="min-w-0 flex-1 pt-1">
           <div className="flex items-start justify-between gap-3">
             <div className="min-w-0">
               <h3 className="truncate font-body-lg text-body-lg font-semibold text-on-surface transition-colors group-hover:text-primary">
@@ -469,7 +473,7 @@ const ProviderCard = memo(function ProviderCard({ provider }) {
         <div className="flex flex-col">
           <span className="font-caption text-caption text-on-surface-variant">Starting at</span>
           <span className="font-small text-small font-semibold text-on-surface">
-            {provider.fromPrice != null ? formatPrice(provider.fromPrice) : "—"}
+            {provider.fromPrice != null ? formatPrice(provider.fromPrice, provider.currency) : "—"}
           </span>
         </div>
         <div className="flex flex-col items-end">

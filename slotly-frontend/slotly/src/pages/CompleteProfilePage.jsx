@@ -14,6 +14,7 @@ import {
 } from "../lib/timezones";
 import Page from "../components/ui/Page";
 import Field, { Input, Select, CardRadioGroup } from "../components/ui/Field";
+import { CURRENCIES, currencyLabel, currencyForTimezone } from "../lib/currencies";
 import { Alert } from "../components/ui/Feedback";
 import Icon from "../components/ui/Icon";
 import { primaryButton, buttonBlock, buttonLg, cardClasses, eyebrow } from "../lib/ui";
@@ -49,6 +50,15 @@ export default function CompleteProfilePage() {
   const [businessName, setBusinessName] = useState("");
   const [businessType, setBusinessType] = useState("");
 
+  // Seeded from the detected timezone and re-seeded whenever the provider picks a
+  // different one — but only until they choose a currency themselves, after which
+  // the guess must stop overwriting their answer. Hence the "touched" flag rather
+  // than a plain effect on `timezone`.
+  const [currency, setCurrency] = useState(() =>
+    currencyForTimezone(normalizeTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone))
+  );
+  const [currencyTouched, setCurrencyTouched] = useState(false);
+
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const [formError, setFormError] = useState("");
@@ -64,7 +74,7 @@ export default function CompleteProfilePage() {
         role,
         phoneNumber,
         timezone: normalizeTimezone(typeof timezone === "string" ? timezone : timezone.value),
-        ...(role === "provider" ? { businessName, businessType } : {}),
+        ...(role === "provider" ? { businessName, businessType, currency } : {}),
       });
 
       await refetchUser();
@@ -147,7 +157,16 @@ export default function CompleteProfilePage() {
               <TimezoneSelect
                 inputId="timezone"
                 value={timezone}
-                onChange={setTimezone}
+                onChange={(next) => {
+                  setTimezone(next);
+                  // Moving the timezone usually means moving the currency too, so
+                  // the guess follows along — until the provider has answered for
+                  // themselves, at which point their choice stands.
+                  if (!currencyTouched) {
+                    const zone = typeof next === "string" ? next : next?.value;
+                    setCurrency(currencyForTimezone(normalizeTimezone(zone)));
+                  }
+                }}
                 labelStyle="original"
                 timezones={timezonesWithCountry}
                 unstyled
@@ -183,6 +202,28 @@ export default function CompleteProfilePage() {
                     {BUSINESS_TYPES.map((type) => (
                       <option key={type} value={type}>
                         {type}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+
+                <Field
+                  id="currency"
+                  label="Currency you charge in"
+                  error={errors.currency}
+                  hint="Every price you set is shown in this currency, to you and to your clients."
+                >
+                  <Select
+                    id="currency"
+                    value={currency}
+                    onChange={(e) => {
+                      setCurrency(e.target.value);
+                      setCurrencyTouched(true);
+                    }}
+                  >
+                    {CURRENCIES.map((entry) => (
+                      <option key={entry.code} value={entry.code}>
+                        {currencyLabel(entry)}
                       </option>
                     ))}
                   </Select>

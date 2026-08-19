@@ -115,7 +115,7 @@ export default function ServiceCard({
         <div className="flex w-[calc(50%-8px)] items-center gap-1.5 text-on-surface-variant">
           <Icon name="payments" size={16} />
           <span className="font-small text-small font-semibold text-primary">
-            {formatPrice(service.price)}
+            {formatPrice(service.price, service.currency)}
           </span>
         </div>
         {buffer > 0 && (
@@ -138,7 +138,7 @@ export default function ServiceCard({
             <span aria-hidden="true">·</span>
             <span>
               <span className="font-bold text-on-surface">
-                {formatPrice(service.stats?.totalEarnings)}
+                {formatPrice(service.stats?.totalEarnings, service.currency)}
               </span>{" "}
               earned
             </span>

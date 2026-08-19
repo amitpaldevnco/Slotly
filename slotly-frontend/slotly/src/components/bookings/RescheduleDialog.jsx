@@ -1,5 +1,18 @@
-// Provider-only dialog for moving an existing booking.
- 
+/**
+ * Moving an existing booking — used by both parties, on different terms.
+ *
+ * The two differences are deliberate and mirror the server's rules exactly (see
+ * `rescheduleBooking`):
+ *
+ *   - **Whose clock the times are drawn in.** The provider is choosing a slot on
+ *     their own calendar, so they see their own zone. The client sees theirs —
+ *     the same zone the original booking screen used — because a client picking
+ *     "3:00 PM" in the provider's zone would be choosing a time they have not
+ *     actually read.
+ *   - **Whether a reason is required.** The provider is imposing the change on
+ *     someone else and must explain it. The client is moving their own
+ *     appointment and owes nobody an explanation, so the field is optional.
+ */
 import { useEffect, useMemo, useState } from "react";
 import { DateTime } from "luxon";
 import { parseApiError } from "../../api/client";
@@ -20,9 +33,15 @@ const MAX_REASON = 500;
 export default function RescheduleDialog({ open, booking, onClose, onRescheduled }) {
   const toast = useToast();
 
-  const providerZone = booking?.provider?.timezone || "UTC";
+  const isClient = booking?.viewerRole === "client";
 
-  const [rangeStart, setRangeStart] = useState(() => todayIn(providerZone));
+  // The zone every time in this dialog is rendered in: whichever party is
+  // looking. Named `viewerZone` rather than `providerZone` because it is no
+  // longer always the provider's.
+  const viewerZone =
+    (isClient ? booking?.client?.timezone : booking?.provider?.timezone) || "UTC";
+
+  const [rangeStart, setRangeStart] = useState(() => todayIn(viewerZone));
   const [activeDate, setActiveDate] = useState(null);
   const [selected, setSelected] = useState(null);
   const [reason, setReason] = useState("");
@@ -43,13 +62,13 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
           to: addDaysToDate(rangeStart, WINDOW_DAYS - 1),
           // Rendered in the provider's own zone: they are the one choosing, and
           // this is their calendar.
-          timezone: providerZone,
+          timezone: viewerZone,
         },
         { signal }
       ),
     {
       enabled: open && Boolean(booking),
-      deps: [open, booking?.id, rangeStart, providerZone],
+      deps: [open, booking?.id, rangeStart, viewerZone],
       fallback: "Could not load your free times.",
     }
   );
@@ -65,9 +84,9 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
     if (open) {
       setSelected(null);
       setReason("");
-      setRangeStart(todayIn(providerZone));
+      setRangeStart(todayIn(viewerZone));
     }
-  }, [open, providerZone]);
+  }, [open, viewerZone]);
 
 
   useEffect(() => {
@@ -80,22 +99,32 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
   }, [days, activeDate]);
 
   const handleSubmit = async () => {
-    if (!selected || !reason.trim()) return;
+    if (!selected || (!isClient && !reason.trim())) return;
 
     setSaving(true);
     try {
       await bookingsApi.reschedule(booking.id, {
         startsAt: selected.startsAt,
-        reason: reason.trim(),
+        // Omitted entirely rather than sent empty, so the timeline records no
+        // reason instead of a blank one.
+        ...(reason.trim() ? { reason: reason.trim() } : {}),
       });
-      toast.success("Appointment moved. The client can see the new time and why it changed.");
+      toast.success(
+        isClient
+          ? "Appointment moved. The provider can see your new time."
+          : "Appointment moved. The client can see the new time and why it changed."
+      );
       onRescheduled();
     } catch (err) {
       const parsed = parseApiError(err, "Could not move this appointment.");
 
       if (parsed.code === "SLOT_TAKEN") {
         // The same race a client can lose, from the provider's side.
-        toast.error("A client booked that time while you were choosing. Here are the times still free.");
+        toast.error(
+          isClient
+            ? "Someone booked that time while you were choosing. Here are the times still free."
+            : "A client booked that time while you were choosing. Here are the times still free."
+        );
         setSelected(null);
         loadSlots();
       } else {
@@ -109,14 +138,18 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
   if (!booking) return null;
 
   const activeDay = days.find((day) => day.date === activeDate) || null;
-  const isFirstWindow = rangeStart === todayIn(providerZone);
+  const isFirstWindow = rangeStart === todayIn(viewerZone);
 
   return (
     <Modal
       open={open}
       onClose={() => !saving && onClose()}
       title="Move this appointment"
-      description={`${booking.client.name} will see the new time in their own timezone.`}
+      description={
+        isClient
+          ? `${booking.provider.businessName || booking.provider.name} will see the new time in their own timezone.`
+          : `${booking.client.name} will see the new time in their own timezone.`
+      }
       size="lg"
       footer={
         <>
@@ -126,7 +159,7 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
           <button
             type="button"
             onClick={handleSubmit}
-            disabled={saving || !selected || !reason.trim()}
+            disabled={saving || !selected || (!isClient && !reason.trim())}
             className={primaryButton}
           >
             {saving ? "Moving…" : "Move appointment"}
@@ -142,7 +175,7 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
             <span>
               Moving to{" "}
               <span className="font-semibold">
-                {friendlyDateHeading(activeDate, providerZone)} at {selected.providerTime}
+                {friendlyDateHeading(activeDate, viewerZone)} at {selected.clientTime}
               </span>
             </span>
           </div>
@@ -150,7 +183,12 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
 
         <div className="overflow-hidden rounded-md border border-line">
           <div className="flex items-center justify-between gap-2 border-b border-line bg-subtle px-2.5 py-2">
-            <h3 className="text-xs font-semibold text-ink">Your free times</h3>
+            <h3 className="text-xs font-semibold text-ink">
+              {/* "Your" is only true for the provider — these are the provider's
+                  open slots, which from the client's side are simply what is
+                  available. */}
+              {isClient ? "Available times" : "Your free times"}
+            </h3>
             <div className="flex items-center gap-0.5">
               <button
                 type="button"
@@ -196,7 +234,7 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
                 className="no-scrollbar flex gap-1 overflow-x-auto border-b border-line-soft p-2"
               >
                 {days.map((day) => {
-                  const date = DateTime.fromISO(day.date, { zone: providerZone });
+                  const date = DateTime.fromISO(day.date, { zone: viewerZone });
                   const active = day.date === activeDate;
                   const free = day.slots.length;
 
@@ -234,7 +272,7 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
               <div className="max-h-44 overflow-y-auto p-2">
                 {!activeDay ? null : activeDay.slots.length === 0 ? (
                   <p className="py-4 text-center text-[0.8125rem] text-ink-3">
-                    Nothing free on {friendlyDateHeading(activeDay.date, providerZone)}.
+                    Nothing free on {friendlyDateHeading(activeDay.date, viewerZone)}.
                   </p>
                 ) : (
                   <div className="grid grid-cols-[repeat(auto-fill,minmax(4.75rem,1fr))] gap-1.5">
@@ -253,7 +291,7 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
                               : "border-line bg-surface text-ink hover:border-brand hover:bg-brand-soft"
                           }`}
                         >
-                          {slot.providerTime}
+                          {slot.clientTime}
                         </button>
                       );
                     })}
@@ -266,8 +304,12 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
 
         <Field
           id="reschedule-reason"
-          label="Why are you moving it?"
-          hint="The client will see this, along with the new time."
+          label={isClient ? "Add a note (optional)" : "Why are you moving it?"}
+          hint={
+            isClient
+              ? "Shared with the provider along with the new time."
+              : "The client will see this, along with the new time."
+          }
           action={<CharCount value={reason} max={MAX_REASON} />}
         >
           <Textarea
@@ -276,7 +318,11 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
             maxLength={MAX_REASON}
             value={reason}
             onChange={(e) => setReason(e.target.value)}
-            placeholder="e.g. Clinic closing early that afternoon"
+            placeholder={
+              isClient
+                ? "e.g. Something came up that morning"
+                : "e.g. Clinic closing early that afternoon"
+            }
           />
         </Field>
       </div>

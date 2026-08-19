@@ -208,7 +208,7 @@ export default function BookingDetailPage() {
                 <DetailRow label="Duration" value={formatDuration(booking.service.duration)} />
                 <DetailRow
                   label="Price"
-                  value={<span className={metricSm}>{formatPrice(booking.service.price)}</span>}
+                  value={<span className={metricSm}>{formatPrice(booking.service.price, booking.service.currency)}</span>}
                 />
                 <DetailRow label={isClient ? "Provider" : "Client"} value={otherParty.name} />
 
@@ -268,15 +268,30 @@ export default function BookingDetailPage() {
           <Section title={isClient ? "Manage this booking" : "Actions"}>
             <div className="flex flex-wrap gap-2">
               {isClient ? (
-                <button
-                  type="button"
-                  onClick={() => setCancelOpen(true)}
-                  disabled={!booking.canClientCancel || working}
-                  className={dangerButton}
-                >
-                  <Icon name="close" size={15} />
-                  Cancel booking
-                </button>
+                <>
+                  {/* Moving it is offered before cancelling it, and styled as the
+                      primary action: a client who wants a different time is better
+                      served by keeping the appointment than by dropping it. Both
+                      are governed by the same cutoff. */}
+                  <button
+                    type="button"
+                    onClick={() => setRescheduleOpen(true)}
+                    disabled={!booking.canClientReschedule || working}
+                    className={primaryButton}
+                  >
+                    <Icon name="calendar" size={15} />
+                    Reschedule
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setCancelOpen(true)}
+                    disabled={!booking.canClientCancel || working}
+                    className={dangerButton}
+                  >
+                    <Icon name="close" size={15} />
+                    Cancel booking
+                  </button>
+                </>
               ) : (
                 <>
                   <button
@@ -329,10 +344,10 @@ export default function BookingDetailPage() {
                 <Icon name="info" size={13} className="mt-px" />
                 <span>
                   {booking.canClientCancel
-                    ? `You can cancel this yourself up to ${booking.cancellationCutoffHours} hour${
+                    ? `You can move or cancel this yourself up to ${booking.cancellationCutoffHours} hour${
                         booking.cancellationCutoffHours === 1 ? "" : "s"
                       } before it starts.`
-                    : `The ${booking.cancellationCutoffHours}-hour cancellation window has closed. Contact ${otherParty.name} directly if you need to change it.`}
+                    : `The ${booking.cancellationCutoffHours}-hour window for changing this has closed. Contact ${otherParty.name} directly if you need to move or cancel it.`}
                 </span>
               </p>
             )}

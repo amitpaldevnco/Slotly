@@ -17,6 +17,7 @@ import {
   futureRange,
   cleanupApiTestData,
   closeTestPool,
+  testPool,
 } from "./apiHarness.js";
 
 let provider;
@@ -246,6 +247,98 @@ describe("rescheduling", () => {
     expect(response.body.code).toBe("SLOT_TAKEN");
   });
 
+  // The client-facing half of rescheduling. A client moving their own
+  // appointment is the ordinary case — before this existed they had to cancel
+  // and rebook, which released the slot to the pool in between and split one
+  // appointment's history across two unrelated rows.
+  it("lets a client move their own booking without giving a reason", async () => {
+    const booking = await bookFirstFreeSlot();
+    const slots = await fetchSlots(clientUser.agent, provider.id, service.id, range);
+    const destination = slots.find((s) => s.startsAt !== booking.startsAt);
+
+    const response = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.startsAt).toBe(destination.startsAt);
+    expect(response.body.data.status).toBe("rescheduled");
+
+    // Attributed to the client, not silently logged as a provider action.
+    const detail = await clientUser.agent.get(`/api/bookings/${booking.id}`);
+    const entry = detail.body.data.timeline.find((e) => e.toStatus === "rescheduled");
+    expect(entry.actor.role).toBe("client");
+    expect(entry.actor.id).toBe(clientUser.id);
+    expect(entry.fromStartsAt).toBe(booking.startsAt);
+  });
+
+  it("frees the client's old slot when they move it themselves", async () => {
+    const booking = await bookFirstFreeSlot();
+    const before = await fetchSlots(bystander.agent, provider.id, service.id, range);
+    const destination = before.find((s) => s.startsAt !== booking.startsAt);
+
+    await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt });
+
+    const after = await fetchSlots(bystander.agent, provider.id, service.id, range);
+    const offered = after.map((s) => s.startsAt);
+
+    expect(offered).toContain(booking.startsAt);
+    expect(offered).not.toContain(destination.startsAt);
+  });
+
+  it("holds a client to the same cutoff that governs cancelling", async () => {
+    // Same 30-day-cutoff trick as the cancellation test: it puts every bookable
+    // slot past the deadline without faking a clock. If reschedule were exempt,
+    // a client could dodge the cutoff by moving the appointment and cancelling
+    // it from its new date.
+    const strict = await createUser({ role: "provider", timezone: "Europe/London", label: "rstrictprov" });
+    const strictService = await createService(strict);
+    await setWeeklyHours(
+      strict,
+      [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startTime: "09:00", endTime: "17:00" }))
+    );
+    await strict.agent.patch("/api/availability/settings").send({ cancellationCutoffHours: 720 });
+
+    const booking = await bookFirstFreeSlot(clientUser, strictService, strict);
+    const slots = await fetchSlots(clientUser.agent, strict.id, strictService.id, range);
+    const destination = slots.find((s) => s.startsAt !== booking.startsAt);
+
+    const response = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt });
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("RESCHEDULE_WINDOW_CLOSED");
+    expect(response.body.details.deadline).toBeTruthy();
+
+    // The provider is not bound by the cutoff they set for clients.
+    const byProvider = await strict.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt, reason: "Moving it myself" });
+    expect(byProvider.status).toBe(200);
+  });
+
+  it("still requires a reason from the provider, but not from the client", async () => {
+    const booking = await bookFirstFreeSlot();
+    const slots = await fetchSlots(clientUser.agent, provider.id, service.id, range);
+    const destination = slots.find((s) => s.startsAt !== booking.startsAt);
+
+    // The provider is imposing the change on someone else, so they must say why.
+    const byProvider = await provider.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt });
+    expect(byProvider.status).toBe(400);
+    expect(byProvider.body.details.some((d) => d.field === "reason")).toBe(true);
+
+    // The client is moving their own appointment, so no explanation is owed.
+    const byClient = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt });
+    expect(byClient.status).toBe(200);
+  });
+
   it("refuses to reschedule a cancelled booking", async () => {
     const booking = await bookFirstFreeSlot();
     await clientUser.agent.post(`/api/bookings/${booking.id}/cancel`).send({});
@@ -307,6 +400,103 @@ describe("status transitions", () => {
     await clientUser.agent.post(`/api/bookings/${booking.id}/cancel`).send({});
 
     const response = await provider.agent.patch(`/api/bookings/${booking.id}/status`).send({ status: "completed" });
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("BOOKING_NOT_ACTIVE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * The window in which a finished appointment's outcome is still the provider's
+ * to record.
+ *
+ * These exist because of a real defect. Auto-completion used to fire the moment
+ * `ends_at` passed, and it runs lazily on *read* — so the provider opening their
+ * dashboard settled every finished appointment as 'completed' before they could
+ * click anything. 'no_show' was in the schema, the API and the UI, and could not
+ * be reached: the only window was *during* the appointment. The first test below
+ * is the regression guard for exactly that sequence.
+ */
+describe("the outcome window after an appointment ends", () => {
+  /**
+   * Drops a booking into the past by rewriting its times directly.
+   *
+   * The API refuses to create a booking in the past — correctly — so a finished
+   * appointment cannot be produced through it. Both the appointment span and the
+   * blocked span move together, or the exclusion constraint would be comparing a
+   * range that no longer matches the row.
+   *
+   * Every test here must pass a *distinct* `endedMinutesAgo`, at least one
+   * appointment-length apart. A settled booking still occupies the provider's
+   * calendar — the exclusion constraint only ignores cancelled rows — so two
+   * tests parking their bookings on the same past window collide on it.
+   *
+   * @param {number} id
+   * @param {number} endedMinutesAgo How long ago the appointment finished.
+   */
+  async function endBookingMinutesAgo(id, endedMinutesAgo) {
+    await testPool().query(
+      `UPDATE bookings
+       SET starts_at    = NOW() - ($2 || ' minutes')::interval - INTERVAL '30 minutes',
+           ends_at      = NOW() - ($2 || ' minutes')::interval,
+           blocked_from = NOW() - ($2 || ' minutes')::interval - INTERVAL '30 minutes',
+           blocked_to   = NOW() - ($2 || ' minutes')::interval
+       WHERE id = $1`,
+      [id, String(endedMinutesAgo)]
+    );
+  }
+
+  it("still accepts no-show after the provider has opened their dashboard", async () => {
+    const booking = await bookFirstFreeSlot();
+    await endBookingMinutesAgo(booking.id, 5);
+
+    // The step that used to destroy the outcome: a plain list read.
+    const list = await provider.agent.get("/api/bookings");
+    expect(list.status).toBe(200);
+
+    const response = await provider.agent
+      .patch(`/api/bookings/${booking.id}/status`)
+      .send({ status: "no_show" });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe("no_show");
+  });
+
+  it("leaves a just-finished appointment active rather than settling it on read", async () => {
+    const booking = await bookFirstFreeSlot();
+    await endBookingMinutesAgo(booking.id, 45);
+
+    const detail = await provider.agent.get(`/api/bookings/${booking.id}`);
+
+    expect(detail.status).toBe(200);
+    expect(detail.body.data.status).toBe("booked");
+  });
+
+  it("completes it once the window has closed, and says the system did it", async () => {
+    const booking = await bookFirstFreeSlot();
+    // Comfortably past the one-hour grace.
+    await endBookingMinutesAgo(booking.id, 180);
+
+    const detail = await provider.agent.get(`/api/bookings/${booking.id}`);
+    expect(detail.body.data.status).toBe("completed");
+
+    // Attributed to 'system', not to whichever party happened to load the page,
+    // and with no user behind it.
+    const entry = detail.body.data.timeline.find((e) => e.toStatus === "completed");
+    expect(entry.actor.role).toBe("system");
+    expect(entry.actor.id).toBeNull();
+  });
+
+  it("will not accept no-show once the window has closed", async () => {
+    const booking = await bookFirstFreeSlot();
+    await endBookingMinutesAgo(booking.id, 400);
+
+    await provider.agent.get(`/api/bookings/${booking.id}`);
+
+    const response = await provider.agent
+      .patch(`/api/bookings/${booking.id}/status`)
+      .send({ status: "no_show" });
 
     expect(response.status).toBe(409);
     expect(response.body.code).toBe("BOOKING_NOT_ACTIVE");

@@ -79,9 +79,13 @@ export function testEmail(label = "user") {
  * @param {string} [args.timezone] IANA zone. Defaults differ per role so the
  *   fixtures are cross-timezone by default rather than by remembering to ask.
  * @param {string} [args.label] Appears in the email address, for debugging.
+ * @param {string} [args.currency] ISO 4217 code, providers only. Defaults to GBP
+ *   to match the default `Europe/London` zone — a fixture whose currency and
+ *   timezone disagreed would be a confusing thing to read a price assertion out
+ *   of.
  * @returns {Promise<{agent: object, id: number, email: string, timezone: string}>}
  */
-export async function createUser({ role, timezone, label = role }) {
+export async function createUser({ role, timezone, label = role, currency = "GBP" }) {
   const zone = timezone || (role === "provider" ? "Europe/London" : "America/New_York");
   const agent = client();
   const email = testEmail(label);
@@ -98,7 +102,9 @@ export async function createUser({ role, timezone, label = role }) {
     role,
     phoneNumber: "+441234567890",
     timezone: zone,
-    ...(role === "provider" ? { businessName: `Test Biz ${runId}${counter}`, businessType: "Physio" } : {}),
+    ...(role === "provider"
+      ? { businessName: `Test Biz ${runId}${counter}`, businessType: "Physio", currency }
+      : {}),
   });
 
   if (completed.status !== 200) {

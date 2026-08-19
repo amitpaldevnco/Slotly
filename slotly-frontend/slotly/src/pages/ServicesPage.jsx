@@ -404,7 +404,7 @@ export default function ServicesPage() {
         title={bookingsService ? bookingsService.name : "Bookings"}
         description={
           bookingsService
-            ? `Every booking for this service · ${formatPrice(bookingsService.stats?.totalEarnings)} earned`
+            ? `Every booking for this service · ${formatPrice(bookingsService.stats?.totalEarnings, bookingsService.currency)} earned`
             : undefined
         }
         size="lg"

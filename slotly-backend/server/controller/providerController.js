@@ -39,7 +39,7 @@ export const listProviders = async (req, res) => {
     // however many providers it returns.
     const result = await query(
       `SELECT u.id, u.name, u.avatar_url, u.bio, u.timezone,
-              u.business_name, u.business_type,
+              u.business_name, u.business_type, u.currency,
               stats.service_count, stats.min_price, stats.min_duration
        FROM users u
        LEFT JOIN LATERAL (
@@ -66,6 +66,10 @@ export const listProviders = async (req, res) => {
         businessName: row.business_name,
         businessType: row.business_type,
         serviceCount: row.service_count ?? 0,
+        // Denominates `fromPrice` below. Without it the directory renders every
+        // provider's cheapest service in one assumed currency, which is wrong
+        // for all but one of them.
+        currency: row.currency,
         fromPrice: row.min_price,
         shortestDuration: row.min_duration,
       })),
@@ -124,7 +128,7 @@ export const getProviderProfile = async (req, res) => {
     // still return a row with zeros, not disappear from the result set.
     const result = await query(
       `SELECT u.id, u.name, u.avatar_url, u.bio, u.timezone,
-              u.business_name, u.business_type, u.qualifications,
+              u.business_name, u.business_type, u.qualifications, u.currency,
               u.cancellation_cutoff_hours, u.role,
               (SELECT COUNT(*)::int FROM bookings b
                  WHERE b.provider_id = u.id AND b.status = ANY($2)) AS delivered_appointments,
@@ -161,6 +165,7 @@ export const getProviderProfile = async (req, res) => {
       business_name: provider.business_name,
       business_type: provider.business_type,
       qualifications: provider.qualifications,
+      currency: provider.currency,
       cancellationCutoffHours: provider.cancellation_cutoff_hours,
       isOwner: Boolean(req.user && req.user.userId === provider.id),
       // Exact figures, never rounded into "500+" buckets. At this scale a bucket

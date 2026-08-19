@@ -128,10 +128,26 @@ function NotificationsMenu() {
         )}
       </button>
 
+      {/*
+        The panel below uses two different anchors, because on a phone it is wider
+        than the space to the left of the bell.
+
+        The bell sits inboard of the account chip, so its right edge is ~110px
+        short of the viewport's. Anchoring the panel's right edge to it while
+        sizing the panel from the *viewport* (`calc(100vw-2rem)`) put its left edge
+        at -76px on a 375px screen — the heading read "fications". Clamping the
+        width harder would have stopped the clipping and left a 240px panel
+        floating in the middle of the screen.
+
+        So below `sm` it is anchored to the viewport instead: fixed, inset from
+        both edges, sitting just under the 64px header. From `sm` up there is room
+        to the left of the bell, and it goes back to being an ordinary dropdown
+        hanging off the button.
+      */}
       {open && (
         <div
           role="menu"
-          className="absolute right-0 top-full z-50 mt-2 w-[min(22rem,calc(100vw-2rem))] overflow-hidden rounded-lg border border-outline-variant bg-surface-container-lowest shadow-float"
+          className="fixed inset-x-4 top-[4.25rem] z-50 overflow-hidden rounded-lg border border-outline-variant bg-surface-container-lowest shadow-float sm:absolute sm:inset-x-auto sm:right-0 sm:top-full sm:mt-2 sm:w-[22rem]"
         >
           <div className="flex items-center justify-between border-b border-outline-variant px-4 py-3">
             <p className="font-small text-small font-semibold text-on-surface">Notifications</p>

@@ -349,14 +349,52 @@ export function statusStyle(status) {
  * Formatters
  * ========================================================================== */
 
-/** Formats a price for display. Prices arrive from PostgreSQL NUMERIC as strings. */
-export function formatPrice(value, currencySymbol = "₹") {
+/**
+ * Formats a price for display. Prices arrive from PostgreSQL NUMERIC as strings.
+ *
+ * The currency is the provider's, and it travels with whatever object carries
+ * the price — `service.currency`, `booking.service.currency`, `provider.currency`
+ * — so a caller never has to guess it. It was hardcoded to `₹` before this
+ * existed, which meant a London physiotherapist's £45 was shown to everyone as
+ * ₹45.
+ *
+ * `Intl.NumberFormat` rather than a symbol lookup table: it knows the symbol,
+ * where the symbol goes (before in en-GB, after in fr-FR), the separators, and
+ * how many decimals a currency actually has — JPY has none, KWD has three. A
+ * table would get the first of those right and the rest wrong.
+ *
+ * The fraction digits are pinned to 0 for a whole number so a tidy price reads
+ * "£45" rather than "£45.00", while 45.5 still renders "£45.50". Deviating from
+ * the currency's default that way is safe for display; it is never used for
+ * arithmetic.
+ *
+ * @param {string|number|null|undefined} value
+ * @param {string} [currency] ISO 4217 code. Falls back to INR, which is the
+ *   column default, so a payload from an older server still renders.
+ * @returns {string} A formatted price, or "—" when there is no usable number.
+ */
+export function formatPrice(value, currency = "INR") {
   const number = Number(value);
   if (!Number.isFinite(number)) return "—";
-  return `${currencySymbol}${number.toLocaleString(undefined, {
-    minimumFractionDigits: number % 1 === 0 ? 0 : 2,
-    maximumFractionDigits: 2,
-  })}`;
+
+  const fractionDigits = Number.isInteger(number) ? 0 : 2;
+
+  try {
+    return new Intl.NumberFormat(undefined, {
+      style: "currency",
+      currency,
+      minimumFractionDigits: fractionDigits,
+      maximumFractionDigits: fractionDigits,
+    }).format(number);
+  } catch {
+    // Intl throws RangeError on a code it does not recognise. Showing the amount
+    // with the bare code beside it is worse than a symbol and far better than
+    // throwing inside a render.
+    return `${number.toLocaleString(undefined, {
+      minimumFractionDigits: fractionDigits,
+      maximumFractionDigits: fractionDigits,
+    })} ${currency}`;
+  }
 }
 
 /** "1h 30m", "45m" — durations read better than a bare minute count. */

@@ -27,6 +27,7 @@ import Page, { PageHeader, SectionNav } from "../components/ui/Page";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import Field, { Input, Textarea, Select, CharCount } from "../components/ui/Field";
+import { CURRENCIES, currencyLabel, DEFAULT_CURRENCY } from "../lib/currencies";
 import { Alert, PageLoader } from "../components/ui/Feedback";
 import {
   primaryButton,
@@ -67,6 +68,7 @@ export default function EditProfilePage() {
   const [qualifications, setQualifications] = useState("");
   const [businessName, setBusinessName] = useState("");
   const [businessType, setBusinessType] = useState("");
+  const [currency, setCurrency] = useState(DEFAULT_CURRENCY);
   const [profilePicture, setProfilePicture] = useState(null);
   const [profilePicturePreview, setProfilePicturePreview] = useState("");
 
@@ -84,6 +86,7 @@ export default function EditProfilePage() {
       setQualifications(user.qualifications || "");
       setBusinessName(user.business_name || "");
       setBusinessType(user.business_type || "");
+      setCurrency(user.currency || DEFAULT_CURRENCY);
       if (user.avatar_url) setProfilePicturePreview(imageUrl(user.avatar_url));
     } else {
       navigate("/login");
@@ -143,6 +146,7 @@ export default function EditProfilePage() {
         formData.append("qualifications", qualifications);
         if (businessName) formData.append("businessName", businessName);
         if (businessType) formData.append("businessType", businessType);
+        if (currency) formData.append("currency", currency);
       }
       if (profilePicture) {
         formData.append("profilePicture", profilePicture);
@@ -312,6 +316,29 @@ export default function EditProfilePage() {
                       {BUSINESS_TYPES.map((type) => (
                         <option key={type} value={type}>
                           {type}
+                        </option>
+                      ))}
+                    </Select>
+                  </Field>
+
+                  <Field
+                    id="currency"
+                    label="Currency you charge in"
+                    error={errors.currency}
+                    hint={
+                      currency !== (user.currency || DEFAULT_CURRENCY)
+                        ? "This relabels your existing prices — the amounts stay as they are, they are simply read in the new currency."
+                        : "Every price you set is shown in this currency, to you and to your clients."
+                    }
+                  >
+                    <Select
+                      id="currency"
+                      value={currency}
+                      onChange={(event) => setCurrency(event.target.value)}
+                    >
+                      {CURRENCIES.map((entry) => (
+                        <option key={entry.code} value={entry.code}>
+                          {currencyLabel(entry)}
                         </option>
                       ))}
                     </Select>

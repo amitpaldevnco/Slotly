@@ -401,7 +401,7 @@ export default function BookServicePage() {
               </DetailRow>
 
               <DetailRow icon="payments" term="Price">
-                <span className="font-semibold text-on-surface">{formatPrice(service?.price)}</span>
+                <span className="font-semibold text-on-surface">{formatPrice(service?.price, service?.currency)}</span>
               </DetailRow>
 
               {(service?.bufferBefore > 0 || service?.bufferAfter > 0) && (

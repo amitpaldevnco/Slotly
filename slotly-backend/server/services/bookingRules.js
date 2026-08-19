@@ -15,6 +15,25 @@ export const BOOKING_STATUSES = ["booked", "rescheduled", "cancelled", "complete
 export const ACTIVE_STATUSES = ["booked", "rescheduled"];
 
 /**
+ * How long after an appointment ends the provider still owns its outcome.
+ *
+ * Nothing is settled automatically inside this window. Once it closes, a booking
+ * nobody recorded an outcome for is taken to have happened — see
+ * `autoCompleteExpired()` in the booking controller.
+ *
+ * The window exists because the alternative has no window at all: settling on
+ * `ends_at` meant the first read after an appointment finished flipped it to
+ * 'completed', and since opening the dashboard *is* a read, a provider could
+ * never mark a no-show for an appointment that had already ended. The status
+ * existed in the schema, the API and the UI, and was unreachable in practice.
+ *
+ * An hour is long enough to cover the realistic case — the client never turned
+ * up, the provider waits, finishes the session slot, then records it — without
+ * leaving yesterday's calendar ambiguous.
+ */
+export const OUTCOME_GRACE_MINUTES = 60;
+
+/**
  * Decides whether a client may still cancel their own booking.
  *
  * The cutoff is measured from the appointment's start, using the cutoff value
@@ -29,6 +48,35 @@ export const ACTIVE_STATUSES = ["booked", "rescheduled"];
  *   returned even when `allowed` is false so the UI can explain the refusal.
  */
 export function evaluateClientCancellation(booking, now = new Date()) {
+  return evaluateClientCutoff(booking, now, "cancel");
+}
+
+/**
+ * Decides whether a client may move their own booking.
+ *
+ * Deliberately the *same* deadline as cancellation rather than a separate
+ * setting. A reschedule frees the original slot exactly as a cancellation does,
+ * so it costs the provider the same late notice; letting a client reschedule
+ * after the cancellation window shut would make the cutoff trivially avoidable
+ * by moving the appointment to a distant date and cancelling it there.
+ *
+ * @param {{starts_at: Date|string, status: string, cancellation_cutoff_hours_snapshot: number}} booking
+ * @param {Date} now Instant to judge against.
+ * @returns {{allowed: boolean, code: string|null, deadline: Date, reason: string|null}}
+ */
+export function evaluateClientReschedule(booking, now = new Date()) {
+  return evaluateClientCutoff(booking, now, "reschedule");
+}
+
+/**
+ * The cutoff test shared by client cancellation and client reschedule.
+ *
+ * @param {object} booking
+ * @param {Date} now
+ * @param {"cancel"|"reschedule"} action Chooses the wording only; the deadline
+ *   itself is identical for both, by design.
+ */
+function evaluateClientCutoff(booking, now, action) {
   const startsAt = toDate(booking.starts_at);
   const cutoffHours = Number(booking.cancellation_cutoff_hours_snapshot) || 0;
   const deadline = new Date(startsAt.getTime() - cutoffHours * 3_600_000);
@@ -43,13 +91,22 @@ export function evaluateClientCancellation(booking, now = new Date()) {
   }
 
   if (now.getTime() > deadline.getTime()) {
+    // Both codes are spelled out as literals rather than built from `action`,
+    // because `tests/api.docs.test.js` greps this file for the bare strings to
+    // check every code the server can emit is in the published OpenAPI enum. A
+    // computed code would be invisible to it and silently drop out of the docs.
+    const closed =
+      action === "cancel"
+        ? { noun: "Cancellations", code: "CANCELLATION_WINDOW_CLOSED" }
+        : { noun: "Changes", code: "RESCHEDULE_WINDOW_CLOSED" };
+
     return {
       allowed: false,
-      code: "CANCELLATION_WINDOW_CLOSED",
+      code: closed.code,
       deadline,
       reason:
         cutoffHours > 0
-          ? `Cancellations close ${cutoffHours} hour${cutoffHours === 1 ? "" : "s"} before the appointment.`
+          ? `${closed.noun} close ${cutoffHours} hour${cutoffHours === 1 ? "" : "s"} before the appointment.`
           : "This appointment has already started.",
     };
   }

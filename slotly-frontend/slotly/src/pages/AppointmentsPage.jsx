@@ -447,7 +447,7 @@ function ProviderRow({ booking, viewerZone, onReschedule }) {
           {formatDuration(booking.service.duration)}
         </p>
         <p className="font-caption text-caption text-on-surface-variant">
-          {formatPrice(booking.service.price)}
+          {formatPrice(booking.service.price, booking.service.currency)}
         </p>
       </div>
 
@@ -553,7 +553,7 @@ function ClientCard({ booking, viewerZone }) {
             </span>
             <span className="hidden items-center gap-1.5 md:flex">
               <Icon name="payments" size={16} />
-              {formatPrice(booking.service.price)}
+              {formatPrice(booking.service.price, booking.service.currency)}
             </span>
           </div>
         </div>

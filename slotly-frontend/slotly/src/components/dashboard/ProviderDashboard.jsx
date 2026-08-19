@@ -166,7 +166,7 @@ export default function ProviderDashboard({ user }) {
         <MetricTile
           label="Total Earnings"
           icon="payments"
-          value={summary ? formatPrice(summary.totalEarnings) : null}
+          value={summary ? formatPrice(summary.totalEarnings, user.currency) : null}
           loading={overviewLoading}
         />
         <MetricTile

@@ -445,7 +445,7 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
         <button
           type="button"
           onClick={applyMondayToWeekdays}
-          className="flex cursor-pointer items-center gap-1 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
+          className="-mx-2 flex min-h-9 cursor-pointer items-center gap-1 rounded-md px-2 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
         >
           <Icon name="content_copy" size={16} />
           Copy to all
@@ -465,10 +465,18 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
             return (
               <li
                 key={day.value}
-                className={`group grid grid-cols-[100px_1fr] gap-4 p-6 md:grid-cols-[120px_1fr] ${
+                // Single column on a phone, two from `sm` up.
+                //
+                // The two-column form reserved 100px for the day toggle and left
+                // the ranges 178px on a 375px screen — not enough for two native
+                // time inputs, which Chrome will not render below ~90px each.
+                // The row could not shrink to fit and simply overflowed the card
+                // by 24px, cutting the delete button off. Stacking gives the
+                // ranges the full width instead of a third of it.
+                className={`group grid grid-cols-1 gap-3 p-4 sm:grid-cols-[100px_1fr] sm:gap-4 sm:p-6 md:grid-cols-[120px_1fr] ${
                   open
-                    ? "items-start"
-                    : "items-center opacity-60 transition-opacity hover:opacity-100"
+                    ? "sm:items-start"
+                    : "opacity-60 transition-opacity hover:opacity-100 sm:items-center"
                 }`}
               >
                 <div className={`flex items-center gap-3 ${open ? "pt-2" : ""}`}>
@@ -491,7 +499,11 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
                     Unavailable
                   </p>
                 ) : (
-                  <div className="w-full space-y-3">
+                  // `min-w-0` because a grid item defaults to `min-width: auto`,
+                  // which is its *min-content* width — so without this the time
+                  // inputs refuse to shrink and push the row past the column
+                  // instead of fitting inside it.
+                  <div className="w-full min-w-0 space-y-3">
                     {windows.map((window, index) => {
                       const error = errors[`${day.value}-${index}`];
 
@@ -550,7 +562,7 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
                     <button
                       type="button"
                       onClick={() => addWindow(day.value)}
-                      className="flex cursor-pointer items-center gap-1 py-1 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
+                      className="-mx-2 flex min-h-9 cursor-pointer items-center gap-1 rounded-md px-2 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
                     >
                       <Icon name="add" size={16} />
                       Add range

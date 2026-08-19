@@ -18,6 +18,7 @@
  */
 
 import { useState, useEffect } from "react";
+import { useAuth } from "../../context/AuthContext";
 import { imageUrl, parseApiError } from "../../api/client";
 import * as servicesApi from "../../api/services";
 import Field, { Input, Textarea, Select, CharCount } from "../ui/Field";
@@ -46,6 +47,9 @@ const emptyForm = {
 const MAX_DESCRIPTION = 2000;
 
 export default function ServiceForm({ existingService, onSaved, onCancel, formId, onBusyChange }) {
+  // The live preview prices in the signed-in provider's own currency — this form
+  // is only ever reachable by the owner of the service being edited.
+  const { user } = useAuth();
   const [fields, setFields] = useState(emptyForm);
   const [coverImage, setCoverImage] = useState(null);
   const [coverImagePreview, setCoverImagePreview] = useState("");
@@ -333,7 +337,7 @@ export default function ServiceForm({ existingService, onSaved, onCancel, formId
                   {fields.serviceName || "Service name"}
                 </h3>
                 <span className="ml-3 whitespace-nowrap rounded-md bg-primary/10 px-2 py-0.5 font-small text-small uppercase tracking-wide text-primary">
-                  {fields.price === "" ? "—" : formatPrice(fields.price)}
+                  {fields.price === "" ? "—" : formatPrice(fields.price, user?.currency)}
                 </span>
               </div>
 

@@ -311,7 +311,7 @@ export default function ProviderPublicProfilePage() {
 
                       <div className="flex w-full min-w-[120px] flex-col items-end gap-3 sm:w-auto">
                         <span className="font-h3 text-[22px] font-bold text-primary">
-                          {formatPrice(service.price)}
+                          {formatPrice(service.price, service.currency)}
                         </span>
 
                         {retired ? (
@@ -374,7 +374,7 @@ export default function ProviderPublicProfilePage() {
                       </span>
                       {selectedService && (
                         <span className="shrink-0 font-bold">
-                          {formatPrice(selectedService.price)}
+                          {formatPrice(selectedService.price, selectedService.currency)}
                         </span>
                       )}
                     </div>

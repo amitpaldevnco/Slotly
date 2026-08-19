@@ -57,7 +57,9 @@ them:
 - [No double-booking](#no-double-booking)
 - [Time and timezones](#time-and-timezones)
 - [Daylight saving](#daylight-saving)
+- [Who can change a booking](#who-can-change-a-booking)
 - [File uploads](#file-uploads)
+- [Rate limiting](#rate-limiting)
 - [Tests](#tests)
 - [API documentation](#api-documentation)
 - [Decisions, and why](#decisions-and-why)
@@ -256,7 +258,7 @@ bookings ──< booking_events
 
 | Table | Holds |
 |---|---|
-| `users` | Both roles. `role` is `NULL` until profile setup completes, which is how the app knows to route someone there. Carries `timezone` and the provider's `cancellation_cutoff_hours`. |
+| `users` | Both roles. `role` is `NULL` until profile setup completes, which is how the app knows to route someone there. Carries `timezone`, the provider's `cancellation_cutoff_hours`, and `currency` — the ISO 4217 code every price of theirs is read in. Currency sits on the provider, not the service, because a provider bills in one currency; putting it per-service would allow a profile whose own services disagree. |
 | `services` | Name, price, duration, buffers, `slot_interval`. Retired with `is_active = false` rather than deleted when it has booking history. |
 | `availability_rules` | The recurring weekly pattern. `weekday` (0 = Sunday) plus minutes-from-midnight. |
 | `availability_exceptions` | One-off `block` and `open` overrides, over an inclusive date range. |
@@ -528,6 +530,54 @@ transitions.
 
 ---
 
+## Who can change a booking
+
+Both parties can move or cancel an appointment, on deliberately different terms.
+
+| | Client | Provider |
+|---|---|---|
+| **Cancel** | Up to the cutoff | Any time |
+| **Reschedule** | Up to the same cutoff | Any time |
+| **Reason required** | No | Yes, for both |
+| **Record the outcome** (completed / no-show) | Never | Yes, within the outcome window |
+
+The asymmetry is the point. A provider acting on someone else's appointment is
+imposing a change they did not ask for, so an explanation is mandatory and the
+client's cutoff does not bind the person who owns the calendar. A client moving
+their own appointment owes nobody an explanation, but is bound by the notice the
+provider asked for.
+
+**Reschedule shares one deadline with cancel**, rather than having its own. A
+reschedule frees the original slot exactly as a cancellation does, so it costs
+the provider the same late notice — and if the reschedule window were any wider,
+the cutoff would be trivially avoidable: move the appointment to a distant date,
+then cancel it from there. A client past the deadline gets `409
+RESCHEDULE_WINDOW_CLOSED`, carrying the deadline so the UI can explain itself.
+
+Before this existed, reschedule was provider-only and a client who needed a
+different time had to cancel and rebook. That released their slot to the pool in
+between — so they could lose it to somebody else mid-flow — and split one
+appointment's history across two unrelated rows. Both are exactly the outcomes
+the product exists to prevent.
+
+### The outcome window
+
+An appointment that has finished is not settled immediately. For
+`OUTCOME_GRACE_MINUTES` — **one hour** — after it ends, the provider can still
+record what actually happened: completed, no-show, or cancelled. Once that hour
+passes, a booking nobody recorded is automatically marked `completed`, attributed
+in the timeline to a `system` actor.
+
+The grace period is not cosmetic. Auto-completion runs *lazily on read*, and it
+used to fire the moment `ends_at` passed — which meant the provider opening their
+dashboard settled every finished appointment as `completed` before they could
+click anything. `no_show` existed in the schema, the API and the UI, and was
+unreachable in practice: the only window to set it was *during* the appointment.
+`tests/api.lifecycle.test.js` guards that exact sequence — open the dashboard,
+then mark a no-show.
+
+---
+
 ## File uploads
 
 **Accepted formats and size cap:**
@@ -584,6 +634,50 @@ no credentials.
 still hold `/uploads/...` paths — stay deletable. An absolute URL that is neither
 (an OAuth provider's avatar on `googleusercontent.com`) is left alone: the app
 did not put it there and has no business removing it.
+
+---
+
+## Rate limiting
+
+`express-rate-limit`, in three tiers, because the endpoints have genuinely
+different threat profiles. All of it lives in `middleware/rateLimit.js`.
+
+| Tier | Applies to | Limit | Counts |
+|---|---|---|---|
+| `credentialsLimiter` | `POST /auth/login`, `POST /auth/google`, the GitHub callback | 20 per 15 min | **failures only** |
+| `signupLimiter` | `POST /auth/register` | 10 per hour | every request |
+| `apiLimiter` | everything under `/api` | 300 per minute | every request |
+
+**Only the credential tier is really the point.** `/auth/login` answers a yes/no
+question about a secret, and without a limit an attacker can ask it as fast as
+the network allows — which no password policy survives.
+
+**Failures are counted, successes are not.** `skipSuccessfulRequests` on the
+credentials tier is what keeps the limit invisible to the people it is not aimed
+at: a shared office NAT can sign in all day without touching the counter, while
+twenty consecutive wrong passwords from that same address still stops. Signup is
+the opposite — it counts everything, because there the abuse *is* the successful
+case, and counting successes also blunts the address enumeration that "this email
+is already registered" would otherwise allow.
+
+Throttled requests get the same envelope as every other error — `429` with code
+`RATE_LIMITED` and `details.retryAfterSeconds`, so the UI can say when to try
+again rather than just that something went wrong. Standard `RateLimit` headers
+are sent; the legacy `X-RateLimit-*` ones are not.
+
+**Keying depends on `trust proxy`.** The limiter keys on client IP, which is only
+correct because `server.js` sets `app.set("trust proxy", 1)` — Render terminates
+TLS at its edge and forwards over HTTP, so without it every request would look
+like it came from the load balancer and the whole world would share one bucket.
+The two settings are a pair.
+
+**In tests the limits are inert.** The API suites drive the real app through
+supertest from one address and create dozens of fixture accounts per run, which is
+indistinguishable from the abuse `signupLimiter` exists to stop. They are disabled
+when `NODE_ENV === "test"` and switched back on by the one suite that asserts they
+work (`tests/api.rateLimit.test.js`) via `setRateLimitingEnabledForTests()`. The
+gate is `NODE_ENV` and nothing else, so no request header or environment variable
+can turn them off in a deployed process.
 
 ---
 
@@ -760,8 +854,14 @@ link straight to the booking is the shortest path to fixing it.
   screen drops a time once it passes, on a local clock tick, which handles the
   common case; a slot someone else takes still only surfaces on the next
   interaction.
-- **No rate limiting.** The login and registration endpoints would need it before
-  facing the public internet.
+- **Rate limits are per-process.** The limiter keeps its counters in memory, which
+  is correct for a single instance and wrong the moment the API runs on more than
+  one: each process would enforce its own share of the limit. Scaling out means
+  moving the store to Redis. See [Rate limiting](#rate-limiting).
+- **Currency is a label, not a conversion.** A provider picks the currency they
+  charge in, and every price of theirs is read in it. Changing it re-denominates
+  the existing numbers rather than converting them — there is no exchange rate
+  anywhere in the app, because there are no payments in it either.
 - **Roles cannot be changed after signup.** Choosing provider or client is a
   one-way decision, enforced server-side — see `completeProfile`. Deliberate,
   but it means a genuine change of mind needs a new account rather than a

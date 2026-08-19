@@ -70,6 +70,32 @@ function isValidTimezone(zone) {
 }
 
 /**
+ * Normalises a currency code, or returns null if it is not one.
+ *
+ * Validated against `Intl.supportedValuesOf("currency")` — the runtime's own ICU
+ * currency list — for the same reason `isValidTimezone` defers to Luxon: the
+ * authority on what codes exist is the library that will later format them, and
+ * a hardcoded list would drift from it. The fallback is a shape check, because
+ * `supportedValuesOf` is absent on older runtimes and refusing every currency
+ * there would be worse than accepting a well-formed unknown one.
+ *
+ * @param {unknown} code Any case; "gbp" and "GBP" are the same currency.
+ * @returns {string|null} The upper-cased ISO 4217 code, or null.
+ */
+function normaliseCurrency(code) {
+  if (typeof code !== "string") return null;
+  const upper = code.trim().toUpperCase();
+  if (!/^[A-Z]{3}$/.test(upper)) return null;
+
+  try {
+    const known = Intl.supportedValuesOf("currency");
+    return known.includes(upper) ? upper : null;
+  } catch {
+    return upper;
+  }
+}
+
+/**
  * Mints the session cookie for a user row.
  *
  * Shared by all five sign-in paths so the token's claims, lifetime and cookie
@@ -109,6 +135,7 @@ function publicUser(row) {
     timezone: row.timezone,
     businessName: row.business_name,
     businessType: row.business_type,
+    currency: row.currency,
   };
 }
 
@@ -212,7 +239,7 @@ export const googleAuth = async (req, res) => {
  */
 export const completeProfile = async (req, res) => {
   try {
-    const { role, phoneNumber, timezone, businessName, businessType } = req.body;
+    const { role, phoneNumber, timezone, businessName, businessType, currency } = req.body;
 
     const current = await query("SELECT role FROM users WHERE id = $1", [req.user.userId]);
     if (current.rows.length === 0) {
@@ -238,12 +265,25 @@ export const completeProfile = async (req, res) => {
     } else if (!isValidTimezone(timezone)) {
       errors.push({ field: "timezone", message: "That is not a timezone we recognise" });
     }
+    // Providers must state a currency here, at the one moment the profile is
+    // filled in, because every price they go on to set is denominated in it.
+    // Leaving it to a default would mean a London physiotherapist publishing
+    // prices in rupees until they noticed.
+    let resolvedCurrency = null;
     if (role === "provider") {
       if (!businessName) {
         errors.push({ field: "businessName", message: "Business name is required for providers" });
       }
       if (!businessType) {
         errors.push({ field: "businessType", message: "Business type is required" });
+      }
+      if (!currency) {
+        errors.push({ field: "currency", message: "Choose the currency you charge in" });
+      } else {
+        resolvedCurrency = normaliseCurrency(currency);
+        if (!resolvedCurrency) {
+          errors.push({ field: "currency", message: "That is not a currency we recognise" });
+        }
       }
     }
 
@@ -261,8 +301,9 @@ export const completeProfile = async (req, res) => {
            timezone = $3,
            business_name = $4,
            business_type = $5,
+           currency = COALESCE($6, currency),
            updated_at = NOW()
-       WHERE id = $6 AND role IS NULL
+       WHERE id = $7 AND role IS NULL
        RETURNING *`,
       [
         role,
@@ -270,6 +311,9 @@ export const completeProfile = async (req, res) => {
         timezone,
         role === "provider" ? businessName : null,
         role === "provider" ? businessType : null,
+        // NULL for a client, so COALESCE leaves the column on its default. A
+        // client never sets a price, so there is nothing for them to denominate.
+        resolvedCurrency,
         req.user.userId,
       ]
     );
@@ -313,7 +357,7 @@ export const getCurrentUser = async (req, res) => {
 
     const result = await query(
       `SELECT id, name, email, avatar_url, role, phone_number, timezone,
-              business_name, business_type, bio, qualifications,
+              business_name, business_type, bio, qualifications, currency,
               cancellation_cutoff_hours
        FROM users WHERE id = $1`,
       [userId]
@@ -337,6 +381,7 @@ export const getCurrentUser = async (req, res) => {
       business_type: user.business_type,
       bio: user.bio,
       qualifications: user.qualifications,
+      currency: user.currency,
       cancellation_cutoff_hours: user.cancellation_cutoff_hours,
     });
 
@@ -706,7 +751,8 @@ export const loginUser = async (req, res) => {
 export async function updateProfile(req, res) {
   try {
     const userId = req.user.userId;
-    const { phoneNumber, timezone, bio, businessName, businessType, qualifications } = req.body;
+    const { phoneNumber, timezone, bio, businessName, businessType, qualifications, currency } =
+      req.body;
 
     const currentUser = await query("SELECT role FROM users WHERE id = $1", [userId]);
     if (currentUser.rows.length === 0) {
@@ -792,6 +838,22 @@ export async function updateProfile(req, res) {
     if (role === "provider") {
       if (businessName) updateData.business_name = businessName;
       if (businessType) updateData.business_type = businessType;
+
+      // Changing this re-denominates every price the provider already has: the
+      // stored numbers do not move, only the currency they are read in. That is
+      // the intended behaviour — it is a correction ("I have been showing rupees
+      // and I charge pounds"), not a conversion — and the UI says so before
+      // saving. Converting the amounts instead would need an exchange rate and a
+      // date, which is a payments concern and out of scope.
+      if (currency !== undefined) {
+        const resolved = normaliseCurrency(currency);
+        if (!resolved) {
+          return validationErrorResponse(res, "Please fix the errors below", [
+            { field: "currency", message: "That is not a currency we recognise" },
+          ]);
+        }
+        updateData.currency = resolved;
+      }
     }
 
     // Handle the profile photo. The file's real type is decided by sniffing its

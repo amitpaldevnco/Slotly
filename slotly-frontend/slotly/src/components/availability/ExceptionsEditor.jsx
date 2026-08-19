@@ -131,7 +131,7 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
           type="button"
           onClick={() => setFormOpen((open) => !open)}
           aria-expanded={formOpen}
-          className="flex cursor-pointer items-center gap-1 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
+          className="-mx-2 flex min-h-9 cursor-pointer items-center gap-1 rounded-md px-2 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
         >
           <Icon name={formOpen ? "close" : "add"} size={16} />
           {formOpen ? "Cancel" : "Add exception"}

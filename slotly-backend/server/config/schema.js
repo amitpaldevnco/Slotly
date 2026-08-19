@@ -27,6 +27,26 @@ export async function initSchema() {
       -- ever need to be searchable or verified, that is the point to normalise.
       qualifications            VARCHAR(500),
 
+      -- ISO 4217 code the provider prices in, e.g. 'GBP', 'INR', 'USD'.
+      --
+      -- On the user and not on the service: a provider bills in one currency
+      -- across everything they offer, so putting it on each service would invite
+      -- a profile whose services disagree with each other, and would need a
+      -- migration to fix rather than being unrepresentable in the first place.
+      --
+      -- The code alone is stored, never a symbol. Symbols are ambiguous ($ is at
+      -- least five different currencies) and are a rendering concern; the client
+      -- turns the code into a symbol with Intl at display time, in the reader's
+      -- own locale.
+      --
+      -- Clients carry the column too and simply never use it. Splitting the
+      -- table to avoid that would cost a join on every read to save one short
+      -- string per row.
+      -- The format CHECK is added as a named constraint below rather than inline,
+      -- so a fresh database and a migrated one end up with the same one
+      -- constraint under the same name instead of two under different ones.
+      currency                  CHAR(3) NOT NULL DEFAULT 'INR',
+
       password_hash             VARCHAR(255),
 
       -- How many hours before the appointment a client may still cancel it.
@@ -46,6 +66,22 @@ export async function initSchema() {
   await exec(`
     ALTER TABLE users
       ADD COLUMN IF NOT EXISTS qualifications VARCHAR(500);
+  `);
+
+  // Also added after the initial release. Unlike `qualifications` this one is NOT
+  // NULL with a default: a price has to be denominated in something, so there is
+  // no honest "not stated" reading for it. Existing rows land on 'INR', which is
+  // what the frontend hardcoded before this column existed — so the backfill
+  // changes nothing that was already on screen, and providers correct it from
+  // their profile.
+  await exec(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS currency CHAR(3) NOT NULL DEFAULT 'INR';
+  `);
+  await exec(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_currency_format;`);
+  await exec(`
+    ALTER TABLE users
+      ADD CONSTRAINT users_currency_format CHECK (currency ~ '^[A-Z]{3}$');
   `);
 
   // Partial index: only providers are ever browsed, so the discovery query

@@ -58,6 +58,7 @@ const PROVIDERS = [
     email: "priya.provider@slotly.demo",
     name: "Priya Raman",
     timezone: "Europe/London",
+    currency: "GBP",
     businessName: "Raman Physiotherapy",
     businessType: "Physiotherapy",
     qualifications: "BSc (Hons) Physiotherapy, MCSP — 11 years in practice",
@@ -123,6 +124,7 @@ const PROVIDERS = [
     email: "arjun.provider@slotly.demo",
     name: "Arjun Mehta",
     timezone: "Asia/Kolkata",
+    currency: "INR",
     businessName: "Mehta Tutoring",
     businessType: "Tutoring",
     qualifications: "MSc Mathematics, IIT Bombay — 8 years teaching",
@@ -209,8 +211,8 @@ async function insertUser(person, passwordHash) {
     `INSERT INTO users
        (email, name, password_hash, role, timezone, phone_number,
         bio, business_name, business_type, qualifications, avatar_url,
-        cancellation_cutoff_hours)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+        cancellation_cutoff_hours, currency)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
      RETURNING id`,
     [
       person.email,
@@ -225,6 +227,8 @@ async function insertUser(person, passwordHash) {
       person.qualifications ?? null,
       person.avatarUrl ?? null,
       person.cancellationCutoffHours ?? 12,
+      // Clients keep the column default; only a provider's currency is meaningful.
+      person.currency ?? "INR",
     ]
   );
   return rows[0].id;

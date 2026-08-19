@@ -75,6 +75,8 @@ export const openApiDocument = {
               "SLOT_UNAVAILABLE",
               "TIMEZONE_CONFLICT",
               "CANCELLATION_WINDOW_CLOSED",
+              "RESCHEDULE_WINDOW_CLOSED",
+              "RATE_LIMITED",
               "BOOKING_NOT_ACTIVE",
               "APPOINTMENT_NOT_STARTED",
               "INVALID_TRANSITION",
@@ -1259,7 +1261,16 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
       post: {
         tags: ["Bookings"],
         summary: "Move a booking to another time",
-        description: `${bearerNote} Provider only, and \`reason\` is required. The move is subject to the same exclusion constraint as a new booking, so it can also return \`409 SLOT_TAKEN\`.`,
+        description:
+          `${bearerNote} Either party, on different terms. **Provider:** any time, and \`reason\` is ` +
+          "required — the client is being moved without asking, so they are owed an explanation. " +
+          "**Client:** their own booking only, up to the same cutoff that governs cancelling it " +
+          "(`409 RESCHEDULE_WINDOW_CLOSED` past it, carrying the deadline), and `reason` is optional. " +
+          "The two share one deadline because a reschedule frees the original slot exactly as a " +
+          "cancellation does; a wider window would let a client dodge the cutoff by moving the " +
+          "appointment and cancelling it from its new date. The move is subject to the same exclusion " +
+          "constraint as a new booking, so it can also return `409 SLOT_TAKEN`. A caller who is neither " +
+          "party gets `404`, not `403`.",
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
         requestBody: {
           required: true,
@@ -1267,10 +1278,14 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
             "application/json": {
               schema: {
                 type: "object",
-                required: ["startsAt", "reason"],
+                required: ["startsAt"],
                 properties: {
                   startsAt: { type: "string", format: "date-time" },
-                  reason: { type: "string", maxLength: 500 },
+                  reason: {
+                    type: "string",
+                    maxLength: 500,
+                    description: "Required when the caller is the provider; optional for the client.",
+                  },
                 },
               },
             },
@@ -1279,8 +1294,10 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
         responses: {
           200: { description: "Rescheduled; status becomes `rescheduled`" },
           400: errorRef("VALIDATION_FAILED, or a time in the past"),
-          403: errorRef("Not the provider"),
-          409: errorRef("SLOT_TAKEN, SLOT_UNAVAILABLE or BOOKING_NOT_ACTIVE"),
+          404: errorRef("No such booking, or the caller is neither party"),
+          409: errorRef(
+            "SLOT_TAKEN, SLOT_UNAVAILABLE, BOOKING_NOT_ACTIVE or RESCHEDULE_WINDOW_CLOSED"
+          ),
         },
       },
     },
@@ -1289,7 +1306,12 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
       patch: {
         tags: ["Bookings"],
         summary: "Mark a booking completed or no-show",
-        description: `${bearerNote} Provider only, and only once the appointment has started — otherwise \`409 APPOINTMENT_NOT_STARTED\`. Cancellation is not accepted here; it has its own endpoint.`,
+        description:
+          `${bearerNote} Provider only, and only once the appointment has started — otherwise ` +
+          "`409 APPOINTMENT_NOT_STARTED`. The outcome stays the provider's to record for **one hour " +
+          "after the appointment ends**; past that a booking nobody recorded is automatically marked " +
+          "`completed` by a `system` actor and this returns `409 BOOKING_NOT_ACTIVE`. Cancellation is " +
+          "not accepted here; it has its own endpoint.",
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
         requestBody: {
           required: true,

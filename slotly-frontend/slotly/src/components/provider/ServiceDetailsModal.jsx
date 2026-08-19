@@ -35,7 +35,7 @@ export default function ServiceDetailsModal({
       onClose={onClose}
       title={service?.name || "Service"}
       description={
-        service ? `${formatPrice(service.price)} · ${formatDuration(service.duration)}` : undefined
+        service ? `${formatPrice(service.price, service.currency)} · ${formatDuration(service.duration)}` : undefined
       }
       footer={
         <>
