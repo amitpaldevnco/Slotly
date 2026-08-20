@@ -710,9 +710,9 @@ can turn them off in a deployed process.
 cd slotly-backend/server && npm test
 ```
 
-**334 tests across 13 suites, Vitest.** `npm run test:watch` for watch mode.
+**363 tests across 14 suites, Vitest.** `npm run test:watch` for watch mode.
 
-Nine of the thirteen suites talk to a real PostgreSQL — the same one the app
+Nine of the fourteen suites talk to a real PostgreSQL — the same one the app
 uses, read from `.env`, or any database named by `DATABASE_URL`. That is
 deliberate rather than lazy: the double-booking guarantee *is* a database
 constraint and the one-review-per-booking and one-user-per-email guarantees *are*
