@@ -11,9 +11,25 @@ import { successResponse, errorResponse, ERROR_CODES } from "../responseControll
 export const listProviders = async (req, res) => {
   try {
     const { search, businessType } = req.query;
-    // Clamped rather than rejected: a silly `limit` should not fail the request,
-    // it should just not let one caller ask for the whole table.
-    const limit = Math.min(Math.max(Number(req.query.limit) || 50, 1), 100);
+    // Rejected rather than clamped. Clamping turned nonsense into a plausible
+    // answer: `?limit=-5` became 1, so a caller with an off-by-one bug got a
+    // single provider back and no hint that the API had silently disagreed with
+    // them. An absent limit still means "use the default"; a limit that is
+    // present has to be a real number in range.
+    let limit = 50;
+    if (req.query.limit !== undefined && req.query.limit !== "") {
+      const parsed = Number(req.query.limit);
+      if (!Number.isInteger(parsed) || parsed < 1 || parsed > 100) {
+        return errorResponse(
+          res,
+          "`limit` must be a whole number between 1 and 100",
+          400,
+          ERROR_CODES.VALIDATION_FAILED,
+          [{ field: "limit", message: "limit must be a whole number between 1 and 100" }]
+        );
+      }
+      limit = parsed;
+    }
     const conditions = ["u.role = 'provider'"];
     const params = [];
     if (search && String(search).trim()) {

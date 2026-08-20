@@ -411,4 +411,17 @@ describe("malformed requests are 4xx with a usable code, never 5xx", () => {
     expect(response.body.details.some((d) => d.field === "startsAt")).toBe(true);
   });
 
+  it("rejects a nonsensical limit rather than silently clamping it", async () => {
+    // `?limit=-5` used to be clamped to 1, so a caller with an off-by-one got a
+    // single provider back and no indication the API had disagreed with them.
+    for (const limit of ["-5", "0", "abc", "1e3", "101", "2.5"]) {
+      const response = await guest().get(`/api/providers?limit=${limit}`);
+      expect(response.status, `limit=${limit}`).toBe(400);
+      expect(response.body.code).toBe("VALIDATION_FAILED");
+    }
+
+    // A valid one still works, and an absent one still defaults.
+    expect((await guest().get("/api/providers?limit=5")).status).toBe(200);
+    expect((await guest().get("/api/providers")).status).toBe(200);
+  });
 });
