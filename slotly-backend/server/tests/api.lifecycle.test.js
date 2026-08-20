@@ -375,12 +375,18 @@ describe("status transitions", () => {
     }
   });
 
-  it("refuses a status that is not in the schema", async () => {
+  // 400, not 409, and the distinction is the point rather than a detail. A 409
+  // says "the request is fine but conflicts with the current state of the
+  // resource" — which is true of the two refusals above this one, and would stop
+  // being true if the appointment simply started. "banana" is not a status at
+  // any point in any booking's life, so no state of the resource could make the
+  // request succeed. That is a malformed request, and it is a 400.
+  it("refuses a status that is not in the schema, as malformed input", async () => {
     const booking = await bookFirstFreeSlot();
 
     const response = await provider.agent.patch(`/api/bookings/${booking.id}/status`).send({ status: "banana" });
 
-    expect(response.status).toBe(409);
+    expect(response.status).toBe(400);
     expect(response.body.code).toBe("INVALID_STATUS");
   });
 

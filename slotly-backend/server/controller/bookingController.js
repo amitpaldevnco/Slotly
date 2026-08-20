@@ -1003,7 +1003,14 @@ export const updateBookingStatus = async (req, res) => {
 
     const verdict = evaluateProviderTransition(booking, status, new Date());
     if (!verdict.allowed) {
-      return errorResponse(res, verdict.reason, 409, verdict.code);
+      // A status that is not one of the five is malformed input, not a conflict
+      // with the booking's current state — the request would be wrong whatever
+      // the row said, so it is a 400. The other refusals really are conflicts:
+      // the booking is already settled, or the appointment has not started yet.
+      // Both are true of *this* row at *this* moment and could be false later,
+      // which is what 409 means.
+      const malformed = verdict.code === ERROR_CODES.INVALID_STATUS;
+      return errorResponse(res, verdict.reason, malformed ? 400 : 409, verdict.code);
     }
 
     const updated = await transaction(async (tx) => {
