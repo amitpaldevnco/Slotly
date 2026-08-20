@@ -15,17 +15,44 @@
  *
  * ## The one thing every guard has to get right
  *
- * `loading` must be handled before `user`. `useAuth` starts with no user while
- * `GET /auth/me` is in flight, so a guard that checked `!user` first would
- * redirect every signed-in person to the login page on a hard refresh, then
- * bounce them back a moment later. That is why each guard below opens with the
- * same `if (loading)` line rather than sharing a wrapper: the order is the
- * correctness condition, and inlining it keeps it visible in all four.
+ * `loading` and `offline` must both be handled before `user`. `useAuth` starts
+ * with no user while `GET /auth/me` is in flight, so a guard that checked
+ * `!user` first would redirect every signed-in person to the login page on a
+ * hard refresh and bounce them back a moment later. `offline` is the same
+ * mistake with a slower fuse: when the request fails outright there is still no
+ * user, but the session is *unknown* rather than absent, and redirecting on it
+ * signed people out every time the API was briefly unreachable. Neither is a
+ * signed-out state and neither may reach the `!user` branch.
+ *
+ * That is why each guard below opens with the same three lines rather than
+ * sharing a wrapper: the order is the correctness condition, and inlining it
+ * keeps it visible in all four.
  */
 
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { PageLoader } from "./ui/Feedback";
+import { ErrorState, PageLoader } from "./ui/Feedback";
+
+/**
+ * Shown when the session could not be read because the server did not answer.
+ *
+ * Deliberately not a redirect to `/login`: the user may well be signed in, and
+ * sending them to a form that cannot submit either turns one failure into two.
+ * Offering the retry keeps them where they were, which is also the right place
+ * to be once a sleeping host finishes waking up.
+ *
+ * @param {{onRetry: Function}} props `refetchUser` from the auth context.
+ */
+function SessionUnavailable({ onRetry }) {
+  return (
+    <div className="mx-auto max-w-lg px-4 py-16">
+      <ErrorState
+        message="We could not reach the server to check your session. You have not been signed out — this is usually a connection problem, or a server still starting up."
+        onRetry={onRetry}
+      />
+    </div>
+  );
+}
 
 
 /**
@@ -38,12 +65,16 @@ import { PageLoader } from "./ui/Feedback";
  *   `/complete-profile` (a social sign-up that never finished choosing a role).
  */
 export function ProtectedRoute() {
-  const { user, loading } = useAuth();
+  const { user, loading, offline, refetchUser } = useAuth();
   const location = useLocation();
 
   // Rendering the redirect before /auth/me resolves would bounce every signed-in
   // user to the login page on a hard refresh.
   if (loading) return <PageLoader label="Checking your session…" />;
+
+  // Unreachable, not unauthenticated. Falling through to `!user` here is what
+  // logged people out whenever the API was asleep.
+  if (offline && !user) return <SessionUnavailable onRetry={refetchUser} />;
 
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
@@ -66,10 +97,11 @@ export function ProtectedRoute() {
  *   accurate and useless.
  */
 export function RoleRoute({ role }) {
-  const { user, loading } = useAuth();
+  const { user, loading, offline, refetchUser } = useAuth();
   const location = useLocation();
 
   if (loading) return <PageLoader label="Checking your session…" />;
+  if (offline && !user) return <SessionUnavailable onRetry={refetchUser} />;
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }
@@ -94,10 +126,11 @@ export function RoleRoute({ role }) {
  * dashboard means they never see a form whose submit button could only fail.
  */
 export function CompleteProfileRoute() {
-  const { user, loading } = useAuth();
+  const { user, loading, offline, refetchUser } = useAuth();
   const location = useLocation();
 
   if (loading) return <PageLoader label="Checking your session…" />;
+  if (offline && !user) return <SessionUnavailable onRetry={refetchUser} />;
   if (!user) {
     return <Navigate to="/login" replace state={{ from: location.pathname + location.search }} />;
   }

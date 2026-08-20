@@ -16,6 +16,22 @@
  * `user` here is also the source of the viewer's timezone, which every screen
  * renders times in — so `refetchUser` after a profile change is what makes the
  * whole app re-read the clock, without touching a single booking.
+ *
+ * ## Unreachable is not signed out
+ *
+ * There are three answers to `GET /auth/me`, not two: a user, a 401, and no
+ * reply at all. Only the 401 means "you are signed out". Treating a failed
+ * request the same way logged people out whenever the API was briefly
+ * unreachable — and on a free-tier host that sleeps after fifteen minutes, the
+ * *first* request of a session routinely takes twenty to fifty seconds or times
+ * out, so this fired for real users on the one request that matters most. They
+ * arrived holding a perfectly valid cookie and were bounced to the sign-in page,
+ * where signing in failed too, because the server was still waking up.
+ *
+ * So a network failure leaves `user` untouched and raises `offline` instead. The
+ * route guards treat `offline` as "wait", not "leave", and `refetchUser` is the
+ * retry. The distinction comes from `parseApiError`, which already separates
+ * `NETWORK_ERROR` from an HTTP status for exactly this reason.
  */
 
 import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
@@ -38,16 +54,31 @@ export function AuthProvider({ children }) {
   // instead of briefly showing signed-out UI to a signed-in user.
   const [loading, setLoading] = useState(true);
 
+  // True when the last attempt to read the session never reached the server.
+  // Distinct from `!user`: it means "unknown", not "nobody". See the note at the
+  // top of this file for why conflating the two logged people out.
+  const [offline, setOffline] = useState(false);
 
   const fetchUser = useCallback(async () => {
     try {
       setUser(await authApi.getCurrentUser());
+      setOffline(false);
     } catch (err) {
+      // No `response` at all means the request never arrived — DNS, a dropped
+      // connection, a CORS refusal, or a host still waking from sleep. The
+      // session is not known to be invalid, so it is left alone.
+      if (!err?.response) {
+        console.error("Could not reach the server to load the session:", err);
+        setOffline(true);
+        return;
+      }
+
       // A 401 is the ordinary signed-out case, not an error worth logging.
-      if (err?.response?.status !== 401) {
+      if (err.response.status !== 401) {
         console.error("Could not load the current session:", err);
       }
       setUser(null);
+      setOffline(false);
     } finally {
       setLoading(false);
     }
@@ -57,6 +88,7 @@ export function AuthProvider({ children }) {
     try {
       await authApi.logout();
     } finally {
+      setOffline(false);
       // Cleared even if the request fails: the user asked to sign out, and
       // leaving them looking signed in is the worse outcome. The cookie expires
       // on its own regardless.
@@ -69,8 +101,8 @@ export function AuthProvider({ children }) {
   }, [fetchUser]);
 
   const value = useMemo(
-    () => ({ user, setUser, loading, logout, refetchUser: fetchUser }),
-    [user, loading, logout, fetchUser]
+    () => ({ user, setUser, loading, offline, logout, refetchUser: fetchUser }),
+    [user, loading, offline, logout, fetchUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -80,7 +112,10 @@ export function AuthProvider({ children }) {
  * Reads the session.
  *
  * @returns {{user: object|null, setUser: Function, loading: boolean,
- *   logout: Function, refetchUser: Function}}
+ *   offline: boolean, logout: Function, refetchUser: Function}} `offline` is
+ *   true when the session could not be read because the server was unreachable.
+ *   Callers must not read that as signed out — see the note at the top of this
+ *   file.
  * @throws {Error} When called outside `AuthProvider` — a wiring mistake that
  *   would otherwise surface as an unexplained null far from its cause.
  */
