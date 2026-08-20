@@ -863,6 +863,15 @@ export const rescheduleBooking = async (req, res) => {
     // Keep the booking's own snapshotted duration rather than the service's
     // current one: rescheduling should move an appointment, not silently resize
     // it because the provider edited the service in the meantime.
+    //
+    // The buffers and the grid deliberately come from the service *as it stands
+    // now*, and mixing the two is intentional rather than an oversight. The
+    // duration is what the client agreed to and is theirs; the buffers are the
+    // provider's own turnaround time and the grid is the provider's own
+    // publishing choice, neither of which the client bought. Honouring a
+    // buffer the provider has since abandoned would block time nobody wants
+    // blocked, and checking the new time against a retired grid would refuse
+    // slots the provider is currently offering.
     const spanService = {
       duration: booking.duration_snapshot,
       buffer_before: booking.buffer_before,
