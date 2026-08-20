@@ -598,6 +598,21 @@ export const listBookings = async (req, res) => {
  */
 export const getBooking = async (req, res) => {
   try {
+    // Read, then authorize, and only then settle anything. Auto-completion is a
+    // write, and running it first meant a stranger probing ids could change the
+    // status of appointments they had no business seeing. Harmless in effect —
+    // the row was already past its grace period and the next legitimate read
+    // would have completed it anyway — but "authorize before you write" is not
+    // a rule worth having an exception to.
+    const first = await query(`SELECT client_id, provider_id FROM bookings WHERE id = $1`, [
+      req.params.id,
+    ]);
+    if (first.rows.length === 0 || !viewerRoleFor(first.rows[0], req.user.userId)) {
+      // 404 rather than 403: confirming a booking exists to someone unrelated to
+      // it leaks that the provider had an appointment at that id.
+      return errorResponse(res, "Booking not found", 404, ERROR_CODES.NOT_FOUND);
+    }
+
     await autoCompleteExpired("id = $2", [req.params.id]);
 
     const result = await query(`${BOOKING_SELECT} WHERE b.id = $1`, [req.params.id]);
@@ -609,8 +624,6 @@ export const getBooking = async (req, res) => {
     const viewerRole = viewerRoleFor(booking, req.user.userId);
 
     if (!viewerRole) {
-      // 404 rather than 403: confirming a booking exists to someone unrelated to
-      // it leaks that the provider had an appointment at that id.
       return errorResponse(res, "Booking not found", 404, ERROR_CODES.NOT_FOUND);
     }
 
@@ -946,15 +959,29 @@ export const updateBookingStatus = async (req, res) => {
   try {
     const { status } = req.body;
 
+    const owner = await query("SELECT provider_id FROM bookings WHERE id = $1", [req.params.id]);
+    if (owner.rows.length === 0) {
+      return errorResponse(res, "Booking not found", 404, ERROR_CODES.NOT_FOUND);
+    }
+    if (owner.rows[0].provider_id !== req.user.userId) {
+      return errorResponse(res, "Only the provider can change this", 403, ERROR_CODES.FORBIDDEN);
+    }
+
+    // Settle the grace period *before* reading the row this decision is made on.
+    // Without it a provider who never opened their dashboard could still mark an
+    // appointment from last week as a no-show: nothing had run auto-completion
+    // for it, so it was still 'booked' and the transition looked legal. Every
+    // other endpoint that reads a booking already does this; this one was the
+    // gap, and it is the one endpoint where the stale status is not merely
+    // displayed but acted on.
+    await autoCompleteExpired("id = $2", [req.params.id]);
+
     const existing = await query("SELECT * FROM bookings WHERE id = $1", [req.params.id]);
     if (existing.rows.length === 0) {
       return errorResponse(res, "Booking not found", 404, ERROR_CODES.NOT_FOUND);
     }
 
     const booking = existing.rows[0];
-    if (booking.provider_id !== req.user.userId) {
-      return errorResponse(res, "Only the provider can change this", 403, ERROR_CODES.FORBIDDEN);
-    }
 
     if (status === "cancelled") {
       return errorResponse(
