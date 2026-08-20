@@ -203,6 +203,16 @@ export default function AppointmentsPage() {
               type="button"
               onClick={() => setFiltersOpen((open) => !open)}
               aria-expanded={filtersOpen}
+              // The word "Filter" is hidden below md, so on a phone this button
+              // is an icon and a number — nothing a screen reader can read. The
+              // label is unconditional rather than conditional on the breakpoint,
+              // because an accessible name that only exists at some widths is
+              // the harder bug to notice.
+              aria-label={
+                activeFilterCount > 0
+                  ? `Filter appointments (${activeFilterCount} active)`
+                  : "Filter appointments"
+              }
               className="flex h-10 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-outline-variant bg-surface px-4 font-small text-small text-primary transition-colors hover:bg-surface-container-low"
             >
               <Icon name="filter_list" size={18} />
