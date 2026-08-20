@@ -1,3 +1,17 @@
+/**
+ * Public provider endpoints: the discovery directory and one provider's profile.
+ *
+ * Both are readable without signing in — a provider's page is their shopfront,
+ * and a client comparing three physiotherapists should not have to register
+ * first. That is why everything here is deliberately narrow about what it
+ * selects: the fields are listed one by one rather than returning the row, so no
+ * amount of later schema growth can start publishing a provider's email address
+ * or password hash to anonymous callers.
+ *
+ * Neither endpoint reveals anything about a client. The counts on a profile
+ * ("42 appointments delivered", "18 clients served") are aggregates over
+ * bookings; no individual booking, name or time crosses this boundary.
+ */
 import { query } from "../config/dbConfig.js";
 import { successResponse, errorResponse, ERROR_CODES } from "../responseController/responseHandler.js";
 

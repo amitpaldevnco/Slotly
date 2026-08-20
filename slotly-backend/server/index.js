@@ -1,3 +1,17 @@
+/**
+ * Process entry point: load configuration, prepare the database, start listening.
+ *
+ * Kept separate from `server.js`, which builds and exports the Express app but
+ * never binds a port. That split is what lets the test suites drive the real app
+ * through supertest without a live socket, and it is why `dotenv/config` is
+ * imported here rather than there — a test process supplies its own environment
+ * and must not have a developer's `.env` loaded underneath it.
+ *
+ * Nothing serves traffic until the schema is in place. `initSchema()` is
+ * idempotent (every statement is `IF NOT EXISTS`), so booting the server is the
+ * only setup step a fresh database needs, and a failure here exits rather than
+ * accepting requests against a half-built schema.
+ */
 import "dotenv/config";
 import app from "./server.js";
 import { query } from "./config/dbConfig.js";

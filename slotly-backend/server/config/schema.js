@@ -1,6 +1,31 @@
-
-// Two conventions run through the whole schema and are worth stating once:
-
+/**
+ * Every table, index and constraint the app needs, created on boot.
+ *
+ * Two conventions run through the whole schema and are worth stating once:
+ *
+ *   1. **A real instant is always `TIMESTAMPTZ`; a wall-clock reading is always
+ *      an integer.** `bookings.starts_at` is a moment in time and carries its
+ *      zone. A provider's "09:00 on Mondays" is not a moment — it has no date
+ *      and no zone until paired with a calendar date — so it is stored as `540`,
+ *      minutes from midnight. Storing it as `TIME` would invite code to treat it
+ *      as an instant, which is the single most likely way to get this wrong;
+ *      an integer cannot be mistaken for one, and duration arithmetic on it is
+ *      plain integer maths.
+ *
+ *   2. **A guarantee lives in the database, not in a controller.** No overlap
+ *      per provider, one review per booking, one account per email, no
+ *      overlapping availability rules: each is a constraint below, so no request
+ *      can race past it and no future handler can forget to check. The
+ *      exclusion constraint on `bookings` is the important one and carries its
+ *      own comment.
+ *
+ * Every statement is `IF NOT EXISTS` (or wrapped so a duplicate is a no-op), so
+ * this runs unchanged against a fresh database and against one that already has
+ * data. That is what makes starting the server the only setup step a database
+ * needs, and it is why columns added after the first release appear twice: once
+ * in `CREATE TABLE` for a new database, and again as `ALTER TABLE ... ADD COLUMN
+ * IF NOT EXISTS` for an existing one.
+ */
 import { exec } from "./dbConfig.js";
 
 export async function initSchema() {
