@@ -150,6 +150,14 @@ app.use("/api", (req, res) => {
  * errors, and are worth reporting precisely.
  */
 // eslint-disable-next-line no-unused-vars -- Express identifies error handlers by arity; `next` must stay.
+// The last stop for anything thrown past a controller.
+//
+// Its job is to make sure a *client* mistake never leaves here wearing a 500.
+// Everything below this comment is a request that arrived malformed in some way
+// the body parsers or multer noticed before any handler ran, so none of it is
+// "something went wrong on our side" — and each one gets the same
+// `{ error, code }` envelope every other refusal in the API uses, so a caller
+// can branch on `code` here exactly as it does everywhere else.
 app.use((err, req, res, next) => {
   if (err?.code === "LIMIT_FILE_SIZE") {
     return errorResponse(
@@ -159,6 +167,50 @@ app.use((err, req, res, next) => {
       ERROR_CODES.UPLOAD_REJECTED,
     );
   }
+
+  // Any other multer complaint: too many files, an unexpected field name.
+  if (err?.name === "MulterError") {
+    return errorResponse(
+      res,
+      "That upload could not be accepted",
+      400,
+      ERROR_CODES.UPLOAD_REJECTED,
+    );
+  }
+
+  // busboy, underneath multer, throws plain Errors for a multipart body it
+  // cannot parse — a mismatched boundary, or a filename carrying a null byte.
+  // The request is unreadable, which is the client's problem and a 400; left to
+  // fall through it was reported as a server fault and logged as a crash.
+  if (err?.message === "Malformed part header" || err?.message === "Unexpected end of form") {
+    return errorResponse(
+      res,
+      "That upload could not be read. Please try the file again.",
+      400,
+      ERROR_CODES.UPLOAD_REJECTED,
+    );
+  }
+
+  // express.json sets `type` on what it rejects. Both cases carry a usable
+  // status of their own; what they lacked was a code and a message that said
+  // which of the two happened.
+  if (err?.type === "entity.too.large") {
+    return errorResponse(
+      res,
+      "That request body is too large",
+      413,
+      ERROR_CODES.VALIDATION_FAILED,
+    );
+  }
+  if (err?.type === "entity.parse.failed") {
+    return errorResponse(
+      res,
+      "That request body is not valid JSON",
+      400,
+      ERROR_CODES.VALIDATION_FAILED,
+    );
+  }
+
   if (err?.message?.startsWith("Origin ")) {
     return errorResponse(res, "Origin not allowed", 403, ERROR_CODES.FORBIDDEN);
   }

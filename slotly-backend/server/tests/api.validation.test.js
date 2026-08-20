@@ -319,3 +319,67 @@ describe("booking and message body validation", () => {
     expect((await clientUser.agent.get("/api/bookings?to=nonsense")).status).toBe(400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Regression suite: a malformed request must never wear a 500.
+//
+// Each case below used to reach the generic error handler and come back as
+// "Something went wrong on our side" with code SERVER_ERROR — a server fault
+// reported for a client mistake. The brief is explicit that errors have to be
+// meaningful and machine-readable, and a 500 is neither: a caller cannot tell
+// "fix your request" from "try again later", and a monitoring dashboard counts
+// every one of these as an outage.
+// ---------------------------------------------------------------------------
+describe("malformed requests are 4xx with a usable code, never 5xx", () => {
+  it("rejects a body that is not valid JSON", async () => {
+    const response = await clientUser.agent
+      .post("/api/bookings")
+      .set("Content-Type", "application/json")
+      .send("{ this is not json");
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("VALIDATION_FAILED");
+    expect(response.body.error).toMatch(/JSON/i);
+  });
+
+  it("rejects a body past the size limit with 413 and a code", async () => {
+    const response = await clientUser.agent
+      .post("/api/bookings")
+      .send({ serviceId: service.id, startsAt: new Date().toISOString(), note: "x".repeat(200_000) });
+
+    expect(response.status).toBe(413);
+    expect(response.body.code).toBe("VALIDATION_FAILED");
+    expect(response.body.success).toBe(false);
+  });
+
+  it("rejects a multipart body it cannot parse", async () => {
+    // A null byte in the filename makes the part header unparseable, and busboy
+    // throws a plain Error from inside the stream — well outside any handler's
+    // try/catch. It surfaced as a 500 and was logged as a crash.
+    //
+    // CRLF and NUL are built with fromCharCode rather than written as escapes,
+    // so the bytes on the wire are unmistakable to a reader and cannot be
+    // mangled by an editor or a tool that rewrites line endings.
+    const CRLF = String.fromCharCode(13, 10);
+    const NUL = String.fromCharCode(0);
+    const boundary = "----validationboundary";
+    const body = Buffer.concat([
+      Buffer.from(`--${boundary}${CRLF}`),
+      Buffer.from(
+        `Content-Disposition: form-data; name="profilePicture"; filename="a.png${NUL}.sh"${CRLF}`
+      ),
+      Buffer.from(`Content-Type: image/png${CRLF}${CRLF}`),
+      Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+      Buffer.from(`${CRLF}--${boundary}--${CRLF}`),
+    ]);
+
+    const response = await clientUser.agent
+      .patch("/api/auth/profile")
+      .set("Content-Type", `multipart/form-data; boundary=${boundary}`)
+      .send(body);
+
+    expect(response.status).toBe(400);
+    expect(response.body.code).toBe("UPLOAD_REJECTED");
+  });
+
+});
