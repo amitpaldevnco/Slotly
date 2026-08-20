@@ -320,7 +320,11 @@ export const updateService = async (req, res) => {
     const service = existing.rows[0];
     if (service.provider_id !== req.user.userId) {
       await discardUpload(req.file);
-      return errorResponse(res, "This is not your service", 403, ERROR_CODES.FORBIDDEN);
+      // 404, not 403. "This is not your service" confirms that the id belongs to
+      // *somebody*, which lets one provider walk the id space and count a
+      // competitor's catalogue. The booking endpoints already answer this
+      // question with 404 for the same reason; these were the odd ones out.
+      return errorResponse(res, "Service not found", 404, ERROR_CODES.NOT_FOUND);
     }
 
     // A retired service is frozen. It is not on the public page and cannot be
@@ -402,7 +406,9 @@ export const deleteService = async (req, res) => {
 
     const service = existing.rows[0];
     if (service.provider_id !== req.user.userId) {
-      return errorResponse(res, "This is not your service", 403, ERROR_CODES.FORBIDDEN);
+      // 404 rather than 403, for the same reason as in updateService above:
+      // a distinct "not yours" is an existence oracle over other providers' ids.
+      return errorResponse(res, "Service not found", 404, ERROR_CODES.NOT_FOUND);
     }
 
     const bookings = await query(
@@ -469,7 +475,9 @@ export const reactivateService = async (req, res) => {
 
     const service = existing.rows[0];
     if (service.provider_id !== req.user.userId) {
-      return errorResponse(res, "This is not your service", 403, ERROR_CODES.FORBIDDEN);
+      // 404 rather than 403, for the same reason as in updateService above:
+      // a distinct "not yours" is an existence oracle over other providers' ids.
+      return errorResponse(res, "Service not found", 404, ERROR_CODES.NOT_FOUND);
     }
 
     if (service.is_active) {

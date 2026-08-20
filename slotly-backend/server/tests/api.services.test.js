@@ -230,7 +230,13 @@ describe("reactivating a service", () => {
     expect([a.status, b.status].sort()).toEqual([200, 409]);
   });
 
-  it("stops a provider reactivating a service that is not theirs", async () => {
+  // 404 rather than 403, matching how the booking endpoints answer the same
+  // question. A distinct "this is not yours" is an existence oracle: a provider
+  // could walk the id space and learn how many services a competitor has, and
+  // when each one was created, without ever being allowed to read one. Telling
+  // a stranger only that there is nothing there for them costs the real owner
+  // nothing — they never see this branch.
+  it("tells a provider reactivating someone else's service that it does not exist", async () => {
     const { owner, service } = await providerWithService("ownerprov");
     await book(clientUser, service, owner);
     await owner.agent.delete(`/api/services/${service.id}`);
@@ -238,7 +244,14 @@ describe("reactivating a service", () => {
     const stranger = await createUser({ role: "provider", label: "thiefprov" });
     const response = await stranger.agent.post(`/api/services/${service.id}/reactivate`);
 
-    expect(response.status).toBe(403);
+    expect(response.status).toBe(404);
+    expect(response.body.code).toBe("NOT_FOUND");
+
+    // And it really is still retired — the refusal was not a silent success.
+    // The owner's own listing includes retired services; a stranger's does not.
+    const stillRetired = await owner.agent.get(`/api/providers/${owner.id}/services`);
+    const row = stillRetired.body.data.find((s) => s.id === service.id);
+    expect(row.isActive).toBe(false);
   });
 
   it("stops a client reactivating anything at all", async () => {
