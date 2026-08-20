@@ -56,7 +56,13 @@ export const getAvailableSlots = async (req, res) => {
     }
 
     const service = await query(
-      `SELECT s.*, u.timezone AS provider_timezone, u.id AS provider_id
+      // `u.currency` is selected for the response, not for the slot maths. It is
+      // the provider's ISO 4217 code, and the booking page prices the service
+      // from this payload — without it the client had no currency to render and
+      // fell back to a default, so a London provider's £75 service was shown to
+      // clients as ₹75 at the exact moment they were deciding to book it.
+      `SELECT s.*, u.timezone AS provider_timezone, u.id AS provider_id,
+              u.currency AS provider_currency
        FROM services s
        JOIN users u ON u.id = s.provider_id
        WHERE s.id = $1 AND s.provider_id = $2 AND s.is_active AND u.role = 'provider'`,
@@ -162,6 +168,10 @@ export const getAvailableSlots = async (req, res) => {
         name: row.service_name,
         duration: row.duration,
         price: row.price,
+        // The code alone, never a symbol — the client turns it into one with
+        // Intl in the reader's own locale. Sent alongside every price so no
+        // consumer has to guess, or default to the wrong one.
+        currency: row.provider_currency,
         bufferBefore: row.buffer_before,
         bufferAfter: row.buffer_after,
       },
