@@ -170,18 +170,55 @@ export function expandOpenWindows({ rules, exceptions, timezone, rangeStart, ran
     // to 0 and leaves 1–6 untouched, which is exactly the translation needed.
     const jsWeekday = wallClockToInstant(date, 0, timezone).weekday % 7;
 
+    const forThisDate = [];
+
     for (const rule of rules) {
       if (rule.weekday !== jsWeekday) continue;
-      windows.push(intervalFor(date, rule.start_minute, rule.end_minute, timezone));
+      forThisDate.push(intervalFor(date, rule.start_minute, rule.end_minute, timezone));
     }
 
     for (const exception of openExceptions) {
       if (!dateWithinException(date, exception)) continue;
-      windows.push(intervalFor(date, exception.start_minute, exception.end_minute, timezone));
+      forThisDate.push(intervalFor(date, exception.start_minute, exception.end_minute, timezone));
     }
+
+    // Merged *per local date*, never across the whole expansion. This is load
+    // bearing, and the reason is not obvious.
+    //
+    // The candidate grid is anchored at a window's own start
+    // (`candidateStartsInWindow`), and the write path re-derives that same grid
+    // from scratch to check a booking (`isOfferedSlotStart`). For the two to
+    // agree, a window's start has to be a property of the provider's schedule
+    // and nothing else.
+    //
+    // Merging globally broke exactly that. Windows on consecutive dates touch
+    // at local midnight, so a provider open round the clock had every date
+    // fused into a *single* window whose start was wherever the expansion
+    // happened to begin — one day before the range the client asked about. The
+    // read path pads around the requested range and the write path pads around
+    // the appointment, so the two anchors differed, and whenever the grid step
+    // did not divide the gap between them (a 25-, 50- or 100-minute interval)
+    // the slot list offered start times that `POST /bookings` then rejected as
+    // "not one of the provider's available times". Every offered slot was
+    // unbookable.
+    //
+    // Per-date merging keeps the two behaviours that were actually wanted —
+    // touching windows on one day become one, so a 90-minute service can
+    // straddle a 12:00 join — while pinning every window's start to a real
+    // rule boundary on a real calendar date. Both paths now derive identical
+    // windows for a given date no matter what range they were asked about.
+    //
+    // The cost is that an appointment can no longer straddle local midnight on
+    // a round-the-clock schedule: 23:30 is offered only if it fits before
+    // 00:00. That is the deliberate trade — a slot that cannot be booked is a
+    // worse outcome than a midnight-straddling slot that is never offered.
+    windows.push(...mergeIntervals(forThisDate));
   }
 
-  return mergeIntervals(windows);
+  // Already ascending and non-overlapping: each date's windows lie inside that
+  // date's own local day, and the dates are walked in order. Sorted rather than
+  // merged, so windows that merely touch at midnight stay separate.
+  return windows.sort((a, b) => a.start - b.start);
 }
 
 /**
@@ -511,6 +548,10 @@ export function generateSlots({
  *   2. Candidate starts sit on a `step`-minute grid **anchored at the window's
  *      own start**, which is what keeps offered times round (09:00, 09:30, …)
  *      instead of drifting to 09:05, 10:15 as soon as a buffer is non-zero.
+ *      This only holds together because a window never spans a local date —
+ *      `expandOpenWindows()` merges per date precisely so that every window
+ *      starts on a real rule boundary, and therefore so that the read path and
+ *      the write path anchor the grid identically. See the comment there.
  *   3. A start is offered only where the band and the grid agree.
  *
  * Constraint 3 is why a window can be long enough for the appointment and still

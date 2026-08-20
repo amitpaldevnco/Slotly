@@ -336,6 +336,29 @@ length would be tidier arithmetic and worse for the client, who would be shown
 09:05, 10:15, 11:25 the moment the service had a five-minute buffer. The trade-off
 is that a candidate that does not land on the grid is not offered at all.
 
+**Windows are merged per calendar date, never across midnight.** This is the one
+piece of the grid that is not obvious, and it exists because anchoring on "the
+window's own start" only works if that start is a property of the provider's
+schedule rather than of the question being asked about it.
+
+Two windows meeting at 12:00 on the same day *are* merged, so a 90-minute
+appointment can straddle noon. Two windows meeting at midnight on consecutive
+days are not. Without that rule, a provider available round the clock had every
+date fused into a single window beginning wherever the expansion started — one
+day before whatever range the client happened to browse — and the write path,
+which pads around the appointment rather than around a browsing range, anchored
+the same grid somewhere else. Whenever the step did not divide the gap between
+the two anchors (25, 50 and 100 minutes all fail; 30, 45 and 60 divide 1440 and
+survived by luck) **every slot the list offered was rejected on POST as "not one
+of the provider's available times".**
+
+The cost is stated in [Known limitations](#known-limitations): on a
+round-the-clock schedule an appointment can no longer straddle local midnight.
+Offering a slot that cannot be booked is the worse failure of the two, and
+`tests/slotEngine.test.js` now asserts the invariant directly — every start
+`generateSlots` offers must be accepted by `isOfferedSlotStart`, at six different
+intervals and across a fall-back day.
+
 **Booking is real time.** The only reason a generated slot is withheld for being
 too soon is that it has already started. A client can take an appointment later
 today, and one inside the next hour, exactly as the list offers it.
@@ -866,6 +889,14 @@ link straight to the booking is the shortest path to fixing it.
   one-way decision, enforced server-side — see `completeProfile`. Deliberate,
   but it means a genuine change of mind needs a new account rather than a
   setting.
+- **An appointment cannot straddle local midnight.** Availability windows are
+  merged per calendar date, so a provider open 00:00–24:00 every day is treated
+  as seven windows rather than one continuous block, and a 60-minute service is
+  not offered a 23:30 start. This is the deliberate cost of anchoring the
+  candidate grid somewhere range-independent — see
+  [The candidate grid](#how-availability-is-modelled). It affects only
+  round-the-clock or midnight-adjacent schedules; ordinary working hours never
+  reach it.
 - **Images are stored as uploaded** — no resizing or re-encoding, so a 5 MB photo
   is served at 5 MB.
 - **Cancellation, not deletion, for services** means a provider cannot fully

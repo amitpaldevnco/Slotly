@@ -90,6 +90,117 @@ const clockIn = (iso, zone) => DateTime.fromISO(iso, { zone: "utc" }).setZone(zo
 // 2025-06-02 is a Monday. 2025-01-06 is a Monday. Both are used throughout.
 
 // ---------------------------------------------------------------------------
+// The read path and the write path must agree, whatever range was browsed.
+//
+// This is the regression suite for a bug where they did not. `mergeIntervals`
+// used to run across the *whole* expansion, so a provider open round the clock
+// had every date fused into one window whose start was wherever the expansion
+// began — one day before whatever range the caller happened to ask about. The
+// candidate grid is anchored at a window's start, so:
+//
+//   - the slot list anchored the grid relative to the range the client browsed;
+//   - `isOfferedSlotStart` anchored it relative to the appointment being booked;
+//   - the two anchors were a day apart, and whenever the step did not divide
+//     that gap (25, 50 and 100 minutes all fail; 30, 45 and 60 divide 1440 and
+//     happened to survive) every start the list offered was rejected on POST.
+//
+// The fix is per-date merging in `expandOpenWindows`, so a window's start is
+// always a real rule boundary on a real calendar date. These tests assert the
+// invariant rather than the fix: **every start the list offers must be accepted
+// by the write path.** They would have caught the original bug and they will
+// catch any future change that reintroduces a range-dependent anchor.
+// ---------------------------------------------------------------------------
+describe("generateSlots and isOfferedSlotStart agree on a round-the-clock schedule", () => {
+  const zone = "Europe/London";
+  const allDay = [0, 1, 2, 3, 4, 5, 6].map((d) => rule(d, 0, 1440));
+
+  /** Every start `generateSlots` offers over `days` from `isoDate`. */
+  const offeredOver = (svc, isoDate, days) =>
+    generateSlots({
+      rules: allDay,
+      exceptions: [],
+      timezone: zone,
+      service: svc,
+      ...localDays(isoDate, zone, days),
+      now: NOW,
+    }).map((s) => s.startsAt);
+
+  const accepts = (svc, startsAt) =>
+    isOfferedSlotStart({
+      rules: allDay,
+      exceptions: [],
+      timezone: zone,
+      service: svc,
+      startsAt: new Date(startsAt),
+    });
+
+  // 25, 50 and 100 do not divide 1440; 30, 45 and 60 do. Before the fix the
+  // first three failed every assertion here and the last three passed, which is
+  // exactly why the bug survived: every interval the demo data used divided 1440.
+  for (const slotInterval of [25, 30, 45, 50, 60, 100]) {
+    it(`offers only bookable starts at a ${slotInterval}-minute interval`, () => {
+      const svc = service({ duration: 60, slot_interval: slotInterval });
+      const offered = offeredOver(svc, "2025-06-02", 3);
+
+      expect(offered.length).toBeGreaterThan(0);
+      expect(offered.filter((startsAt) => !accepts(svc, startsAt))).toEqual([]);
+    });
+  }
+
+  it("offers the same starts for a day whether one day or a month was requested", () => {
+    // The list must describe the provider's schedule, not the question asked
+    // about it. A client browsing a week and a client browsing a day must be
+    // shown the same times for the day they have in common.
+    const svc = service({ duration: 60, slot_interval: 25 });
+    const dayOnly = offeredOver(svc, "2025-06-04", 1);
+    expect(dayOnly.length).toBeGreaterThan(0);
+
+    // The comparison window is the *local* day in the provider's zone, which in
+    // BST runs 23:00Z to 23:00Z and so does not line up with a UTC date. Slicing
+    // the wider result by an ISO string prefix would compare two different days
+    // and fail for a reason that has nothing to do with what is under test.
+    const dayStart = DateTime.fromISO("2025-06-04", { zone }).startOf("day");
+    const dayEnd = dayStart.plus({ days: 1 });
+    const withinTheDay = (iso) => {
+      const t = DateTime.fromISO(iso, { zone: "utc" });
+      return t >= dayStart && t < dayEnd;
+    };
+
+    for (const [from, days] of [["2025-06-03", 3], ["2025-06-01", 10], ["2025-05-20", 31]]) {
+      expect(offeredOver(svc, from, days).filter(withinTheDay)).toEqual(dayOnly);
+    }
+  });
+
+  it("still merges touching windows within one day", () => {
+    // The fix must not have thrown out the behaviour merging was there for: two
+    // windows meeting at 12:00 on the same day are one window, so a 90-minute
+    // appointment can still straddle the join.
+    const slots = generateSlots({
+      rules: [rule(MONDAY, 540, 720), rule(MONDAY, 720, 1020)],
+      exceptions: [],
+      timezone: zone,
+      service: service({ duration: 90, slot_interval: 30 }),
+      ...localDay("2025-06-02", zone),
+      now: NOW,
+    });
+
+    expect(slots.map((s) => clockIn(s.startsAt, zone))).toContain("11:30");
+  });
+
+  it("agrees across a fall-back day, where the local day is 25 hours long", () => {
+    // 26 October 2025 is when London leaves BST. The day holds an extra real
+    // hour, so a midnight-to-midnight window is 25 hours and the absolute
+    // distance between grid positions no longer matches the calendar. Both paths
+    // have to reach the same answer anyway.
+    const svc = service({ duration: 60, slot_interval: 45 });
+    const offered = offeredOver(svc, "2025-10-25", 3);
+
+    expect(offered.length).toBeGreaterThan(0);
+    expect(offered.filter((startsAt) => !accepts(svc, startsAt))).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe("wallClockToInstant — pairing a rule with a date", () => {
   it("resolves a wall-clock reading to the instant it means in that zone", () => {
     // 09:00 in New York on a summer date is 13:00 UTC (EDT, UTC-4).

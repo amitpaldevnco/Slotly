@@ -371,6 +371,24 @@ length would be tidier arithmetic and worse for the client, who would be shown
 09:05, 10:15, 11:25 the moment the service had a five-minute buffer. The trade-off
 is that a candidate that does not land on the grid is not offered at all.
 
+**Windows are merged per calendar date, never across midnight.** Anchoring on
+"the window's own start" only holds together if that start is a property of the
+provider's schedule rather than of the range being asked about. Two windows
+meeting at 12:00 on one day are merged, so a 90-minute appointment can straddle
+noon; two windows meeting at midnight on consecutive days are not.
+
+Without that rule a round-the-clock provider had every date fused into one
+window starting wherever the expansion began — a day before whatever range the
+client browsed — while `isOfferedSlotStart()` pads around the *appointment* and
+so anchored the same grid elsewhere. Whenever the step did not divide the gap
+between the two anchors (25, 50 and 100 fail; 30, 45 and 60 divide 1440 and
+survived by luck) **every start the list offered was refused on POST.** The
+regression tests assert the invariant directly rather than the fix: every start
+`generateSlots` offers must be accepted by `isOfferedSlotStart`.
+
+The cost is that an appointment cannot straddle local midnight on a
+round-the-clock schedule. Offering an unbookable slot is the worse failure.
+
 **Booking is real time.** The only reason a generated slot is withheld for being
 too soon is that it has already started. A client can take an appointment later
 today, and one inside the next hour, exactly as the list offers it.
