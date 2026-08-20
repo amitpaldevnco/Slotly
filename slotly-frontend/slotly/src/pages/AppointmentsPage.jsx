@@ -8,9 +8,22 @@
  * shared, because both reference screens draw it identically.
  *
  * The tabs map onto query parameters `GET /bookings` already accepts:
- * Upcoming is `scope=upcoming`, Completed and Cancelled are `status=…`. Nothing
- * is filtered in the browser that the server could filter itself, and no new
- * endpoint was needed for any of it.
+ * Upcoming is `scope=upcoming`, Past and Cancelled are `scope=`/`status=`.
+ * Nothing is filtered in the browser that the server could filter itself, and no
+ * new endpoint was needed for any of it.
+ *
+ * ## Why "Past" and not "Completed"
+ *
+ * It used to be `status=completed`, and that quietly lost appointments. A
+ * booking has five statuses, and `no_show` is one of them — but no tab asked for
+ * it, so once a provider recorded a no-show the appointment vanished from this
+ * screen for *both* parties. Not archived, not filtered out on purpose: simply
+ * unreachable, while still sitting in the database and still counting towards
+ * the provider's totals elsewhere in the app.
+ *
+ * `scope=past` is the server's own answer to "everything that has already
+ * happened", so it covers completed and no-show together and cannot drift out of
+ * step the next time a status is added. The tab is named for what it contains.
  */
 
 import { useEffect, useMemo, useState } from "react";
@@ -35,10 +48,20 @@ import {
   inputClasses,
 } from "../lib/ui";
 
-/** The three tabs the reference draws, and the query each one stands for. */
+/**
+ * The three tabs, and the query each one stands for.
+ *
+ * `past` deliberately asks for a *scope* rather than a status: it has to include
+ * `no_show` as well as `completed`, and letting the server decide what "past"
+ * means keeps this list from having to be updated every time the status set
+ * changes. `completed` alone is what used to hide every no-show appointment.
+ *
+ * The id is what appears in the URL, so it is kept stable and readable — the
+ * `?tab=` parameter is something people bookmark and paste to each other.
+ */
 const TABS = [
   { id: "upcoming", label: "Upcoming", params: { scope: "upcoming" } },
-  { id: "completed", label: "Completed", params: { status: "completed" } },
+  { id: "past", label: "Past", params: { scope: "past" } },
   { id: "cancelled", label: "Cancelled", params: { status: "cancelled" } },
 ];
 
@@ -652,9 +675,10 @@ function NoAppointments({ tab, isProvider, searching, hasHistory }) {
         ? "Once clients start booking, their appointments appear here."
         : clientUpcoming.description,
     },
-    completed: {
-      title: "No completed appointments",
-      description: "Appointments move here once their time has passed.",
+    past: {
+      title: "No past appointments",
+      description:
+        "Appointments move here once their time has passed — whether they were completed or marked as a no-show.",
     },
     cancelled: {
       title: "No cancelled appointments",
