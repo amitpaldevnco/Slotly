@@ -63,7 +63,7 @@ import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import Field, { Textarea, CharCount } from "../components/ui/Field";
 import EmptyState, { ErrorState, PageLoader, SkeletonRows } from "../components/ui/Feedback";
-import { browserTimezone, formatTime, todayIn } from "../lib/time";
+import { browserTimezone, formatTime, todayIn, zoneLabel } from "../lib/time";
 import {
   primaryButton,
   buttonSm,
@@ -258,6 +258,23 @@ export default function BookServicePage() {
   }, [now]);
 
   const daySlots = selectedDate ? (slotsByDate.get(selectedDate) ?? []) : [];
+
+  // Local clock readings that appear more than once in the day on screen.
+  //
+  // Non-empty on exactly one day a year: the day the clocks go back, when an
+  // hour repeats and two distinct instants share one reading. Those buttons get
+  // their zone printed beside them so they can be told apart; every other button
+  // is left alone.
+  //
+  // Computed straight rather than memoised. `daySlots` is a fresh array on every
+  // render, so a `useMemo` keyed on it would recompute every time regardless —
+  // it would buy nothing and read as though it did. This is one pass over a
+  // dozen strings.
+  const repeatedTimes = new Set(
+    daySlots
+      .map((slot) => slot.clientTime)
+      .filter((time, index, all) => all.indexOf(time) !== index)
+  );
 
   /** The six-row grid of dates for the month on screen. */
   const monthCells = useMemo(() => {
@@ -539,6 +556,18 @@ export default function BookServicePage() {
                   <ul className="mt-3 grid grid-cols-2 gap-2">
                     {daySlots.map((slot) => {
                       const chosen = selectedSlot?.startsAt === slot.startsAt;
+                      // On the day the clocks go back, one local reading covers
+                      // two different real instants: 01:30 happens, an hour
+                      // passes, and it is 01:30 again. Both are genuinely
+                      // bookable and the engine offers both, so the list would
+                      // otherwise show "1:30 AM" twice with no way for a human
+                      // to tell which one they were choosing — and picking the
+                      // wrong one means arriving an hour out.
+                      //
+                      // The zone label is appended only to the readings that are
+                      // actually repeated, so 363 days a year this changes
+                      // nothing on screen.
+                      const ambiguous = repeatedTimes.has(slot.clientTime);
 
                       return (
                         <li key={slot.startsAt}>
@@ -558,6 +587,11 @@ export default function BookServicePage() {
                             }`}
                           >
                             {slot.clientTime}
+                            {ambiguous && (
+                              <span className="ml-1 font-caption text-[11px] text-ink-3">
+                                {zoneLabel(slot.startsAt, data.clientTimezone)}
+                              </span>
+                            )}
                           </button>
                         </li>
                       );
