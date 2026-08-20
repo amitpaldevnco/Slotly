@@ -669,12 +669,43 @@ export const openApiDocument = {
       put: {
         tags: ["Services"],
         summary: "Update a service",
-        description: `${bearerNote} Must be the owning provider. Changing duration or buffers affects future slots only; existing bookings keep their snapshotted duration.`,
+        description: `${bearerNote} Must be the owning provider. Changing duration or buffers affects future slots only; existing bookings keep their snapshotted duration.
+
+Every field is optional: an absent field is left alone rather than cleared, so a caller changing only the price sends only the price. Sending \`coverImage\` replaces the existing image and deletes the old one; omitting it leaves the current image in place.
+
+Editing a retired service is refused with \`SERVICE_RETIRED\` — bring it back with \`POST /services/{id}/reactivate\` first.`,
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
+        requestBody: {
+          required: true,
+          content: {
+            "multipart/form-data": {
+              schema: {
+                type: "object",
+                properties: {
+                  serviceName: {
+                    type: "string",
+                    description: "Also accepted as `service_name` (legacy spelling)",
+                  },
+                  description: { type: "string" },
+                  price: { type: "number" },
+                  duration: { type: "integer", description: "Minutes, 1–1440" },
+                  bufferBefore: { type: "integer", description: "Minutes, 0–240. Also accepted as `buffer_before`" },
+                  bufferAfter: { type: "integer", description: "Minutes, 0–240. Also accepted as `buffer_after`" },
+                  slotInterval: {
+                    type: "integer",
+                    description: "Minutes, 5–240. Spacing of offered start times. Also accepted as `slot_interval`",
+                  },
+                  coverImage: { type: "string", format: "binary" },
+                },
+              },
+            },
+          },
+        },
         responses: {
           200: { description: "Updated" },
-          403: errorRef("Not your service"),
-          404: errorRef("No such service"),
+          400: errorRef("VALIDATION_FAILED"),
+          404: errorRef("No such service, or not yours"),
+          409: errorRef("SERVICE_RETIRED — reactivate it first"),
         },
       },
       delete: {
