@@ -23,6 +23,7 @@ import * as providersApi from "../api/providers";
 import { useApiResource } from "../hooks/useApiResource";
 import { useAuth } from "../context/AuthContext";
 import ServiceDetailsModal from "../components/provider/ServiceDetailsModal";
+import ServiceCover from "../components/provider/ServiceCover";
 import WeeklyHoursSummary from "../components/provider/WeeklyHoursSummary";
 import ProviderReviews from "../components/reviews/ProviderReviews";
 import Avatar from "../components/ui/Avatar";
@@ -279,33 +280,63 @@ export default function ProviderPublicProfilePage() {
                       key={service.id}
                       className="group flex flex-col items-start justify-between gap-4 p-6 transition-colors hover:bg-surface-bright sm:flex-row sm:items-center"
                     >
-                      <div className="min-w-0 flex-grow">
-                        <h3 className="mb-1 font-h3 text-[20px] font-semibold text-primary">
-                          {service.name}
-                        </h3>
-                        {service.description && (
-                          <p className="mb-2 font-body text-body text-on-surface-variant">
-                            {service.description}
-                          </p>
-                        )}
-                        <div className="flex flex-wrap items-center gap-4 font-small text-small text-on-surface-variant">
-                          <span className="flex items-center gap-1">
-                            <Icon name="schedule" size={16} />
-                            {formatDuration(service.duration)}
-                          </span>
-                          <button
-                            type="button"
-                            onClick={() => setDetailsService(service)}
-                            className="flex cursor-pointer items-center gap-1 underline underline-offset-2 transition-colors hover:text-primary"
-                          >
-                            <Icon name="info" size={16} />
-                            Details
-                          </button>
-                          {retired && (
-                            <span className="rounded-full bg-surface-variant px-2 py-0.5 font-caption text-caption font-bold uppercase tracking-wider">
-                              Inactive
-                            </span>
+                      {/* The service's own cover, which this list previously did
+                          not draw at all — a provider could upload one, see it on
+                          their management page, and find it nowhere on the page
+                          clients actually read. Landscape rather than the square
+                          tile used in the management grid, because these rows are
+                          wide and a photo of a room reads better than a crop of
+                          it. `ServiceCover` supplies the glyph for a service with
+                          no cover, so rows stay aligned either way. */}
+                      <div className="flex min-w-0 flex-grow items-start gap-4">
+                        <ServiceCover
+                          coverImage={service.coverImage}
+                          name={service.name}
+                          iconSize={32}
+                          // 148x92, measured off the reference. Exact pixels
+                          // rather than a spacing-scale pair, because the
+                          // design's 1.6:1 landscape crop does not land on any
+                          // two steps of the scale, and rounding it to
+                          // h-24/w-36 would visibly shorten the thumbnail
+                          // against the three lines of text beside it.
+                          //
+                          // The radius stays on the token scale even though the
+                          // dimensions do not: the reference corner is about
+                          // 6px, this theme jumps 4px -> 8px, and 8px is both
+                          // the closer of the two and a value the rest of the
+                          // app already uses. A one-off 6px would be an
+                          // invented token for a difference nobody can see.
+                          className="h-[92px] w-[148px] rounded-lg"
+                        />
+
+                        <div className="min-w-0 flex-grow">
+                          <h3 className="mb-1 font-h3 text-[20px] font-semibold text-primary">
+                            {service.name}
+                          </h3>
+                          {service.description && (
+                            <p className="mb-2 font-body text-body text-on-surface-variant">
+                              {service.description}
+                            </p>
                           )}
+                          <div className="flex flex-wrap items-center gap-4 font-small text-small text-on-surface-variant">
+                            <span className="flex items-center gap-1">
+                              <Icon name="schedule" size={16} />
+                              {formatDuration(service.duration)}
+                            </span>
+                            <button
+                              type="button"
+                              onClick={() => setDetailsService(service)}
+                              className="flex cursor-pointer items-center gap-1 underline underline-offset-2 transition-colors hover:text-primary"
+                            >
+                              <Icon name="info" size={16} />
+                              Details
+                            </button>
+                            {retired && (
+                              <span className="rounded-full bg-surface-variant px-2 py-0.5 font-caption text-caption font-bold uppercase tracking-wider">
+                                Inactive
+                              </span>
+                            )}
+                          </div>
                         </div>
                       </div>
 

@@ -12,10 +12,9 @@
  * from data the application actually stores.
  */
 
-import { useState } from "react";
 import { Link } from "react-router-dom";
-import { imageUrl } from "../../api/client";
 import Icon from "../ui/Icon";
+import ServiceCover from "./ServiceCover";
 import { formatPrice, formatDuration } from "../../lib/ui";
 
 export default function ServiceCard({
@@ -36,7 +35,17 @@ export default function ServiceCard({
   return (
     <div className="group relative flex flex-col rounded-lg border border-outline-variant bg-surface p-6 transition-all duration-200 hover:border-primary/30 hover:shadow-raise">
       <div className="mb-4 flex items-start justify-between gap-3">
-        <ServiceGlyph src={imageUrl(service.coverImage)} name={service.name} />
+        {/* The management grid keeps its 48px square tile from the reference —
+            this card is not the public list and is not what the services design
+            describes. The border is passed explicitly because `ServiceCover`
+            draws one only on the placeholder: at 48px a photo reads better with
+            an edge than without, which is the opposite of the large public
+            thumbnail. */}
+        <ServiceCover
+          coverImage={service.coverImage}
+          name={service.name}
+          className="h-12 w-12 rounded-md border border-outline-variant/50"
+        />
 
         <div className="flex items-center gap-2">
           {/* An "Active" chip on every card a client can see says nothing — they
@@ -219,30 +228,5 @@ export default function ServiceCard({
         </div>
       )}
     </div>
-  );
-}
-
-/** The 48px tile: the service's cover image, or a category glyph in its place. */
-function ServiceGlyph({ src, name }) {
-  const [failed, setFailed] = useState(false);
-
-  if (!src || failed) {
-    return (
-      <span className="flex h-12 w-12 shrink-0 items-center justify-center rounded-md border border-outline-variant/50 bg-surface-container-low text-primary">
-        <Icon name="category" size={24} />
-      </span>
-    );
-  }
-
-  return (
-    <img
-      src={src}
-      alt=""
-      loading="lazy"
-      decoding="async"
-      onError={() => setFailed(true)}
-      className="h-12 w-12 shrink-0 rounded-md border border-outline-variant/50 object-cover"
-      title={name}
-    />
   );
 }
