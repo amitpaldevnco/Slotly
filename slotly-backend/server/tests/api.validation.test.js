@@ -399,4 +399,16 @@ describe("malformed requests are 4xx with a usable code, never 5xx", () => {
     expect(response.body.details[0].message).toMatch(/JPG|PNG/i);
   });
 
+  it("rejects a startsAt smuggled in as an array", async () => {
+    // `new Date(["2026-01-01T09:00:00Z"])` coerces the array to its single
+    // member and parses, so this used to create a real booking through a shape
+    // the API never documented.
+    const response = await clientUser.agent
+      .post("/api/bookings")
+      .send({ serviceId: service.id, startsAt: [new Date(Date.now() + 86_400_000).toISOString()] });
+
+    expect(response.status).toBe(400);
+    expect(response.body.details.some((d) => d.field === "startsAt")).toBe(true);
+  });
+
 });

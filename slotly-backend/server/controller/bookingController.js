@@ -29,6 +29,7 @@ import {
   computeBookingSpan,
   isOfferedSlotStart,
   hasInstantPassed,
+  earliestBookableInstant,
 } from "../services/slotEngine.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
 import { parseId } from "../middleware/validateParams.js";
@@ -254,9 +255,17 @@ export const createBooking = async (req, res) => {
       errors.push({ field: "serviceId", message: "serviceId must be a positive whole number" });
     }
 
-    const start = new Date(startsAt);
-    if (!startsAt || Number.isNaN(start.getTime())) {
+    // The type check is not redundant with the NaN check below it. `new Date()`
+    // coerces its argument first, and a single-element array stringifies to its
+    // one member — so `["2026-08-26T08:30:00Z"]` parsed as a valid instant and
+    // was accepted. Requiring a string keeps the accepted shape the same as the
+    // documented one instead of whatever JavaScript can be talked into.
+    const start = typeof startsAt === "string" ? new Date(startsAt) : new Date(NaN);
+    if (typeof startsAt !== "string" || !startsAt || Number.isNaN(start.getTime())) {
       errors.push({ field: "startsAt", message: "startsAt must be an ISO-8601 instant" });
+    }
+    if (note !== undefined && note !== null && typeof note !== "string") {
+      errors.push({ field: "note", message: "Note must be text" });
     }
     if (typeof note === "string" && note.length > 500) {
       errors.push({ field: "note", message: "Note must be 500 characters or less" });
@@ -314,6 +323,24 @@ export const createBooking = async (req, res) => {
       return errorResponse(
         res,
         "That appointment time has already passed",
+        400,
+        ERROR_CODES.SLOT_UNAVAILABLE
+      );
+    }
+
+    // The second of the two gates the slot list applies, mirrored here so the
+    // write path cannot be talked past a rule the read path enforced.
+    //
+    // At the shipped MIN_BOOKING_LEAD_MINUTES of zero this never rejects
+    // anything the check above accepted — the two questions coincide. It is
+    // here for the day that constant stops being zero: without it, raising the
+    // lead time would quietly withhold slots from the list while still
+    // accepting them by direct POST, which is the exact class of hole the
+    // "both paths, same gates" rule exists to close.
+    if (start.getTime() < earliestBookableInstant(new Date(), svc.provider_timezone).toMillis()) {
+      return errorResponse(
+        res,
+        "That appointment time is too soon to book",
         400,
         ERROR_CODES.SLOT_UNAVAILABLE
       );
