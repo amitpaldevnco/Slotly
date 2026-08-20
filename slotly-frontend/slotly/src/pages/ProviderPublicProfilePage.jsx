@@ -313,8 +313,14 @@ export default function ProviderPublicProfilePage() {
                           <h3 className="mb-1 font-h3 text-[20px] font-semibold text-primary">
                             {service.name}
                           </h3>
+                          {/* Two lines, matching the reference. A service with a
+                              long description used to push the price and the
+                              Select button hundreds of pixels down the page and
+                              swamp every other service in the list — the one
+                              thing a list of services exists to let you compare.
+                              `Details` opens the full text. */}
                           {service.description && (
-                            <p className="mb-2 font-body text-body text-on-surface-variant">
+                            <p className="mb-2 line-clamp-2 font-body text-body text-on-surface-variant">
                               {service.description}
                             </p>
                           )}
@@ -323,13 +329,28 @@ export default function ProviderPublicProfilePage() {
                               <Icon name="schedule" size={16} />
                               {formatDuration(service.duration)}
                             </span>
+                            {/* Drawn as a sibling of the duration above, because
+                                that is what it sits beside in the reference. It
+                                used to carry a permanent underline that ran
+                                under the icon as well as the label, which read
+                                as a stray hyperlink rather than part of the meta
+                                row.
+
+                                The underline moves to hover instead of
+                                disappearing: this is the only control in the
+                                row, and with no affordance at all it would look
+                                like the static text it now matches. Only the
+                                label is underlined, never the glyph. */}
                             <button
                               type="button"
                               onClick={() => setDetailsService(service)}
-                              className="flex cursor-pointer items-center gap-1 underline underline-offset-2 transition-colors hover:text-primary"
+                              aria-label={`See full details of ${service.name}`}
+                              className="group/details flex cursor-pointer items-center gap-1 rounded transition-colors hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
                             >
                               <Icon name="info" size={16} />
-                              Details
+                              <span className="underline-offset-2 group-hover/details:underline">
+                                Details
+                              </span>
                             </button>
                             {retired && (
                               <span className="rounded-full bg-surface-variant px-2 py-0.5 font-caption text-caption font-bold uppercase tracking-wider">

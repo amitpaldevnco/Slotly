@@ -104,8 +104,19 @@ export default function ServiceCard({
 
       <h3 className="mb-2 font-h3 text-h3 text-primary">{service.name}</h3>
 
+      {/* Clamped to three lines, which is what the form's own live preview of
+          this card has always shown. Unclamped, one service with a long
+          description stretched its card far past its neighbours and broke the
+          grid — and a provider writing that description was shown a tidy
+          three-line preview, saved it, and got something else.
+
+          Three lines rather than a character count: the cut lands on a line
+          boundary at whatever width the card happens to be, instead of at a
+          fixed number of characters that is too long on a phone and too short
+          on a wide screen. The full text stays in the DOM, so it is still
+          selectable and searchable, and `Details` below opens all of it. */}
       <p
-        className={`mb-6 flex-1 font-small text-small text-on-surface-variant ${
+        className={`mb-6 line-clamp-3 flex-1 font-small text-small text-on-surface-variant ${
           retired ? "opacity-70" : ""
         }`}
       >
