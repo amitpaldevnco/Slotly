@@ -428,7 +428,22 @@ export function generateSlots({
   const rangeEndMs = toDateTime(rangeEnd).toMillis();
 
   if (rangeEndMs <= rangeStartMs) return [];
-  if (rangeEndMs - rangeStartMs > MAX_RANGE_DAYS * 86_400_000) {
+
+  // The caller counts *calendar* days; this counts milliseconds, and on a day
+  // when the clocks go back those two disagree. MAX_RANGE_DAYS calendar days
+  // spanning a fall-back transition is 62 days *and an hour* of real time, so a
+  // range the controller had already accepted used to throw here and surface as
+  // a 500 on a perfectly valid request.
+  //
+  // The slack absorbs any real transition rather than a specific one: no zone
+  // shifts its offset by more than two hours in a single step (Lord Howe moves
+  // 30 minutes, Troll in Antarctica two hours), and a range can contain at most
+  // a handful of them. Four hours is comfortably clear of anything legal while
+  // still rejecting a range a whole day too wide, which is all this guard is
+  // for — it is a safety net behind the controller's own day count, not the
+  // user-facing limit.
+  const DST_SLACK_MS = 4 * 3_600_000;
+  if (rangeEndMs - rangeStartMs > MAX_RANGE_DAYS * 86_400_000 + DST_SLACK_MS) {
     throw new Error(`Date range exceeds the ${MAX_RANGE_DAYS}-day maximum`);
   }
 

@@ -201,6 +201,53 @@ describe("generateSlots and isOfferedSlotStart agree on a round-the-clock schedu
 });
 
 // ---------------------------------------------------------------------------
+describe("generateSlots — the range guard counts days, not fixed-length days", () => {
+  const zone = "Europe/London";
+
+  it("accepts the maximum range even when it contains a fall-back transition", () => {
+    // MAX_RANGE_DAYS calendar days spanning a day the clocks go back is
+    // MAX_RANGE_DAYS days *and an hour* of real time. The controller had already
+    // accepted the range on a calendar-day count; this guard measured
+    // milliseconds and threw, which surfaced to the client as a 500 on a
+    // perfectly valid request.
+    const start = DateTime.fromISO("2025-09-01", { zone }).startOf("day");
+    const end = start.plus({ days: MAX_RANGE_DAYS });
+
+    // Confirm the fixture really does straddle a transition, otherwise this
+    // test would pass for the wrong reason if the dates were ever edited.
+    expect(end.toMillis() - start.toMillis()).toBeGreaterThan(MAX_RANGE_DAYS * 86_400_000);
+
+    expect(() =>
+      generateSlots({
+        rules: [rule(MONDAY, NINE_TO_FIVE.start_minute, NINE_TO_FIVE.end_minute)],
+        exceptions: [],
+        timezone: zone,
+        service: service(),
+        rangeStart: start.toJSDate(),
+        rangeEnd: end.toJSDate(),
+        now: NOW,
+      })
+    ).not.toThrow();
+  });
+
+  it("still refuses a range a whole day too wide", () => {
+    const start = DateTime.fromISO("2025-09-01", { zone }).startOf("day");
+
+    expect(() =>
+      generateSlots({
+        rules: [rule(MONDAY, NINE_TO_FIVE.start_minute, NINE_TO_FIVE.end_minute)],
+        exceptions: [],
+        timezone: zone,
+        service: service(),
+        rangeStart: start.toJSDate(),
+        rangeEnd: start.plus({ days: MAX_RANGE_DAYS + 1 }).toJSDate(),
+        now: NOW,
+      })
+    ).toThrow(/exceeds the/);
+  });
+});
+
+// ---------------------------------------------------------------------------
 describe("wallClockToInstant — pairing a rule with a date", () => {
   it("resolves a wall-clock reading to the instant it means in that zone", () => {
     // 09:00 in New York on a summer date is 13:00 UTC (EDT, UTC-4).
