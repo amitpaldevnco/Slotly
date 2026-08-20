@@ -236,10 +236,34 @@ async function storeCoverImage(file, providerId) {
   return { ok: true, storedPath };
 }
 
+/**
+ * The one field error for a cover image multer refused on its declared type.
+ *
+ * Such a file never becomes `req.file`, so a handler that only looks there
+ * cannot tell "no image was sent" from "an image was sent and thrown away". The
+ * difference matters: the first is a service with no cover, which is fine, and
+ * the second silently succeeded while dropping something the provider chose.
+ * `req.rejectedUpload` is set by the upload middleware for exactly this.
+ *
+ * @param {import("express").Request} req
+ * @returns {Array<{field:string,message:string}>} One entry, or empty when the
+ *   request carried no rejected file.
+ */
+function rejectedCoverImageErrors(req) {
+  if (!req.rejectedUpload) return [];
+  return [
+    {
+      field: "coverImage",
+      message: "That file is not a supported image. Accepted formats: JPG, PNG or WebP.",
+    },
+  ];
+}
+
 /** POST /api/services — verifyToken, requireProviderRole, uploadServiceImage. */
 export const createService = async (req, res) => {
   try {
     const { errors, values } = validateServiceFields(req.body, { partial: false });
+    errors.push(...rejectedCoverImageErrors(req));
 
     if (errors.length > 0) {
       await discardUpload(req.file);
@@ -317,6 +341,7 @@ export const updateService = async (req, res) => {
     }
 
     const { errors, values } = validateServiceFields(req.body, { partial: true });
+    errors.push(...rejectedCoverImageErrors(req));
     if (errors.length > 0) {
       await discardUpload(req.file);
       return validationErrorResponse(res, "Please fix the errors below", errors);

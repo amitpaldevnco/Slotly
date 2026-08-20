@@ -883,6 +883,20 @@ export async function updateProfile(req, res) {
       updateData.avatar_url = storedUrl;
     }
 
+    // A file multer refused on its declared type never becomes `req.file`, so
+    // without this the request looks identical to one that sent nothing at all
+    // and the user is told "No fields to update" — true, but not the reason.
+    // Named here rather than in the middleware because only the controller
+    // knows which allow-list applied to this route.
+    if (req.rejectedUpload) {
+      return validationErrorResponse(res, "Please fix the errors below", [
+        {
+          field: "profilePicture",
+          message: "That file is not a supported image. Accepted formats: JPG or PNG.",
+        },
+      ]);
+    }
+
     // Update user in database
     const columns = Object.keys(updateData);
     if (columns.length === 0) {

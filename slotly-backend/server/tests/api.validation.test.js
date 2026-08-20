@@ -382,4 +382,21 @@ describe("malformed requests are 4xx with a usable code, never 5xx", () => {
     expect(response.body.code).toBe("UPLOAD_REJECTED");
   });
 
+  it("names the format when an image type is refused, instead of 'no fields to update'", async () => {
+    // multer drops a file whose declared type is not on the allow-list, so the
+    // request reaches the handler with no file *and* no other changed field. It
+    // used to be reported as "No fields to update", which is true and tells the
+    // user nothing about the GIF they just tried to upload.
+    const response = await clientUser.agent
+      .patch("/api/auth/profile")
+      .attach("profilePicture", Buffer.concat([Buffer.from("GIF89a"), Buffer.alloc(32)]), {
+        filename: "a.gif",
+        contentType: "image/gif",
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body.details.some((d) => d.field === "profilePicture")).toBe(true);
+    expect(response.body.details[0].message).toMatch(/JPG|PNG/i);
+  });
+
 });

@@ -55,9 +55,18 @@ function createUploader(destination) {
     limits: { fileSize: MAX_FILE_SIZE_BYTES, files: 1 },
     fileFilter: (req, file, cb) => {
       if (CLAIMED_IMAGE_TYPES.includes(file.mimetype)) return cb(null, true);
-      // Reject by passing `false`, not an Error: the controller then sees no
-      // `req.file` and returns a field-level validation message, which reads
-      // better than a 500 from the global error handler.
+
+      // Reject by passing `false`, not an Error: an Error here becomes a 500
+      // from the global handler, whereas a field-level validation message is
+      // what the user actually needs.
+      //
+      // But dropping the file silently is not enough on its own. The controller
+      // then sees no `req.file` *and* no other changed field, and concluded
+      // there was nothing to do — so uploading a GIF was reported as "No fields
+      // to update", which tells the user nothing about what went wrong. The
+      // rejected type is recorded on the request so the controller can say
+      // which format was refused instead of guessing why it has no work.
+      req.rejectedUpload = { field: file.fieldname, mimetype: file.mimetype };
       cb(null, false);
     },
   });
