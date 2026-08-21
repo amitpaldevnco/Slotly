@@ -38,6 +38,8 @@ import {
   evaluateClientReschedule,
   evaluateProviderTransition,
   describeInstant,
+  describeRescheduleTerms,
+  summariseAcceptedTerms,
   ACTIVE_STATUSES,
   OUTCOME_GRACE_MINUTES,
 } from "../services/bookingRules.js";
@@ -135,8 +137,52 @@ function serialiseBooking(row, { viewerRole } = {}) {
       viewerRole === "client" ? evaluateClientCancellation(row, new Date()).allowed : undefined,
     canClientReschedule:
       viewerRole === "client" ? evaluateClientReschedule(row, new Date()).allowed : undefined,
+    // What a reschedule would cost, and how long it would run for, if the
+    // provider has edited the service since. Sent to both parties — the provider
+    // is entitled to see that their own edit has consequences for this booking —
+    // but only ever `requiresAcceptance` for the client, who is the only one who
+    // can agree to new terms. See `describeRescheduleTerms`.
+    serviceChanges: describeServiceChangesFor(row, viewerRole),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+  };
+}
+
+/**
+ * The `serviceChanges` block on a serialised booking, or null when there is
+ * nothing to report.
+ *
+ * Null rather than a block full of `changed: false` flags, so the UI's test is
+ * `if (booking.serviceChanges)` and no screen has to reason about a shape that
+ * means "no news". Also null when the service row was not joined, and for a
+ * booking that is no longer active — a cancelled or completed appointment is not
+ * going to be moved, so what it *would* now cost is noise.
+ *
+ * @param {object} row A row from BOOKING_SELECT.
+ * @param {"client"|"provider"|undefined} viewerRole
+ */
+function describeServiceChangesFor(row, viewerRole) {
+  if (row.service_price_now === undefined || row.service_price_now === null) return null;
+  if (!ACTIVE_STATUSES.includes(row.status)) return null;
+
+  const terms = describeRescheduleTerms({
+    booking: row,
+    service: { price: row.service_price_now, duration: row.service_duration_now },
+    actorRole: viewerRole,
+  });
+
+  if (!terms.changed) return null;
+
+  return {
+    price: terms.price,
+    duration: terms.duration,
+    // The currency both figures are in. Always the same one — a provider's
+    // currency is on their user row, not on the service, so a price change
+    // cannot also be a currency change.
+    currency: row.provider_currency ?? "INR",
+    // True only for the client, who is the only party a reschedule asks. For the
+    // provider this block is information, not a gate.
+    requiresAcceptance: terms.requiresAcceptance,
   };
 }
 
@@ -208,7 +254,13 @@ const BOOKING_SELECT = `
          p.avatar_url AS provider_avatar,
          p.timezone AS provider_timezone_now,
          p.currency AS provider_currency,
-         s.cover_image, s.is_active AS service_is_active
+         s.cover_image, s.is_active AS service_is_active,
+         -- The service as it stands *now*, alongside the snapshots. Only the
+         -- reschedule question needs these: a client moving their appointment
+         -- enters the current arrangement, so the UI has to be able to show them
+         -- both sets of numbers before they agree. Nothing else reads them, and
+         -- the snapshots remain what the booking itself is priced and sized at.
+         s.price AS service_price_now, s.duration AS service_duration_now
   FROM bookings b
   JOIN users c ON c.id = b.client_id
   JOIN users p ON p.id = b.provider_id
@@ -796,8 +848,8 @@ export const rescheduleBooking = async (req, res) => {
     // the two disagree the moment a provider moved city: the picker would offer
     // times the write path then rejected as outside availability.
     const existing = await query(
-      `SELECT b.*, s.duration, s.buffer_before, s.buffer_after, s.slot_interval,
-              p.timezone AS provider_timezone_now
+      `SELECT b.*, s.price, s.duration, s.buffer_before, s.buffer_after, s.slot_interval,
+              p.timezone AS provider_timezone_now, p.currency AS provider_currency
        FROM bookings b
        JOIN services s ON s.id = b.service_id
        JOIN users p ON p.id = b.provider_id
@@ -834,7 +886,7 @@ export const rescheduleBooking = async (req, res) => {
       );
     }
 
-    const { startsAt, reason } = req.body;
+    const { startsAt, reason, acceptChanges } = req.body;
     const errors = [];
 
     const start = new Date(startsAt);
@@ -848,6 +900,12 @@ export const rescheduleBooking = async (req, res) => {
     if (typeof reason === "string" && reason.length > 500) {
       errors.push({ field: "reason", message: "Reason must be 500 characters or less" });
     }
+    // Typed rather than merely truthy: `acceptChanges: "no"` is truthy, and
+    // reading it as consent to a price increase is not a mistake worth being
+    // relaxed about.
+    if (acceptChanges !== undefined && typeof acceptChanges !== "boolean") {
+      errors.push({ field: "acceptChanges", message: "acceptChanges must be true or false" });
+    }
     if (errors.length > 0) {
       return validationErrorResponse(res, "Please fix the errors below", errors);
     }
@@ -860,20 +918,45 @@ export const rescheduleBooking = async (req, res) => {
     // provider moving an appointment onto later this afternoon is ordinary
     // schedule management, and so is a client booking that same slot directly.
 
-    // Keep the booking's own snapshotted duration rather than the service's
-    // current one: rescheduling should move an appointment, not silently resize
-    // it because the provider edited the service in the meantime.
-    //
-    // The buffers and the grid deliberately come from the service *as it stands
-    // now*, and mixing the two is intentional rather than an oversight. The
-    // duration is what the client agreed to and is theirs; the buffers are the
-    // provider's own turnaround time and the grid is the provider's own
-    // publishing choice, neither of which the client bought. Honouring a
-    // buffer the provider has since abandoned would block time nobody wants
-    // blocked, and checking the new time against a retired grid would refuse
-    // slots the provider is currently offering.
+    // Which price and duration the moved appointment runs under. A client moving
+    // their own booking enters the service's current terms — and is asked first,
+    // because that can change what they pay. A provider moving someone else's
+    // keeps the snapshotted terms: imposing a change *and* new terms in one
+    // action is the thing the acceptance gate exists to prevent. All of that
+    // reasoning lives in `describeRescheduleTerms`; this is only the branch.
+    const terms = describeRescheduleTerms({
+      booking,
+      service: booking,
+      actorRole: viewerRole,
+      accepted: acceptChanges === true,
+    });
+
+    if (terms.requiresAcceptance) {
+      return errorResponse(
+        res,
+        "This service has changed since you booked. Review the new details before moving your appointment.",
+        409,
+        ERROR_CODES.SERVICE_TERMS_CHANGED,
+        {
+          price: terms.price,
+          duration: terms.duration,
+          currency: booking.provider_currency ?? "INR",
+          // Named so a client reading the docs knows the way forward without
+          // having to infer it from the code.
+          resendWith: { acceptChanges: true },
+        }
+      );
+    }
+
+    // The buffers and the grid always come from the service *as it stands now*,
+    // whichever terms apply above. The duration is what the client is committed
+    // to; the buffers are the provider's own turnaround time and the grid is the
+    // provider's own publishing choice, neither of which the client bought.
+    // Honouring a buffer the provider has since abandoned would block time
+    // nobody wants blocked, and checking the new time against a retired grid
+    // would refuse slots the provider is currently offering.
     const spanService = {
-      duration: booking.duration_snapshot,
+      duration: terms.applied.duration,
       buffer_before: booking.buffer_before,
       buffer_after: booking.buffer_after,
       slot_interval: booking.slot_interval,
@@ -910,16 +993,39 @@ export const rescheduleBooking = async (req, res) => {
     const span = computeBookingSpan(start, spanService);
 
     const updated = await transaction(async (tx) => {
+      // The snapshots move only when the client accepted new terms — `terms
+      // .applied` is the booking's existing pair in every other case, so this
+      // rewrites them to the values they already hold and no history is
+      // disturbed. Writing them unconditionally, rather than behind a second
+      // branch, keeps one statement doing one thing and makes it impossible for
+      // the span above and the price below to be derived from different terms.
       const result = await tx.query(
         `UPDATE bookings
          SET starts_at = $1, ends_at = $2, blocked_from = $3, blocked_to = $4,
+             price_snapshot = $7, duration_snapshot = $8,
              status = 'rescheduled', updated_at = NOW()
          WHERE id = $5 AND status = ANY($6)
          RETURNING *`,
-        [span.startsAt, span.endsAt, span.blockedFrom, span.blockedTo, booking.id, ACTIVE_STATUSES]
+        [
+          span.startsAt,
+          span.endsAt,
+          span.blockedFrom,
+          span.blockedTo,
+          booking.id,
+          ACTIVE_STATUSES,
+          terms.applied.price,
+          terms.applied.duration,
+        ]
       );
 
       if (result.rows.length === 0) return null;
+
+      // What was agreed, not merely that something was. A client's own note comes
+      // first when they left one; the terms sentence is appended so the timeline
+      // can never show an accepted repricing with no record of the numbers.
+      const note = reason ? String(reason).trim() : "";
+      const agreed = summariseAcceptedTerms(terms, booking.provider_currency);
+      const trail = [note, agreed].filter(Boolean).join(" ").slice(0, 500) || null;
 
       await recordEvent(tx, {
         bookingId: booking.id,
@@ -929,7 +1035,7 @@ export const rescheduleBooking = async (req, res) => {
         toStartsAt: span.startsAt,
         actorId: req.user.userId,
         actorRole: viewerRole,
-        reason: reason ? String(reason).trim() : null,
+        reason: trail,
       });
 
       const full = await tx.query(`${BOOKING_SELECT} WHERE b.id = $1`, [booking.id]);

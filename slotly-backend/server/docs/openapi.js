@@ -78,6 +78,7 @@ export const openApiDocument = {
               "RESCHEDULE_WINDOW_CLOSED",
               "RATE_LIMITED",
               "BOOKING_NOT_ACTIVE",
+              "SERVICE_TERMS_CHANGED",
               "APPOINTMENT_NOT_STARTED",
               "INVALID_TRANSITION",
               "INVALID_STATUS",
@@ -293,6 +294,32 @@ export const openApiDocument = {
           canClientCancel: {
             type: "boolean",
             description: "Only present when the caller is the client. Advisory — the server re-checks.",
+          },
+          serviceChanges: {
+            type: "object",
+            nullable: true,
+            description:
+              "Null unless the provider has changed the service's price or duration since this booking was made, and the booking is still active. `service.price` and `service.duration` remain what the booking itself is held at; these are what a reschedule would move it to. `requiresAcceptance` is true only for the client — see POST /bookings/{id}/reschedule.",
+            properties: {
+              price: {
+                type: "object",
+                properties: {
+                  booked: { type: "number" },
+                  current: { type: "number" },
+                  changed: { type: "boolean" },
+                },
+              },
+              duration: {
+                type: "object",
+                properties: {
+                  booked: { type: "integer" },
+                  current: { type: "integer" },
+                  changed: { type: "boolean" },
+                },
+              },
+              currency: { type: "string", description: "ISO 4217 code both figures are in." },
+              requiresAcceptance: { type: "boolean" },
+            },
           },
         },
       },
@@ -1307,7 +1334,14 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
           "cancellation does; a wider window would let a client dodge the cutoff by moving the " +
           "appointment and cancelling it from its new date. The move is subject to the same exclusion " +
           "constraint as a new booking, so it can also return `409 SLOT_TAKEN`. A caller who is neither " +
-          "party gets `404`, not `403`.",
+          "party gets `404`, not `403`.\n\n" +
+          "**Changed service terms.** A client's move enters the service's *current* price and duration, " +
+          "so if the provider has edited either since the booking was made the first request is refused " +
+          "with `409 SERVICE_TERMS_CHANGED`, carrying both sets of figures in `details`. Nothing is " +
+          "written by that refusal — the original booking is untouched — and the move goes through when " +
+          "the request is repeated with `acceptChanges: true`. A provider's move keeps the snapshotted " +
+          "terms and never needs acceptance: imposing a change and new terms in one action is exactly " +
+          "what this gate exists to prevent.",
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
         requestBody: {
           required: true,
@@ -1323,6 +1357,11 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
                     maxLength: 500,
                     description: "Required when the caller is the provider; optional for the client.",
                   },
+                  acceptChanges: {
+                    type: "boolean",
+                    description:
+                      "The client's confirmation that they accept the service's current price and duration. Only consulted after a SERVICE_TERMS_CHANGED refusal; ignored for a provider.",
+                  },
                 },
               },
             },
@@ -1333,7 +1372,7 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
           400: errorRef("VALIDATION_FAILED, or a time in the past"),
           404: errorRef("No such booking, or the caller is neither party"),
           409: errorRef(
-            "SLOT_TAKEN, SLOT_UNAVAILABLE, BOOKING_NOT_ACTIVE or RESCHEDULE_WINDOW_CLOSED"
+            "SLOT_TAKEN, SLOT_UNAVAILABLE, BOOKING_NOT_ACTIVE, RESCHEDULE_WINDOW_CLOSED or SERVICE_TERMS_CHANGED"
           ),
         },
       },

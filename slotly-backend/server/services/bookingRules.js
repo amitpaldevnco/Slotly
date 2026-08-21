@@ -115,6 +115,109 @@ function evaluateClientCutoff(booking, now, action) {
 }
 
 /**
+ * What moving a booking would do to its price and duration.
+ *
+ * ## The problem this exists to solve
+ *
+ * A booking freezes the service's price and duration onto itself when it is
+ * made, and nothing a provider does afterwards rewrites those columns — that is
+ * the whole point of the `*_snapshot` design, and it stays true here. But a
+ * *reschedule* is not the same event as an edit: the client is choosing to enter
+ * a new arrangement, and the provider's current price is what that arrangement
+ * costs. Silently honouring a price the provider abandoned months ago is not
+ * "protecting the client", it is quoting them a number nobody is offering.
+ *
+ * So a reschedule re-reads the service — and because that can change what the
+ * client pays, it cannot happen behind their back. Hence `requiresAcceptance`:
+ * the write is refused until the client has been shown both sets of numbers and
+ * said yes. The original booking is untouched by the refusal, which is what lets
+ * the UI ask the question without having already committed to the answer.
+ *
+ * ## Why only the client
+ *
+ * A provider moving someone else's appointment keeps the snapshotted terms, and
+ * that asymmetry is the same one that governs cancellation reasons and the
+ * cutoff: the party imposing a change on somebody else does not get to impose
+ * new terms along with it. Letting a provider reprice a booking by dragging it
+ * an hour later would be a repricing with no consent step anywhere in it, which
+ * is precisely the outcome the acceptance gate exists to rule out. A provider who
+ * wants the new price applied can move it, and the client can accept the terms
+ * the next time they move it themselves.
+ *
+ * @param {object} args
+ * @param {{price_snapshot: string|number, duration_snapshot: number}} args.booking
+ * @param {{price: string|number, duration: number}} args.service The service as
+ *   it stands *now*.
+ * @param {"client"|"provider"} args.actorRole Who is doing the moving.
+ * @param {boolean} [args.accepted] Whether the client has confirmed the new terms.
+ * @returns {{
+ *   changed: boolean,
+ *   price: {booked: number, current: number, changed: boolean},
+ *   duration: {booked: number, current: number, changed: boolean},
+ *   requiresAcceptance: boolean,
+ *   applied: {price: number, duration: number},
+ *   repriced: boolean
+ * }} `applied` is the pair the moved appointment must actually be written with;
+ *   `repriced` says whether that differs from what the booking held before.
+ */
+export function describeRescheduleTerms({ booking, service, actorRole, accepted = false }) {
+  const booked = {
+    price: Number(booking.price_snapshot),
+    duration: Number(booking.duration_snapshot),
+  };
+  const current = {
+    price: Number(service.price),
+    duration: Number(service.duration),
+  };
+
+  // A non-finite current value means the service row was not joined, or carried
+  // something unusable. Treated as "unchanged" rather than as a change, because
+  // the alternative is demanding the client accept terms nobody can name.
+  const priceChanged = Number.isFinite(current.price) && current.price !== booked.price;
+  const durationChanged = Number.isFinite(current.duration) && current.duration !== booked.duration;
+  const changed = priceChanged || durationChanged;
+
+  const clientMoving = actorRole === "client";
+  const applyCurrent = clientMoving && changed && accepted;
+
+  return {
+    changed,
+    price: { booked: booked.price, current: current.price, changed: priceChanged },
+    duration: { booked: booked.duration, current: current.duration, changed: durationChanged },
+    requiresAcceptance: clientMoving && changed && !accepted,
+    applied: applyCurrent ? current : booked,
+    repriced: applyCurrent,
+  };
+}
+
+/**
+ * The audit-trail sentence for a client who accepted new terms.
+ *
+ * Written into the `booking_events` reason so the timeline records *what* was
+ * agreed, not merely that something was. The currency is the ISO code rather
+ * than a symbol, the same rule the rest of the server follows — the reader's
+ * client turns codes into symbols, and a stored symbol is ambiguous.
+ *
+ * @param {ReturnType<typeof describeRescheduleTerms>} terms
+ * @param {string} [currency] ISO 4217 code.
+ * @returns {string|null} Null when nothing changed, so a caller can `||` it away.
+ */
+export function summariseAcceptedTerms(terms, currency = "") {
+  if (!terms.repriced) return null;
+
+  const parts = [];
+  if (terms.price.changed) {
+    const code = currency ? `${currency} ` : "";
+    parts.push(`price ${code}${terms.price.booked} → ${code}${terms.price.current}`);
+  }
+  if (terms.duration.changed) {
+    parts.push(`duration ${terms.duration.booked} → ${terms.duration.current} min`);
+  }
+
+  return `Accepted the provider's updated service terms: ${parts.join(", ")}.`;
+}
+
+/**
  * Validates a status transition a provider is trying to make.
  *
  * Providers may cancel any active booking, and may mark a booking completed or

@@ -36,6 +36,12 @@ export const ERROR_CODES = {
   // though both share one deadline — see evaluateClientReschedule.
   RESCHEDULE_WINDOW_CLOSED: "RESCHEDULE_WINDOW_CLOSED",
   BOOKING_NOT_ACTIVE: "BOOKING_NOT_ACTIVE",
+  // A client tried to move a booking whose service has been repriced or resized
+  // since. Carries the old and new terms in `details` so the UI can show both
+  // and ask; the move goes through once the request repeats with
+  // `acceptChanges: true`. Nothing is written by the refusal — see
+  // `describeRescheduleTerms`.
+  SERVICE_TERMS_CHANGED: "SERVICE_TERMS_CHANGED",
   APPOINTMENT_NOT_STARTED: "APPOINTMENT_NOT_STARTED",
   INVALID_TRANSITION: "INVALID_TRANSITION",
   INVALID_STATUS: "INVALID_STATUS",

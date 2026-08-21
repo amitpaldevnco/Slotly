@@ -14,6 +14,8 @@ import {
   evaluateClientCancellation,
   evaluateProviderTransition,
   describeInstant,
+  describeRescheduleTerms,
+  summariseAcceptedTerms,
   BOOKING_STATUSES,
   ACTIVE_STATUSES,
   TIME_FORMAT,
@@ -232,5 +234,130 @@ describe("describeInstant — rendering one moment in two zones", () => {
 
   it("uses the one clock format shared with the frontend", () => {
     expect(TIME_FORMAT).toBe("h:mm a");
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * The reschedule-terms rule, at the level the controller cannot show.
+ *
+ * `api.lifecycle.test.js` proves the endpoint asks the client and writes the
+ * agreed figures. What it cannot pin down cheaply is the shape of the rule
+ * itself: which party is asked, what "applied" resolves to in each of the four
+ * combinations of changed/accepted, and that a NUMERIC price arriving from
+ * PostgreSQL as the string "30.00" is not read as different from 30.
+ */
+describe("reschedule terms", () => {
+  const held = { price_snapshot: "30.00", duration_snapshot: 60 };
+  const unchanged = { price: "30.00", duration: 60 };
+  const dearer = { price: "40.00", duration: 60 };
+  const shorter = { price: "30.00", duration: 30 };
+
+  it("reads a NUMERIC string and an equal number as the same price", () => {
+    const terms = describeRescheduleTerms({
+      booking: held,
+      service: unchanged,
+      actorRole: "client",
+    });
+
+    expect(terms.changed).toBe(false);
+    expect(terms.requiresAcceptance).toBe(false);
+    expect(terms.applied).toEqual({ price: 30, duration: 60 });
+  });
+
+  it("asks the client, and only once, per thing that moved", () => {
+    const priceOnly = describeRescheduleTerms({
+      booking: held,
+      service: dearer,
+      actorRole: "client",
+    });
+    expect(priceOnly.price.changed).toBe(true);
+    expect(priceOnly.duration.changed).toBe(false);
+    expect(priceOnly.requiresAcceptance).toBe(true);
+
+    const durationOnly = describeRescheduleTerms({
+      booking: held,
+      service: shorter,
+      actorRole: "client",
+    });
+    expect(durationOnly.price.changed).toBe(false);
+    expect(durationOnly.duration.changed).toBe(true);
+    // A duration change alone still has to be agreed: the client is being asked
+    // to attend for a different length of time than they booked.
+    expect(durationOnly.requiresAcceptance).toBe(true);
+  });
+
+  it("holds the old terms until the client accepts, then applies the new ones", () => {
+    const pending = describeRescheduleTerms({ booking: held, service: dearer, actorRole: "client" });
+    // The refused case must still name a usable pair — the controller reads
+    // `applied` before it knows whether it will refuse.
+    expect(pending.applied).toEqual({ price: 30, duration: 60 });
+    expect(pending.repriced).toBe(false);
+
+    const agreed = describeRescheduleTerms({
+      booking: held,
+      service: dearer,
+      actorRole: "client",
+      accepted: true,
+    });
+    expect(agreed.requiresAcceptance).toBe(false);
+    expect(agreed.applied).toEqual({ price: 40, duration: 60 });
+    expect(agreed.repriced).toBe(true);
+  });
+
+  it("never asks the provider, and never lets them apply new terms", () => {
+    // Including when they claim acceptance: consent is not theirs to give, so
+    // `accepted` is simply not consulted on this branch.
+    for (const accepted of [false, true]) {
+      const terms = describeRescheduleTerms({
+        booking: held,
+        service: { price: "40.00", duration: 30 },
+        actorRole: "provider",
+        accepted,
+      });
+
+      expect(terms.changed).toBe(true);
+      expect(terms.requiresAcceptance).toBe(false);
+      expect(terms.repriced).toBe(false);
+      expect(terms.applied).toEqual({ price: 30, duration: 60 });
+    }
+  });
+
+  it("treats an unreadable current value as nothing to agree to", () => {
+    // The service row was not joined, or carried something unusable. Demanding
+    // acceptance of terms nobody can name would strand the booking.
+    const terms = describeRescheduleTerms({
+      booking: held,
+      service: { price: undefined, duration: undefined },
+      actorRole: "client",
+    });
+
+    expect(terms.changed).toBe(false);
+    expect(terms.requiresAcceptance).toBe(false);
+    expect(terms.applied).toEqual({ price: 30, duration: 60 });
+  });
+
+  it("summarises only what was actually agreed, with the currency code", () => {
+    const both = describeRescheduleTerms({
+      booking: held,
+      service: { price: "40.00", duration: 30 },
+      actorRole: "client",
+      accepted: true,
+    });
+
+    const line = summariseAcceptedTerms(both, "GBP");
+    expect(line).toContain("GBP 30");
+    expect(line).toContain("GBP 40");
+    expect(line).toContain("60 → 30 min");
+
+    // Nothing agreed, nothing to record — so the caller can `||` it away rather
+    // than writing an empty sentence into the audit trail.
+    const none = describeRescheduleTerms({
+      booking: held,
+      service: unchanged,
+      actorRole: "client",
+      accepted: true,
+    });
+    expect(summariseAcceptedTerms(none, "GBP")).toBeNull();
   });
 });

@@ -610,6 +610,40 @@ This is the same rule as everywhere else in the app — the read path and the wr
 path must derive the answer from identical inputs — applied to the one read that
 had been quietly using the wrong ones.
 
+### Changed price or duration, and who gets asked
+
+A booking freezes the service's price and duration onto itself, and no edit a
+provider makes ever rewrites those columns. But a **reschedule is not an edit** —
+the client is choosing to enter a new arrangement, and the provider's current
+price is what that arrangement costs. Honouring a price the provider abandoned
+months ago is not protecting the client; it is quoting them a number nobody is
+offering.
+
+So a client's move re-reads the service, and because that can change what they
+pay it cannot happen silently:
+
+1. The first attempt is refused with `409 SERVICE_TERMS_CHANGED`, carrying both
+   sets of figures. **Nothing is written** — the appointment is exactly where and
+   what it was, which is what lets the question be asked without the answer
+   having already been committed.
+2. `RescheduleDialog` opens on the comparison rather than the picker: what you
+   booked, what it is now, and a plain sentence per thing that moved.
+3. Accepting repeats the call with `acceptChanges: true`. The move goes through,
+   `price_snapshot` and `duration_snapshot` are updated to the accepted pair, and
+   the timeline records the numbers — *"Accepted the provider's updated service
+   terms: price INR 30 → INR 40, duration 60 → 30 min."*
+4. Cancelling leaves the booking untouched.
+
+**A provider's move keeps the snapshotted terms** and is never asked. It is the
+same asymmetry that governs cancellation reasons and the cutoff: the party
+imposing a change on somebody else does not get to impose new terms along with
+it. Letting a provider reprice a booking by dragging it an hour later would be a
+repricing with no consent step anywhere in it.
+
+The rule itself is one pure function, `describeRescheduleTerms()`, and both the
+slots endpoint and the reschedule endpoint read it — so the length a client is
+offered slots at is by construction the length their move will land at.
+
 ### The outcome window
 
 An appointment that has finished is not settled immediately. For
@@ -757,13 +791,13 @@ OpenAPI document drifts from the routes and error codes the app actually serves.
 | File | Covers |
 |---|---|
 | `tests/slotEngine.test.js` | Slot generation from rules and buffers; **the appointment *and both buffers* fitting inside the window**, including the exactly-fits and one-minute-short cases; the candidate grid; exceptions (full-day, partial, multi-day, extra opening, block-beats-open); collision with existing bookings including the half-open boundary and buffer-only collisions; timezone conversion in both directions; **DST across both transitions**, including the shortened and lengthened window, gap and ambiguous boundaries, and a non-observing zone; **real-time booking** — the rest of today offered, a slot inside the next hour offered, a slot dropped the moment it starts, and the lead-time gate still honoured when a lead is asked for; the range cap; the performance guard. |
-| `tests/bookingRules.test.js` | The **cancellation cutoff at its exact boundary** — one second before, exactly on, one second after; the snapshot rule in both directions; a zero-hour cutoff; provider transitions; two-zone rendering including a date-line crossing and a DST offset change. |
+| `tests/bookingRules.test.js` | The **cancellation cutoff at its exact boundary** — one second before, exactly on, one second after; the snapshot rule in both directions; a zero-hour cutoff; provider transitions; two-zone rendering including a date-line crossing and a DST offset change. Plus the **reschedule-terms rule**: which party is asked, all four combinations of changed/accepted, and that a NUMERIC price arriving as the string `"30.00"` is not read as different from `30`. |
 | `tests/booking.concurrency.test.js` | The **double-booking guard against a real database**: two simultaneous attempts, ten simultaneous attempts, partial overlap, buffer-only overlap, legal back-to-back, release on cancellation, retention on completion and no-show, provider isolation, and the reschedule path — including two reschedules racing for one slot. |
 | `tests/accountLinking.test.js` | **One user per email address**, against a real database: a password account signing in with Google for the first time, both social providers on one address in either order, and the profile, role and password surviving the link. |
 | `tests/bookingTimezone.test.js` | A **stored instant never moves**: changing a user's timezone rewrites nothing in `bookings`, the appointment re-reads correctly in the new zone, can land on a different calendar date for the viewer, and the booking-time snapshot survives untouched as history. |
 | `tests/messagesAndReviews.test.js` | **One review per booking** under two racing submissions, rating bounds at the database level, whitespace-only messages rejected by a CHECK constraint, unread counting, and cascade behaviour when a booking is deleted. |
 | `tests/api.booking.test.js` | The double-booking guard **one layer up**, as ten clients racing over HTTP: exactly one 201, the rest a distinguishable 409 `SLOT_TAKEN`. Plus the off-grid guard, and **real-time booking through the API** — every un-started slot left today is offered and no others, and one inside the next hour books successfully. |
-| `tests/api.lifecycle.test.js` | Cancellation and its cutoff, rescheduling, status transitions and the audit timeline, all request-shaped. Plus **the timezone-change guard**: the refusal and the report it carries, that nothing is written when it refuses (not even another field in the same request), that cancelling the stranded appointment unblocks it, that a harmless move and a re-save of the current zone both go through, that a pre-existing conflict is not blamed on the change, and that a client is never blocked. Plus **the reschedule slot list**: that `?bookingId=` sizes slots from the booking's own duration rather than the service's current one, that a booking does not block its own move, that a retired service still answers, and that only a party to the booking may ask. |
+| `tests/api.lifecycle.test.js` | Cancellation and its cutoff, rescheduling, status transitions and the audit timeline, all request-shaped. Plus **the timezone-change guard**: the refusal and the report it carries, that nothing is written when it refuses (not even another field in the same request), that cancelling the stranded appointment unblocks it, that a harmless move and a re-save of the current zone both go through, that a pre-existing conflict is not blamed on the change, and that a client is never blocked. Plus **the reschedule slot list**: that `?bookingId=` sizes slots from the booking's own duration rather than the service's current one, that a booking does not block its own move, that a retired service still answers, and that only a party to the booking may ask. Plus **changed service terms**: that a client's move is refused until they accept and that the refusal writes nothing, that accepting applies the new price and resizes the appointment both ways, that the provider is never asked and cannot reprice by moving it, and that a non-boolean `acceptChanges` is not read as consent. |
 
 Every time-dependent test injects `now` explicitly, so the suite cannot start
 failing in six months.

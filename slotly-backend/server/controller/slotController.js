@@ -19,7 +19,7 @@ import { query } from "../config/dbConfig.js";
 import { successResponse, errorResponse, ERROR_CODES } from "../responseController/responseHandler.js";
 import { generateSlots, MAX_RANGE_DAYS } from "../services/slotEngine.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
-import { TIME_FORMAT, ACTIVE_STATUSES } from "../services/bookingRules.js";
+import { TIME_FORMAT, ACTIVE_STATUSES, describeRescheduleTerms } from "../services/bookingRules.js";
 import { parseId } from "../middleware/validateParams.js";
 
 /**
@@ -127,11 +127,23 @@ export const getAvailableSlots = async (req, res) => {
     }
 
     // The service as the *write path* will read it. `rescheduleBooking` sizes the
-    // moved appointment with the booking's snapshotted duration and the service's
-    // current buffers and grid; generating slots any other way publishes times
-    // that endpoint rejects. Everything else on the row is untouched.
+    // moved appointment through `describeRescheduleTerms` — the current duration
+    // for a client, who enters the service's present terms, and the snapshotted
+    // one for a provider, who may not resize somebody else's appointment by
+    // moving it. Generating slots any other way publishes times that endpoint
+    // rejects, so the same function decides it here rather than a second copy of
+    // the rule. `accepted: true` because these are the times the move *will* land
+    // at once the client has agreed; the agreeing itself is the write path's job.
     const row = moving
-      ? { ...service.rows[0], duration: moving.duration_snapshot }
+      ? {
+          ...service.rows[0],
+          duration: describeRescheduleTerms({
+            booking: moving,
+            service: service.rows[0],
+            actorRole: moving.viewerRole,
+            accepted: true,
+          }).applied.duration,
+        }
       : service.rows[0];
     const viewerTimezone = await resolveViewerTimezone(req.query.timezone, req.user?.userId);
 
@@ -273,6 +285,8 @@ export const getAvailableSlots = async (req, res) => {
  * @param {string|number} args.serviceId From the query string.
  * @param {number|undefined} args.userId Signed-in user, if any.
  * @returns {Promise<{booking?: object, error?: {message: string, status: number, code: string}}>}
+ *   The booking carries a `viewerRole` of "client" or "provider", which is what
+ *   decides how the returned slots are sized.
  */
 async function resolveBookingBeingMoved({ bookingId, providerId, serviceId, userId }) {
   const notFound = {
@@ -285,7 +299,8 @@ async function resolveBookingBeingMoved({ bookingId, providerId, serviceId, user
   if (!userId) return notFound;
 
   const result = await query(
-    `SELECT id, provider_id, client_id, service_id, status, duration_snapshot
+    `SELECT id, provider_id, client_id, service_id, status,
+            price_snapshot, duration_snapshot
      FROM bookings WHERE id = $1`,
     [bookingId]
   );
@@ -293,10 +308,16 @@ async function resolveBookingBeingMoved({ bookingId, providerId, serviceId, user
   if (result.rows.length === 0) return notFound;
   const booking = result.rows[0];
 
-  const isParty =
-    Number(booking.client_id) === Number(userId) || Number(booking.provider_id) === Number(userId);
+  // Which party is asking decides how the slots are sized, so it travels with
+  // the booking rather than being worked out again at the call site.
+  const viewerRole =
+    Number(booking.client_id) === Number(userId)
+      ? "client"
+      : Number(booking.provider_id) === Number(userId)
+        ? "provider"
+        : null;
 
-  if (!isParty) return notFound;
+  if (!viewerRole) return notFound;
 
   // The booking has to be the one this request is actually about. Mismatched ids
   // are a client bug, but answering them with slots sized from an unrelated
@@ -318,7 +339,7 @@ async function resolveBookingBeingMoved({ bookingId, providerId, serviceId, user
     };
   }
 
-  return { booking };
+  return { booking: { ...booking, viewerRole } };
 }
 
 /**

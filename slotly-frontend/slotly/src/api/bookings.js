@@ -75,11 +75,17 @@ export const setStatus = (bookingId, status) =>
   api.patch(`/bookings/${bookingId}/status`, { status }).then(unwrap);
 
 /**
- * Moves a booking to a new time. Provider only; `payload` is
- * `{ startsAt, reason }` and both are required.
+ * Moves a booking to a new time. `payload` is `{ startsAt, reason?, acceptChanges? }`
+ * — `reason` is required from a provider and optional from a client.
  *
  * Subject to the same exclusion constraint as a new booking, so moving onto an
  * occupied slot loses the race the same way, with `SLOT_TAKEN`.
+ *
+ * A client's move enters the service's *current* price and duration, so if the
+ * provider has edited either since, the first attempt is refused with
+ * `SERVICE_TERMS_CHANGED` and nothing is written. Show the client both sets of
+ * figures — `booking.serviceChanges`, or the same shape on the error's `details`
+ * — and repeat the call with `acceptChanges: true` once they agree.
  */
 export const reschedule = (bookingId, payload) =>
   api.post(`/bookings/${bookingId}/reschedule`, payload).then(unwrap);

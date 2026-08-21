@@ -399,35 +399,38 @@ describe("the slot list used to move a booking", () => {
     return { response, slots: (response.body.data?.days || []).flatMap((d) => d.slots) };
   }
 
-  it("sizes slots from the booking's own duration, not the service's current one", async () => {
-    // The failure without this: the provider halves a 60-minute service, the
-    // plain list starts publishing 16:30 on a day that ends at 17:00 because a
-    // 30-minute appointment fits there — but the booking is still held at 60
-    // minutes, so the reschedule endpoint refuses every one of those buttons.
+  it("sizes a provider's move from the snapshot, and a client's from the service", async () => {
+    // The two parties move an appointment at different lengths — a client enters
+    // the service's current terms, a provider may not resize somebody else's
+    // booking — so the list each of them is shown has to be sized differently
+    // too. Both used to come back sized from the service alone, and a provider
+    // was offered 16:30 on a day ending at 17:00 for an appointment still held
+    // at 60 minutes.
     const { prov, svc, booking } = await movableBooking("movedur");
     await prov.agent.put(`/api/services/${svc.id}`).send({ duration: 30 });
 
-    const plain = await fetchSlots(clientUser.agent, prov.id, svc.id, range);
-    const { slots: scoped } = await slotsForMove(clientUser.agent, prov.id, svc.id, booking.id);
+    const { slots: forProvider } = await slotsForMove(prov.agent, prov.id, svc.id, booking.id);
+    const { slots: forClient } = await slotsForMove(clientUser.agent, prov.id, svc.id, booking.id);
 
-    const scopedStarts = new Set(scoped.map((s) => s.startsAt));
-    const tooLate = plain.filter((s) => !scopedStarts.has(s.startsAt));
+    const providerStarts = new Set(forProvider.map((s) => s.startsAt));
+    const clientOnly = forClient.filter((s) => !providerStarts.has(s.startsAt));
 
-    // The plain list really does offer times a 60-minute appointment cannot use.
-    expect(tooLate.length).toBeGreaterThan(0);
+    // The shorter service really does open times a 60-minute appointment cannot
+    // use, and only the client — who would be moving to 30 minutes — sees them.
+    expect(clientOnly.length).toBeGreaterThan(0);
 
-    const refused = await clientUser.agent
+    const refused = await prov.agent
       .post(`/api/bookings/${booking.id}/reschedule`)
-      .send({ startsAt: tooLate[0].startsAt });
+      .send({ startsAt: clientOnly[0].startsAt, reason: "Still an hour long" });
     expect(refused.status).toBe(409);
     expect(refused.body.code).toBe("SLOT_UNAVAILABLE");
 
-    // And the scoped list offers only times the write path takes.
-    const destination = scoped.find((s) => s.startsAt !== booking.startsAt);
+    // The client is offered it and can take it, because their move is 30 minutes.
     const accepted = await clientUser.agent
       .post(`/api/bookings/${booking.id}/reschedule`)
-      .send({ startsAt: destination.startsAt });
+      .send({ startsAt: clientOnly[0].startsAt, acceptChanges: true });
     expect(accepted.status).toBe(200);
+    expect(accepted.body.data.service.duration).toBe(30);
   });
 
   it("does not let a booking block its own move", async () => {
@@ -501,6 +504,22 @@ describe("the slot list used to move a booking", () => {
     expect(owner.response.status).toBe(200);
   });
 
+  it("reports nothing to accept while the service is untouched", async () => {
+    const { prov, svc, booking } = await movableBooking("movesame");
+
+    const detail = await clientUser.agent.get(`/api/bookings/${booking.id}`);
+    expect(detail.body.data.serviceChanges).toBeNull();
+
+    // And no acceptance is asked for, because there is nothing to agree to.
+    const { slots } = await slotsForMove(clientUser.agent, prov.id, svc.id, booking.id);
+    const destination = slots.find((s) => s.startsAt !== booking.startsAt);
+
+    const moved = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt });
+    expect(moved.status).toBe(200);
+  });
+
   it("rejects a malformed bookingId, and says why a closed booking has no slots", async () => {
     const { prov, svc, booking } = await movableBooking("movebad");
 
@@ -515,6 +534,162 @@ describe("the slot list used to move a booking", () => {
     const { response } = await slotsForMove(clientUser.agent, prov.id, svc.id, booking.id);
     expect(response.status).toBe(409);
     expect(response.body.code).toBe("BOOKING_NOT_ACTIVE");
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * A reschedule re-reads the service, so it can change what the client pays — and
+ * that cannot happen behind their back. The rule under test: a client's move
+ * enters the service's current price and duration but is refused until they have
+ * said yes; a provider's move keeps the snapshotted terms and is never asked.
+ * The reasoning is in `describeRescheduleTerms`.
+ */
+describe("changed service terms on a reschedule", () => {
+  /** A provider open every day 09:00–17:00, one service, one booking on it. */
+  async function bookingOn(label, overrides = {}) {
+    const prov = await createUser({ role: "provider", timezone: "Europe/London", label });
+    const svc = await createService(prov, { price: 30, duration: 60, slot_interval: 30, ...overrides });
+    await setWeeklyHours(
+      prov,
+      [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startTime: "09:00", endTime: "17:00" }))
+    );
+    return { prov, svc, booking: await bookFirstFreeSlot(clientUser, svc, prov) };
+  }
+
+  /** Somewhere this booking could legally move to, sized as the mover will size it. */
+  async function destinationFor(agent, prov, svc, booking) {
+    const response = await agent.get(
+      `/api/providers/${prov.id}/slots?serviceId=${svc.id}` +
+        `&from=${range.from}&to=${range.to}&bookingId=${booking.id}`
+    );
+    const slots = (response.body.data?.days || []).flatMap((d) => d.slots);
+    return slots.find((s) => s.startsAt !== booking.startsAt);
+  }
+
+  it("refuses a client's move once the price has changed, and writes nothing", async () => {
+    const { prov, svc, booking } = await bookingOn("termsprice");
+    await prov.agent.put(`/api/services/${svc.id}`).send({ price: 40 });
+
+    const destination = await destinationFor(clientUser.agent, prov, svc, booking);
+    const refused = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt });
+
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe("SERVICE_TERMS_CHANGED");
+
+    // Both figures, so the UI can show "₹30 → ₹40" without a second request.
+    expect(Number(refused.body.details.price.booked)).toBe(30);
+    expect(Number(refused.body.details.price.current)).toBe(40);
+    expect(refused.body.details.price.changed).toBe(true);
+    expect(refused.body.details.duration.changed).toBe(false);
+    expect(refused.body.details.currency).toBe("GBP");
+
+    // The refusal is the whole point: asking must not have committed to the
+    // answer. The appointment is exactly where and what it was.
+    const after = await clientUser.agent.get(`/api/bookings/${booking.id}`);
+    expect(after.body.data.startsAt).toBe(booking.startsAt);
+    expect(after.body.data.status).toBe("booked");
+    expect(Number(after.body.data.service.price)).toBe(30);
+  });
+
+  it("applies the new price once the client accepts, and records what was agreed", async () => {
+    const { prov, svc, booking } = await bookingOn("termsaccept");
+    await prov.agent.put(`/api/services/${svc.id}`).send({ price: 40 });
+
+    const destination = await destinationFor(clientUser.agent, prov, svc, booking);
+    const moved = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt, acceptChanges: true });
+
+    expect(moved.status).toBe(200);
+    expect(moved.body.data.startsAt).toBe(destination.startsAt);
+    expect(Number(moved.body.data.service.price)).toBe(40);
+    // Nothing left to accept, so the block goes quiet.
+    expect(moved.body.data.serviceChanges).toBeNull();
+
+    // The timeline has to name the numbers, or "they agreed" is unauditable.
+    const detail = await clientUser.agent.get(`/api/bookings/${booking.id}`);
+    const entry = detail.body.data.timeline.find((e) => e.toStatus === "rescheduled");
+    expect(entry.reason).toContain("30");
+    expect(entry.reason).toContain("40");
+  });
+
+  it("resizes the appointment to the service's current duration, both ways", async () => {
+    for (const [label, next] of [
+      ["termslonger", 90],
+      ["termsshorter", 30],
+    ]) {
+      const { prov, svc, booking } = await bookingOn(label);
+      await prov.agent.put(`/api/services/${svc.id}`).send({ duration: next });
+
+      const destination = await destinationFor(clientUser.agent, prov, svc, booking);
+      const moved = await clientUser.agent
+        .post(`/api/bookings/${booking.id}/reschedule`)
+        .send({ startsAt: destination.startsAt, acceptChanges: true });
+
+      expect(moved.status).toBe(200);
+      expect(moved.body.data.service.duration).toBe(next);
+
+      // Not just the label — the appointment really occupies that much time.
+      const minutes =
+        (new Date(moved.body.data.endsAt) - new Date(moved.body.data.startsAt)) / 60_000;
+      expect(minutes).toBe(next);
+    }
+  });
+
+  it("never asks the provider, and never lets them reprice by moving it", async () => {
+    const { prov, svc, booking } = await bookingOn("termsprov");
+    await prov.agent.put(`/api/services/${svc.id}`).send({ price: 40, duration: 30 });
+
+    const destination = await destinationFor(prov.agent, prov, svc, booking);
+    const moved = await prov.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt, reason: "Clinic closing early" });
+
+    // No acceptance step, because the provider is not the party being charged.
+    expect(moved.status).toBe(200);
+    // And the client still owes what they agreed to, for the length they agreed to.
+    expect(Number(moved.body.data.service.price)).toBe(30);
+    expect(moved.body.data.service.duration).toBe(60);
+  });
+
+  it("tells the client what changed before they open the picker", async () => {
+    const { prov, svc, booking } = await bookingOn("termsreport");
+    await prov.agent.put(`/api/services/${svc.id}`).send({ price: 40, duration: 30 });
+
+    const forClient = await clientUser.agent.get(`/api/bookings/${booking.id}`);
+    const changes = forClient.body.data.serviceChanges;
+
+    expect(changes.requiresAcceptance).toBe(true);
+    expect(Number(changes.price.current)).toBe(40);
+    expect(changes.duration.current).toBe(30);
+    expect(changes.duration.booked).toBe(60);
+
+    // The provider sees the same figures — their own edit has consequences here
+    // and hiding that from them would be odd — but it is not a gate on them.
+    const forProvider = await prov.agent.get(`/api/bookings/${booking.id}`);
+    expect(forProvider.body.data.serviceChanges.requiresAcceptance).toBe(false);
+    expect(Number(forProvider.body.data.serviceChanges.price.current)).toBe(40);
+
+    // A booking nobody is going to move has nothing to report.
+    await clientUser.agent.post(`/api/bookings/${booking.id}/cancel`).send({});
+    const cancelled = await clientUser.agent.get(`/api/bookings/${booking.id}`);
+    expect(cancelled.body.data.serviceChanges).toBeNull();
+  });
+
+  it("will not read a non-boolean acceptChanges as consent", async () => {
+    const { prov, svc, booking } = await bookingOn("termsbad");
+    await prov.agent.put(`/api/services/${svc.id}`).send({ price: 40 });
+
+    const destination = await destinationFor(clientUser.agent, prov, svc, booking);
+    const response = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt, acceptChanges: "yes" });
+
+    expect(response.status).toBe(400);
+    expect(response.body.details.some((d) => d.field === "acceptChanges")).toBe(true);
   });
 });
 
