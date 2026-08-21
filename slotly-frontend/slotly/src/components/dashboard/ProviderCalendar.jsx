@@ -4,9 +4,44 @@
  * Only the grid: the range label, the arrows, Today and the Day/Week/Month
  * switch sit above the card in the reference and are owned by `CalendarPage`,
  * which already holds the date and view state they change.
+ *
+ * ## The Filters row is a filter as well as a key
+ *
+ * A week with three cancellations and a no-show in it is mostly noise for a
+ * provider trying to read what they are actually doing on Thursday, and the
+ * colours alone do not help — a cancelled block still takes up the same slot on
+ * the grid as a live one.
+ *
+ * So the legend's swatches are controls, and the row sits *above* the grid where
+ * a toolbar belongs. **Clicking one shows only that status** — click Completed
+ * and the grid holds the completed appointments and nothing else. `All` brings
+ * everything back, and so does clicking the status that is already the only one
+ * showing. The row keeps doing its original job at the same time: the swatch and
+ * the word are still there, so it remains the key that explains what the fills
+ * mean.
+ *
+ * These first shipped as hide-toggles, where a click *removed* a status, and it
+ * was the wrong model: asking to see the completed appointments is the reason
+ * somebody presses Completed, and getting every status except that one is the
+ * opposite of the request. Combining statuses is still available on
+ * ctrl/cmd-click, which is the rarer intent and so is the one that takes the
+ * modifier. See `select()`.
+ *
+ * Two decisions worth naming:
+ *
+ *   - **Everything is on by default**, so the grid opens showing the whole
+ *     picture. A calendar that hides appointments before being asked to is a
+ *     calendar a provider cannot trust.
+ *   - **What is on screen is named out loud** beneath the row, with the count of
+ *     what is not. A filter with no visible consequence is how somebody
+ *     concludes their Thursday is free.
+ *
+ * The filter is local state rather than a prop: it is a way of looking at the
+ * range, not part of what the range *is*, and lifting it would put a view
+ * preference into the query that fetches the bookings.
  */
 
-import { useCallback, useMemo } from "react";
+import { useCallback, useMemo, useState } from "react";
 import { Calendar, luxonLocalizer, Views } from "react-big-calendar";
 import { DateTime, Settings } from "luxon";
 import Icon from "../ui/Icon";
@@ -22,6 +57,9 @@ const localizer = luxonLocalizer(DateTime, { firstDayOfWeek: 1 });
 
 /** The hour the grid opens on when there is neither a today nor a booking to aim at. */
 const FALLBACK_SCROLL_HOUR = 8;
+
+/** Every status the filter row offers, in the order the legend already printed them. */
+const ALL_STATUSES = Object.keys(STATUS_STYLES);
 
 /**
  * A time-of-day for the grid's `min`/`max`/`scrollToTime`, which read only the
@@ -157,9 +195,68 @@ export default function ProviderCalendar({
   loading = false,
   height = 720,
 }) {
+  // Every status on, so the grid opens on the whole picture. See the note above.
+  const [shown, setShown] = useState(() => new Set(ALL_STATUSES));
+
+  /** How many appointments in this range hold each status, for the row's counts. */
+  const counts = useMemo(() => {
+    const tally = {};
+    for (const booking of bookings) {
+      tally[booking.status] = (tally[booking.status] || 0) + 1;
+    }
+    return tally;
+  }, [bookings]);
+
+  const visible = useMemo(
+    // A status the legend does not know about has no toggle to turn it back on,
+    // so it is never hidden — the alternative is an appointment that cannot be
+    // recovered from the UI. `eventStyleGetter` already draws these as 'booked'.
+    () => bookings.filter((b) => shown.has(b.status) || !STATUS_STYLES[b.status]),
+    [bookings, shown]
+  );
+
+  const hiddenCount = bookings.length - visible.length;
+  const allShown = ALL_STATUSES.every((status) => shown.has(status));
+
+  /** The statuses currently on screen, named, for the line under the row. */
+  const shownLabels = ALL_STATUSES.filter((s) => shown.has(s)).map((s) => STATUS_STYLES[s].label);
+
+  /**
+   * Picks what the grid shows.
+   *
+   * A plain click means **show only this** — click Completed and you get the
+   * completed appointments, nothing else. That is what a filter is for, and it is
+   * the whole interaction most of the time.
+   *
+   * Two ways back out, so nobody can get stuck looking at one status:
+   *
+   *   - `All`, which is the obvious one.
+   *   - clicking the status that is already the only one showing, which returns
+   *     everything. The chip is its own undo.
+   *
+   * `additive` (ctrl/cmd-click) builds a combination — Booked *and* Rescheduled,
+   * say. It is deliberately the modifier rather than the default: making every
+   * click additive is what produced the backwards behaviour where clicking
+   * Completed *removed* the completed appointments. Deselecting the last one this
+   * way returns everything rather than leaving an empty grid, since a calendar
+   * showing nothing at all is never what was meant.
+   */
+  const select = (status, additive) =>
+    setShown((current) => {
+      if (additive) {
+        const next = new Set(current);
+        if (next.has(status)) next.delete(status);
+        else next.add(status);
+        return next.size === 0 ? new Set(ALL_STATUSES) : next;
+      }
+
+      const alreadyAlone = current.size === 1 && current.has(status);
+      return alreadyAlone ? new Set(ALL_STATUSES) : new Set([status]);
+    });
+
   const events = useMemo(
     () =>
-      bookings.map((booking) => ({
+      visible.map((booking) => ({
         title: `${booking.client.name} — ${booking.service.name}`,
         start: toDisplayDate(booking.startsAt, timezone),
         end: toDisplayDate(booking.endsAt, timezone),
@@ -167,7 +264,7 @@ export default function ProviderCalendar({
         // works from real data rather than from the shifted display Dates.
         resource: { booking },
       })),
-    [bookings, timezone]
+    [visible, timezone]
   );
 
   const getNow = useCallback(() => toDisplayDate(new Date(), timezone), [timezone]);
@@ -228,6 +325,87 @@ export default function ProviderCalendar({
 
   return (
     <div className="overflow-hidden rounded-lg border border-outline-variant bg-surface shadow-raise">
+      {/* Above the grid, not below it. Now that the swatches are controls rather
+          than only a key, they belong where a toolbar belongs — a filter a
+          provider has to scroll a full day of hours past to reach is a filter
+          they will not know is there. This row still prints the words beside the
+          colours, so it remains the legend as well. */}
+      <div className="border-b border-outline-variant bg-surface-container-lowest px-4 py-3">
+        <div
+          className="flex flex-wrap items-center gap-2"
+          role="group"
+          aria-label="Filter appointments by status"
+        >
+          <span className="font-caption text-caption font-semibold uppercase tracking-wide text-on-surface-variant">
+            Filters
+          </span>
+
+          <button
+            type="button"
+            onClick={() => setShown(new Set(ALL_STATUSES))}
+            disabled={allShown}
+            className="cursor-pointer rounded-md border border-outline-variant px-2.5 py-1 font-caption text-caption text-on-surface-variant transition-colors hover:bg-surface-variant disabled:cursor-default disabled:opacity-45 disabled:hover:bg-transparent"
+          >
+            All
+          </button>
+
+          <span aria-hidden="true" className="mx-0.5 h-4 w-px bg-outline-variant" />
+
+          {ALL_STATUSES.map((status) => {
+            const { label } = STATUS_STYLES[status];
+            const on = shown.has(status);
+            const count = counts[status] || 0;
+
+            return (
+              <button
+                key={status}
+                type="button"
+                onClick={(event) => select(status, event.ctrlKey || event.metaKey)}
+                aria-pressed={on}
+                // Named for a screen reader, which cannot see that the swatch
+                // has gone hollow: "Cancelled, 2 appointments" plus the pressed
+                // state is the whole control in words.
+                aria-label={`Show only ${label}, ${count} appointment${count === 1 ? "" : "s"}`}
+                // The combination is worth having but is not worth a line of
+                // instructions in the toolbar, so it lives here.
+                title={`Show only ${label} — ctrl-click to add it to what is already showing`}
+                className={`inline-flex cursor-pointer items-center gap-1.5 rounded-md border px-2.5 py-1 font-caption text-caption transition-colors ${
+                  on
+                    ? "border-outline-variant bg-surface text-on-surface shadow-raise"
+                    : "border-transparent text-on-surface-variant hover:bg-surface-variant"
+                }`}
+              >
+                <span
+                  aria-hidden="true"
+                  className="h-3 w-3 shrink-0 rounded-sm border transition-colors"
+                  style={{
+                    // Hollow when off: the swatch itself says whether the status
+                    // is being drawn, so the control reads at a glance without
+                    // depending on the button's own background.
+                    backgroundColor: on ? `var(--color-status-${status}-soft)` : "transparent",
+                    borderColor: `var(--color-status-${status})`,
+                  }}
+                />
+                {label}
+                {count > 0 && <span className="tabular-nums opacity-60">{count}</span>}
+              </button>
+            );
+          })}
+        </div>
+
+        {/* Names what is on screen, not only what is missing. A filter with no
+            visible consequence is how somebody concludes their Thursday is
+            free — and "showing Completed only" is the sentence that makes an
+            unexpectedly empty grid legible. */}
+        {!allShown && (
+          <p aria-live="polite" className="mt-2 font-caption text-caption text-on-surface-variant">
+            Showing <span className="font-semibold">{shownLabels.join(", ")}</span> only
+            {hiddenCount > 0 &&
+              ` · ${hiddenCount} appointment${hiddenCount === 1 ? "" : "s"} hidden`}
+          </p>
+        )}
+      </div>
+
       <div
         id="provider-calendar-grid"
         aria-busy={loading}
@@ -260,29 +438,6 @@ export default function ProviderCalendar({
             return `${booking.service.name} with ${booking.client.name} — ${booking.status}`;
           }}
         />
-      </div>
-
-      {/* Now that the blocks are filled rather than merely edged, the fill is
-          doing real work, and a colour nobody has been told the meaning of is
-          just decoration. The legend is the key — and it prints the words, so
-          anyone who cannot separate the hues still has the full information. */}
-      <div className="flex flex-wrap items-center gap-x-4 gap-y-2 border-t border-outline-variant bg-surface-container-lowest px-4 py-3">
-        {Object.entries(STATUS_STYLES).map(([status, { label }]) => (
-          <span
-            key={status}
-            className="inline-flex items-center gap-1.5 font-caption text-caption text-on-surface-variant"
-          >
-            <span
-              aria-hidden="true"
-              className="h-3 w-3 shrink-0 rounded-sm border"
-              style={{
-                backgroundColor: `var(--color-status-${status}-soft)`,
-                borderColor: `var(--color-status-${status})`,
-              }}
-            />
-            {label}
-          </span>
-        ))}
       </div>
 
       <p className="flex items-center gap-2 border-t border-outline-variant bg-surface-container-lowest px-4 py-3 font-caption text-caption text-on-surface-variant">

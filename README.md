@@ -660,6 +660,32 @@ unreachable in practice: the only window to set it was *during* the appointment.
 `tests/api.lifecycle.test.js` guards that exact sequence — open the dashboard,
 then mark a no-show.
 
+## Reading the calendar by status
+
+The provider calendar's status legend is also its filter, and it sits in a
+`Filters` row **above** the grid rather than under it — a control a provider has
+to scroll a full day of hours past is a control they will not know is there.
+
+**Clicking a status shows only that status.** Click `Completed` and the grid holds
+the completed appointments and nothing else. `All` brings everything back, and so
+does clicking the status that is already the only one showing, so the chip is its
+own undo. Ctrl/cmd-click combines statuses — Booked *and* Rescheduled — which is
+the rarer intent and so is the one that takes the modifier.
+
+It exists because a week with three cancellations and a no-show in it is mostly
+noise for a provider trying to read what they are actually doing on Thursday, and
+colour alone does not help — a cancelled block occupies the same space on the
+grid as a live one.
+
+Three choices worth naming. **Everything is on by default**, because a calendar
+that hides appointments before being asked to is a calendar nobody can trust.
+**Deselecting the last status returns everything** rather than emptying the grid,
+since a calendar showing nothing at all is never what was meant. And **what is on
+screen is named out loud** underneath the row — *"Showing Completed only · 7
+appointments hidden"* — because a filter with no visible consequence is how
+somebody concludes their Thursday is free. The state is local to the grid rather
+than part of the query: it is a way of looking at the range, not part of what the
+range is.
 
 ---
 
