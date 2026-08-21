@@ -407,7 +407,22 @@ export default function BookServicePage() {
               <DetailRow icon="description" term="Service">
                 <span className="font-medium text-on-surface">{service?.name}</span>
                 {serviceDetail?.description && (
-                  <span className="mt-0.5 block font-caption text-caption text-on-surface-variant">
+                  // Clamped rather than printed in full. A provider can write
+                  // several hundred words here, and this panel's job is to
+                  // confirm *which* service is being booked — a description long
+                  // enough to push the price and duration off the screen defeats
+                  // that. `title` keeps the whole text one hover away, and the
+                  // service's own page has it in full.
+                  // No `block` alongside the clamp: `line-clamp-3` sets its own
+                  // `display: -webkit-box`, and `block` overrides it — leaving
+                  // `-webkit-line-clamp` set on an element that ignores it, so
+                  // the full text renders and the clamp silently does nothing.
+                  // The clamped box is still block-level, so the line break
+                  // under the service name is unaffected.
+                  <span
+                    title={serviceDetail.description}
+                    className="mt-0.5 line-clamp-3 font-caption text-caption text-on-surface-variant"
+                  >
                     {serviceDetail.description}
                   </span>
                 )}
