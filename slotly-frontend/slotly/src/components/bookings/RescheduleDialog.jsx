@@ -63,6 +63,13 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
           // Rendered in the provider's own zone: they are the one choosing, and
           // this is their calendar.
           timezone: viewerZone,
+          // Asks for times *this* appointment could move to, rather than times a
+          // new one could be booked at. Without it the list is wrong in three
+          // ways the server can see and this dialog cannot: the appointment
+          // blocks its own move, the slots are sized from the service's current
+          // duration rather than the one this booking is held at, and a retired
+          // service answers 404. See `getSlots` and `getAvailableSlots`.
+          bookingId: booking.id,
         },
         { signal }
       ),

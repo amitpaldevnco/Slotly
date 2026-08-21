@@ -579,7 +579,7 @@ export const openApiDocument = {
         tags: ["Slots"],
         summary: "Bookable slots for one service",
         description:
-          "Slots are derived from the provider's hours, the service's duration and buffers, and existing bookings. `from` and `to` are calendar dates read in `timezone`, and `to` is inclusive. Ranges wider than 62 days are refused with RANGE_TOO_WIDE.\n\nBooking is real time: the only slot excluded for being too soon is one that has already started, so a range beginning today returns the rest of today, including slots inside the next hour. Because of that, a response held on screen goes stale — it carries no expiry, and the client should re-request rather than trust an old list.",
+          "Slots are derived from the provider's hours, the service's duration and buffers, and existing bookings. `from` and `to` are calendar dates read in `timezone`, and `to` is inclusive. Ranges wider than 62 days are refused with RANGE_TOO_WIDE.\n\nBooking is real time: the only slot excluded for being too soon is one that has already started, so a range beginning today returns the rest of today, including slots inside the next hour. Because of that, a response held on screen goes stale — it carries no expiry, and the client should re-request rather than trust an old list.\n\nPass `bookingId` when the answer will be used to reschedule that booking. It aligns the list with what `POST /bookings/{id}/reschedule` will accept: the booking stops blocking its own move, slots are sized from its snapshotted duration rather than the service's current one, and a retired service is still answered. Requires a session held by the client or provider on that booking.",
         security: [],
         parameters: [
           { name: "id", in: "path", required: true, schema: { type: "integer" } },
@@ -591,6 +591,13 @@ export const openApiDocument = {
             in: "query",
             schema: { type: "string" },
             description: "IANA zone to render in. Defaults to the signed-in user's, then UTC.",
+          },
+          {
+            name: "bookingId",
+            in: "query",
+            schema: { type: "integer" },
+            description:
+              "An existing booking this list will be used to move. Must belong to the caller and to this provider and service, and must still be active.",
           },
         ],
         responses: {
@@ -620,7 +627,8 @@ export const openApiDocument = {
             },
           },
           400: errorRef("Bad dates, or RANGE_TOO_WIDE"),
-          404: errorRef("No such service for this provider"),
+          404: errorRef("No such service for this provider, or no such booking for this caller"),
+          409: errorRef("BOOKING_NOT_ACTIVE — the `bookingId` names a booking that is already cancelled or closed"),
         },
       },
     },

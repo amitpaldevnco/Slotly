@@ -583,6 +583,33 @@ between — so they could lose it to somebody else mid-flow — and split one
 appointment's history across two unrelated rows. Both are exactly the outcomes
 the product exists to prevent.
 
+### The list a reschedule is chosen from
+
+`GET /providers/:id/slots?bookingId=…` answers a different question from the same
+endpoint without it: **"where could *this* appointment move to?"** rather than
+"where could a new one go?". Only the client or provider on the booking may ask;
+everyone else gets 404, so booking ids stay unprobeable on an otherwise public
+endpoint.
+
+Three things change, and each of them was a way for the picker to offer a button
+the write path then refused:
+
+- **Duration comes from the booking**, not the service. `rescheduleBooking` moves
+  an appointment at its snapshotted length, so a provider who shortened a
+  60-minute service to 30 made the plain list publish 16:30 on a day ending at
+  17:00 — times a 60-minute appointment cannot use.
+- **The booking stops blocking its own move.** It occupies the calendar, so the
+  plain list hid every time overlapping it, and a 60-minute 09:00 appointment
+  could not be nudged to 09:30. The write path always allowed that: PostgreSQL
+  does not compare an updated row against its own previous version.
+- **A retired service is still answered.** Retiring keeps upcoming bookings, and
+  they are still movable; the plain list requires `is_active` and 404'd, which
+  left exactly those bookings stranded.
+
+This is the same rule as everywhere else in the app — the read path and the write
+path must derive the answer from identical inputs — applied to the one read that
+had been quietly using the wrong ones.
+
 ### The outcome window
 
 An appointment that has finished is not settled immediately. For
@@ -598,6 +625,7 @@ click anything. `no_show` existed in the schema, the API and the UI, and was
 unreachable in practice: the only window to set it was *during* the appointment.
 `tests/api.lifecycle.test.js` guards that exact sequence — open the dashboard,
 then mark a no-show.
+
 
 ---
 
@@ -735,7 +763,7 @@ OpenAPI document drifts from the routes and error codes the app actually serves.
 | `tests/bookingTimezone.test.js` | A **stored instant never moves**: changing a user's timezone rewrites nothing in `bookings`, the appointment re-reads correctly in the new zone, can land on a different calendar date for the viewer, and the booking-time snapshot survives untouched as history. |
 | `tests/messagesAndReviews.test.js` | **One review per booking** under two racing submissions, rating bounds at the database level, whitespace-only messages rejected by a CHECK constraint, unread counting, and cascade behaviour when a booking is deleted. |
 | `tests/api.booking.test.js` | The double-booking guard **one layer up**, as ten clients racing over HTTP: exactly one 201, the rest a distinguishable 409 `SLOT_TAKEN`. Plus the off-grid guard, and **real-time booking through the API** — every un-started slot left today is offered and no others, and one inside the next hour books successfully. |
-| `tests/api.lifecycle.test.js` | Cancellation and its cutoff, rescheduling, status transitions and the audit timeline, all request-shaped. Plus **the timezone-change guard**: the refusal and the report it carries, that nothing is written when it refuses (not even another field in the same request), that cancelling the stranded appointment unblocks it, that a harmless move and a re-save of the current zone both go through, that a pre-existing conflict is not blamed on the change, and that a client is never blocked. |
+| `tests/api.lifecycle.test.js` | Cancellation and its cutoff, rescheduling, status transitions and the audit timeline, all request-shaped. Plus **the timezone-change guard**: the refusal and the report it carries, that nothing is written when it refuses (not even another field in the same request), that cancelling the stranded appointment unblocks it, that a harmless move and a re-save of the current zone both go through, that a pre-existing conflict is not blamed on the change, and that a client is never blocked. Plus **the reschedule slot list**: that `?bookingId=` sizes slots from the booking's own duration rather than the service's current one, that a booking does not block its own move, that a retired service still answers, and that only a party to the booking may ask. |
 
 Every time-dependent test injects `now` explicitly, so the suite cannot start
 failing in six months.

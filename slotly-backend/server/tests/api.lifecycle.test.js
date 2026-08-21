@@ -18,6 +18,7 @@ import {
   cleanupApiTestData,
   closeTestPool,
   testPool,
+  guest,
 } from "./apiHarness.js";
 
 let provider;
@@ -360,6 +361,160 @@ describe("rescheduling", () => {
       .send({ startsAt: "2020-01-01T09:00:00.000Z", reason: "Backwards" });
 
     expect(response.status).toBe(400);
+  });
+});
+
+// ---------------------------------------------------------------------------
+/**
+ * The slot list a reschedule is chosen from has to agree with what the reschedule
+ * endpoint will accept, and three things used to make it disagree. All three come
+ * from the same root cause: the plain list answers "where could a *new*
+ * appointment go?", which is not the question a reschedule asks. `?bookingId=`
+ * asks the right one — see `getAvailableSlots`.
+ *
+ * Every test here builds its own provider and service, because two of them edit
+ * or retire the service and the shared fixtures are booked against by the suites
+ * above.
+ */
+describe("the slot list used to move a booking", () => {
+  /** A provider open every day 09:00–17:00, with one service and one booking on it. */
+  async function movableBooking(label, serviceOverrides = {}) {
+    const prov = await createUser({ role: "provider", timezone: "Europe/London", label });
+    const svc = await createService(prov, { duration: 60, slot_interval: 30, ...serviceOverrides });
+    await setWeeklyHours(
+      prov,
+      [0, 1, 2, 3, 4, 5, 6].map((weekday) => ({ weekday, startTime: "09:00", endTime: "17:00" }))
+    );
+
+    const booking = await bookFirstFreeSlot(clientUser, svc, prov);
+    return { prov, svc, booking };
+  }
+
+  /** The same flattening `fetchSlots` does, for a list scoped to one booking. */
+  async function slotsForMove(agent, providerId, serviceId, bookingId) {
+    const response = await agent.get(
+      `/api/providers/${providerId}/slots?serviceId=${serviceId}` +
+        `&from=${range.from}&to=${range.to}&bookingId=${bookingId}`
+    );
+    return { response, slots: (response.body.data?.days || []).flatMap((d) => d.slots) };
+  }
+
+  it("sizes slots from the booking's own duration, not the service's current one", async () => {
+    // The failure without this: the provider halves a 60-minute service, the
+    // plain list starts publishing 16:30 on a day that ends at 17:00 because a
+    // 30-minute appointment fits there — but the booking is still held at 60
+    // minutes, so the reschedule endpoint refuses every one of those buttons.
+    const { prov, svc, booking } = await movableBooking("movedur");
+    await prov.agent.put(`/api/services/${svc.id}`).send({ duration: 30 });
+
+    const plain = await fetchSlots(clientUser.agent, prov.id, svc.id, range);
+    const { slots: scoped } = await slotsForMove(clientUser.agent, prov.id, svc.id, booking.id);
+
+    const scopedStarts = new Set(scoped.map((s) => s.startsAt));
+    const tooLate = plain.filter((s) => !scopedStarts.has(s.startsAt));
+
+    // The plain list really does offer times a 60-minute appointment cannot use.
+    expect(tooLate.length).toBeGreaterThan(0);
+
+    const refused = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: tooLate[0].startsAt });
+    expect(refused.status).toBe(409);
+    expect(refused.body.code).toBe("SLOT_UNAVAILABLE");
+
+    // And the scoped list offers only times the write path takes.
+    const destination = scoped.find((s) => s.startsAt !== booking.startsAt);
+    const accepted = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt });
+    expect(accepted.status).toBe(200);
+  });
+
+  it("does not let a booking block its own move", async () => {
+    // A 60-minute appointment at 09:00 on a 30-minute grid should be movable to
+    // 09:30. The write path allows it — PostgreSQL never compares an updated row
+    // with its own previous version — but the plain list counts the appointment
+    // as busy and hides every overlapping time.
+    const { prov, svc, booking } = await movableBooking("moveself");
+
+    const plain = await fetchSlots(clientUser.agent, prov.id, svc.id, range);
+    const { slots: scoped } = await slotsForMove(clientUser.agent, prov.id, svc.id, booking.id);
+
+    const plainStarts = new Set(plain.map((s) => s.startsAt));
+    const overlapping = scoped.filter(
+      (s) => !plainStarts.has(s.startsAt) && s.startsAt !== booking.startsAt
+    );
+
+    expect(overlapping.length).toBeGreaterThan(0);
+
+    const response = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: overlapping[0].startsAt });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.startsAt).toBe(overlapping[0].startsAt);
+  });
+
+  it("still answers for a retired service, whose bookings still go ahead", async () => {
+    // Retiring a service keeps its upcoming bookings — `deleteService` says so in
+    // as many words — and the reschedule endpoint still moves them. The plain
+    // list requires `is_active`, so without this those bookings were unmovable
+    // from the UI: the picker 404'd.
+    const { prov, svc, booking } = await movableBooking("moveretired");
+
+    const retired = await prov.agent.delete(`/api/services/${svc.id}`);
+    expect(retired.body.data.retired).toBe(true);
+
+    const plain = await clientUser.agent.get(
+      `/api/providers/${prov.id}/slots?serviceId=${svc.id}&from=${range.from}&to=${range.to}`
+    );
+    expect(plain.status).toBe(404);
+
+    const { response, slots } = await slotsForMove(clientUser.agent, prov.id, svc.id, booking.id);
+    expect(response.status).toBe(200);
+    expect(slots.length).toBeGreaterThan(0);
+
+    const destination = slots.find((s) => s.startsAt !== booking.startsAt);
+    const moved = await clientUser.agent
+      .post(`/api/bookings/${booking.id}/reschedule`)
+      .send({ startsAt: destination.startsAt });
+    expect(moved.status).toBe(200);
+  });
+
+  it("only tells a party to the booking, and never whether an id exists", async () => {
+    const { prov, svc, booking } = await movableBooking("moveauth");
+
+    // Someone else's booking, a signed-out visitor, and an id that was never
+    // issued all answer alike — otherwise this is an existence oracle over
+    // booking ids on an endpoint that is otherwise public.
+    const outsider = await slotsForMove(bystander.agent, prov.id, svc.id, booking.id);
+    expect(outsider.response.status).toBe(404);
+
+    const anonymous = await slotsForMove(guest(), prov.id, svc.id, booking.id);
+    expect(anonymous.response.status).toBe(404);
+
+    const unknown = await slotsForMove(clientUser.agent, prov.id, svc.id, 999_999_999);
+    expect(unknown.response.status).toBe(404);
+
+    // The provider on the booking is a party too, and gets a real answer.
+    const owner = await slotsForMove(prov.agent, prov.id, svc.id, booking.id);
+    expect(owner.response.status).toBe(200);
+  });
+
+  it("rejects a malformed bookingId, and says why a closed booking has no slots", async () => {
+    const { prov, svc, booking } = await movableBooking("movebad");
+
+    const malformed = await clientUser.agent.get(
+      `/api/providers/${prov.id}/slots?serviceId=${svc.id}&from=${range.from}&to=${range.to}&bookingId=abc`
+    );
+    expect(malformed.status).toBe(400);
+    expect(malformed.body.details[0].field).toBe("bookingId");
+
+    await clientUser.agent.post(`/api/bookings/${booking.id}/cancel`).send({});
+
+    const { response } = await slotsForMove(clientUser.agent, prov.id, svc.id, booking.id);
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("BOOKING_NOT_ACTIVE");
   });
 });
 

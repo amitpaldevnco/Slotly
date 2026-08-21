@@ -19,7 +19,7 @@ import { query } from "../config/dbConfig.js";
 import { successResponse, errorResponse, ERROR_CODES } from "../responseController/responseHandler.js";
 import { generateSlots, MAX_RANGE_DAYS } from "../services/slotEngine.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
-import { TIME_FORMAT } from "../services/bookingRules.js";
+import { TIME_FORMAT, ACTIVE_STATUSES } from "../services/bookingRules.js";
 import { parseId } from "../middleware/validateParams.js";
 
 /**
@@ -33,12 +33,38 @@ import { parseId } from "../middleware/validateParams.js";
  * means their Monday, which is a different UTC span than a client in Los Angeles
  * asking the same thing — so the dates are resolved against the caller's zone
  * before anything else happens.
+ *
+ * ## `bookingId` — asking "where could *this* appointment move to?"
+ *
+ * Without it, this endpoint answers "where could a *new* appointment go?", and
+ * that is the wrong question for a reschedule. Three things differ, and all
+ * three used to make the picker disagree with `POST /bookings/:id/reschedule`:
+ *
+ *   1. **Duration.** A reschedule keeps the booking's `duration_snapshot`, not
+ *      the service's current length (see `rescheduleBooking`). A provider who
+ *      shortened a 60-minute service to 30 made this endpoint publish late-window
+ *      starts — 16:30 on a day ending at 17:00 — that the write path then refused
+ *      because the appointment is still 60 minutes long. Every one of those
+ *      buttons was unbookable.
+ *   2. **Its own span.** A booking occupies the calendar, so the plain query
+ *      counted the appointment being moved as busy and hid every time overlapping
+ *      it. Nudging a 60-minute 09:00 appointment to 09:30 was impossible from the
+ *      UI, even though the write path accepts it — PostgreSQL never compares an
+ *      updated row against its own previous version.
+ *   3. **A retired service.** Retiring a service keeps its bookings ("N upcoming
+ *      bookings will still go ahead"), and `rescheduleBooking` still moves them.
+ *      The plain query requires `is_active`, so the picker 404'd and those
+ *      bookings could not be moved at all.
+ *
+ * Only a party to the booking may pass it, and an unknown id, someone else's
+ * booking and a booking on another service all answer 404 alike — booking ids
+ * are not probeable here any more than they are on `/bookings/:id`.
  */
 export const getAvailableSlots = async (req, res) => {
   try {
     // Mounted at /api/providers/:id/slots, so the path parameter is `id`.
     const providerId = req.params.id;
-    const { serviceId, from, to } = req.query;
+    const { serviceId, from, to, bookingId } = req.query;
 
     if (!serviceId) {
       return errorResponse(res, "serviceId is required", 400, ERROR_CODES.VALIDATION_FAILED);
@@ -55,25 +81,58 @@ export const getAvailableSlots = async (req, res) => {
       ]);
     }
 
+    if (bookingId !== undefined && parseId(bookingId) === null) {
+      return errorResponse(res, "bookingId must be a positive whole number", 400, ERROR_CODES.VALIDATION_FAILED, [
+        { field: "bookingId", message: "bookingId must be a positive whole number" },
+      ]);
+    }
+
+    // Resolved before the service is loaded, because whether a retired service
+    // is allowed depends on the answer.
+    let moving = null;
+    if (bookingId !== undefined) {
+      const resolved = await resolveBookingBeingMoved({
+        bookingId,
+        providerId,
+        serviceId,
+        userId: req.user?.userId,
+      });
+
+      if (resolved.error) {
+        return errorResponse(res, resolved.error.message, resolved.error.status, resolved.error.code);
+      }
+      moving = resolved.booking;
+    }
+
     const service = await query(
       // `u.currency` is selected for the response, not for the slot maths. It is
       // the provider's ISO 4217 code, and the booking page prices the service
       // from this payload — without it the client had no currency to render and
       // fell back to a default, so a London provider's £75 service was shown to
       // clients as ₹75 at the exact moment they were deciding to book it.
+      //
+      // `$3` relaxes the `is_active` requirement for a reschedule only. A
+      // retired service is unbookable, but an appointment already on it is still
+      // going ahead and still movable — see the note on `bookingId` above.
       `SELECT s.*, u.timezone AS provider_timezone, u.id AS provider_id,
               u.currency AS provider_currency
        FROM services s
        JOIN users u ON u.id = s.provider_id
-       WHERE s.id = $1 AND s.provider_id = $2 AND s.is_active AND u.role = 'provider'`,
-      [serviceId, providerId]
+       WHERE s.id = $1 AND s.provider_id = $2 AND (s.is_active OR $3) AND u.role = 'provider'`,
+      [serviceId, providerId, Boolean(moving)]
     );
 
     if (service.rows.length === 0) {
       return errorResponse(res, "Service not found for this provider", 404, ERROR_CODES.NOT_FOUND);
     }
 
-    const row = service.rows[0];
+    // The service as the *write path* will read it. `rescheduleBooking` sizes the
+    // moved appointment with the booking's snapshotted duration and the service's
+    // current buffers and grid; generating slots any other way publishes times
+    // that endpoint rejects. Everything else on the row is untouched.
+    const row = moving
+      ? { ...service.rows[0], duration: moving.duration_snapshot }
+      : service.rows[0];
     const viewerTimezone = await resolveViewerTimezone(req.query.timezone, req.user?.userId);
 
     const rangeStart = DateTime.fromISO(String(from || ""), { zone: viewerTimezone }).startOf("day");
@@ -122,13 +181,21 @@ export const getAvailableSlots = async (req, res) => {
       // The && range-overlap operator is what makes this use the GiST index that
       // the bookings exclusion constraint already maintains, so this stays cheap
       // no matter how much history the provider has accumulated.
+      //
+      // `$4` drops the booking being moved out of its own busy list. It has to
+      // go, and not merely for tidiness: PostgreSQL does not compare an updated
+      // row against its own previous version, so the write path happily moves a
+      // 60-minute appointment from 09:00 to 09:30 while leaving it here made the
+      // picker hide every time that overlapped it. NULL for an ordinary read, so
+      // the predicate collapses and the plan is unchanged.
       query(
         `SELECT blocked_from, blocked_to
          FROM bookings
          WHERE provider_id = $1
            AND status <> 'cancelled'
+           AND ($4::int IS NULL OR id <> $4)
            AND tstzrange(blocked_from, blocked_to) && tstzrange($2, $3)`,
-        [providerId, lookbackStart, lookaheadEnd]
+        [providerId, lookbackStart, lookaheadEnd, moving ? moving.id : null]
       ),
     ]);
 
@@ -189,6 +256,70 @@ export const getAvailableSlots = async (req, res) => {
     return errorResponse(res, "Could not fetch slots", 500);
   }
 };
+
+/**
+ * Loads the booking a `?bookingId=` reschedule query refers to, or explains why not.
+ *
+ * Authorization is the same shape the booking endpoints use: only the client or
+ * the provider on the booking may ask, and every failure that would reveal
+ * whether an id exists — no such booking, someone else's booking, a booking on a
+ * different provider or service — answers 404 with the same wording. The one
+ * distinguishable refusal is a booking that is no longer active, which the caller
+ * already knows about because they are looking at it.
+ *
+ * @param {object} args
+ * @param {string|number} args.bookingId Already checked to be a positive integer.
+ * @param {string|number} args.providerId From the path.
+ * @param {string|number} args.serviceId From the query string.
+ * @param {number|undefined} args.userId Signed-in user, if any.
+ * @returns {Promise<{booking?: object, error?: {message: string, status: number, code: string}}>}
+ */
+async function resolveBookingBeingMoved({ bookingId, providerId, serviceId, userId }) {
+  const notFound = {
+    error: { message: "Booking not found", status: 404, code: ERROR_CODES.NOT_FOUND },
+  };
+
+  // A guest cannot be a party to a booking, so there is nothing to authorize
+  // against — answered as "not found" rather than 401 so the two cases are
+  // indistinguishable from outside.
+  if (!userId) return notFound;
+
+  const result = await query(
+    `SELECT id, provider_id, client_id, service_id, status, duration_snapshot
+     FROM bookings WHERE id = $1`,
+    [bookingId]
+  );
+
+  if (result.rows.length === 0) return notFound;
+  const booking = result.rows[0];
+
+  const isParty =
+    Number(booking.client_id) === Number(userId) || Number(booking.provider_id) === Number(userId);
+
+  if (!isParty) return notFound;
+
+  // The booking has to be the one this request is actually about. Mismatched ids
+  // are a client bug, but answering them with slots sized from an unrelated
+  // booking's snapshot would be a silent wrong answer.
+  if (
+    Number(booking.provider_id) !== Number(providerId) ||
+    Number(booking.service_id) !== Number(serviceId)
+  ) {
+    return notFound;
+  }
+
+  if (!ACTIVE_STATUSES.includes(booking.status)) {
+    return {
+      error: {
+        message: `This booking is already ${booking.status.replace("_", "-")}.`,
+        status: 409,
+        code: ERROR_CODES.BOOKING_NOT_ACTIVE,
+      },
+    };
+  }
+
+  return { booking };
+}
 
 /**
  * Picks the timezone to render slots in.

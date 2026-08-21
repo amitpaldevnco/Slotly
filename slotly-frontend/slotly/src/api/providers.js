@@ -52,11 +52,19 @@ export const getAvailability = (providerId, params = {}, options = {}) =>
  * Bookable slots for one service over a date range.
  *
  * @param {number} providerId
- * @param {{serviceId: number, from: string, to: string, timezone?: string}} params
+ * @param {{serviceId: number, from: string, to: string, timezone?: string,
+ *          bookingId?: number}} params
  *   `from` and `to` are "YYYY-MM-DD" and are read as calendar dates in the
  *   viewer's zone, with `to` inclusive. `timezone` is honoured only for a
  *   signed-out visitor; a signed-in user always gets their saved zone, so the
  *   same person cannot see two different clocks on two screens.
+ *
+ *   `bookingId` switches the question from "where could a new appointment go?"
+ *   to "where could *this* one move to?" — the appointment stops blocking its own
+ *   move, its snapshotted duration is used instead of the service's current one,
+ *   and a retired service is still answered. Pass it whenever the answer will be
+ *   used to reschedule, or the picker will offer times the reschedule endpoint
+ *   refuses.
  * @returns Slots grouped by the viewer's local date, each carrying both
  *   `clientTime` and `providerTime`. Ranges wider than 62 days reject with
  *   `RANGE_TOO_WIDE`.
