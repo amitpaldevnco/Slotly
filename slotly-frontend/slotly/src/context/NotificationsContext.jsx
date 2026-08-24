@@ -40,6 +40,7 @@ export function NotificationsProvider({ children }) {
   const [unreadByBooking, setUnreadByBooking] = useState({});
   const [health, setHealth] = useState(null);
   const [services, setServices] = useState([]);
+  const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(false);
   const [fetchedAt, setFetchedAt] = useState(0);
 
@@ -55,10 +56,15 @@ export function NotificationsProvider({ children }) {
         // Every one of these is non-fatal on its own. A failed health check must
         // not blank the unread badge, and a failed unread count must not hide a
         // provider's broken availability.
-        const [unreadResult, healthResult, servicesResult] = await Promise.all([
+        const [unreadResult, healthResult, servicesResult, summaryResult] = await Promise.all([
           bookingsApi.unreadCount({ signal }).catch(() => null),
           isProvider ? availabilityApi.getHealth({ signal }).catch(() => null) : null,
           isProvider ? providersApi.listServices(userId, { signal }).catch(() => []) : [],
+          // Wanted only for `awaitingOutcome` — how many finished appointments
+          // still need a result. Nothing settles those automatically, so the
+          // prompt has to reach the provider wherever they are in the app, not
+          // only on the dashboard panel that lists them.
+          isProvider ? bookingsApi.summary({ signal }).catch(() => null) : null,
         ]);
 
         if (signal?.aborted) return;
@@ -67,6 +73,7 @@ export function NotificationsProvider({ children }) {
         setUnreadByBooking(unreadResult?.byBooking ?? {});
         setHealth(healthResult);
         setServices(servicesResult ?? []);
+        setSummary(summaryResult);
         setFetchedAt(Date.now());
       } finally {
         if (!signal?.aborted) setLoading(false);
@@ -129,6 +136,7 @@ export function NotificationsProvider({ children }) {
       setUnreadByBooking({});
       setHealth(null);
       setServices([]);
+      setSummary(null);
       setFetchedAt(0);
       return undefined;
     }
@@ -145,8 +153,8 @@ export function NotificationsProvider({ children }) {
   }, [fetchedAt, load]);
 
   const notices = useMemo(
-    () => buildNotices({ user, unread, health, services }),
-    [user, unread, health, services]
+    () => buildNotices({ user, unread, health, services, summary }),
+    [user, unread, health, services, summary]
   );
 
   const value = useMemo(
@@ -187,13 +195,35 @@ export function useNotifications() {
  * things the user must fix and are also rendered inline on the page that fixes
  * them; `info` entries are just news.
  */
-function buildNotices({ user, unread, health, services }) {
+function buildNotices({ user, unread, health, services, summary }) {
   if (!user) return [];
 
   const notices = [];
   const isProvider = user.role === "provider";
 
   if (isProvider) {
+    // First in the list: every other provider warning describes a setting that
+    // could be better, while this one is finished work with money attached that
+    // will not resolve itself. Nothing marks an appointment completed or
+    // no-show automatically, so if the provider never acts, the appointment
+    // stays unrecorded and its fee is never counted.
+    const pendingOutcomes = summary?.awaitingOutcome ?? 0;
+    if (pendingOutcomes > 0) {
+      notices.push({
+        id: "awaiting-outcome",
+        kind: "warning",
+        tone: "warn",
+        icon: "event_available",
+        title:
+          pendingOutcomes === 1
+            ? "1 appointment has ended"
+            : `${pendingOutcomes} appointments have ended`,
+        body: "Please mark the result as Completed or No-show.",
+        to: "/dashboard",
+        actionLabel: "Record result",
+      });
+    }
+
     if (services.length === 0) {
       notices.push({
         id: "no-services",

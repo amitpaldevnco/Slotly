@@ -744,15 +744,24 @@ describe("status transitions", () => {
 
 // ---------------------------------------------------------------------------
 /**
- * The window in which a finished appointment's outcome is still the provider's
- * to record.
+ * A finished appointment's outcome is the provider's to record, with no deadline.
  *
- * These exist because of a real defect. Auto-completion used to fire the moment
- * `ends_at` passed, and it runs lazily on *read* — so the provider opening their
- * dashboard settled every finished appointment as 'completed' before they could
- * click anything. 'no_show' was in the schema, the API and the UI, and could not
- * be reached: the only window was *during* the appointment. The first test below
- * is the regression guard for exactly that sequence.
+ * These exist because of two successive defects, both caused by the app deciding
+ * an outcome it had no way of knowing.
+ *
+ * Auto-completion first fired the moment `ends_at` passed, and it ran lazily on
+ * *read* — so the provider opening their dashboard settled every finished
+ * appointment as 'completed' before they could click anything. 'no_show' was in
+ * the schema, the API and the UI, and was unreachable in practice.
+ *
+ * A one-hour grace period fixed the symptom and kept the cause: a provider who
+ * opened the app 61 minutes late still lost the outcome, and since 'completed'
+ * is terminal and feeds lifetime earnings, an unrecorded no-show became
+ * permanent phantom revenue.
+ *
+ * There is now no automatic settlement at all. These tests pin that down from
+ * both ends — nothing settles on its own however long it has been, and the
+ * provider can still record either outcome however long they take.
  */
 describe("the outcome window after an appointment ends", () => {
   /**
@@ -809,33 +818,31 @@ describe("the outcome window after an appointment ends", () => {
     expect(detail.body.data.status).toBe("booked");
   });
 
-  it("completes it once the window has closed, and says the system did it", async () => {
+  it("never settles it on its own, however long ago it ended", async () => {
     const booking = await bookFirstFreeSlot();
-    // Comfortably past the one-hour grace.
+    // Three hours — well past the grace period this app used to have.
     await endBookingMinutesAgo(booking.id, 180);
 
     const detail = await provider.agent.get(`/api/bookings/${booking.id}`);
-    expect(detail.body.data.status).toBe("completed");
 
-    // Attributed to 'system', not to whichever party happened to load the page,
-    // and with no user behind it.
-    const entry = detail.body.data.timeline.find((e) => e.toStatus === "completed");
-    expect(entry.actor.role).toBe("system");
-    expect(entry.actor.id).toBeNull();
+    expect(detail.body.data.status).toBe("booked");
+    // Nothing wrote a transition, so there is no 'system' actor anywhere on it.
+    expect(detail.body.data.timeline.some((e) => e.actor?.role === "system")).toBe(false);
   });
 
-  it("will not accept no-show once the window has closed", async () => {
+  it("still accepts no-show long after the appointment ended", async () => {
     const booking = await bookFirstFreeSlot();
     await endBookingMinutesAgo(booking.id, 400);
 
+    // Reading it first is the step that used to close the window.
     await provider.agent.get(`/api/bookings/${booking.id}`);
 
     const response = await provider.agent
       .patch(`/api/bookings/${booking.id}/status`)
       .send({ status: "no_show" });
 
-    expect(response.status).toBe(409);
-    expect(response.body.code).toBe("BOOKING_NOT_ACTIVE");
+    expect(response.status).toBe(200);
+    expect(response.body.data.status).toBe("no_show");
   });
 });
 

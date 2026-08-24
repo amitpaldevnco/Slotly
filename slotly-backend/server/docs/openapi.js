@@ -1262,8 +1262,16 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
           {
             name: "scope",
             in: "query",
-            schema: { type: "string", enum: ["upcoming", "past", "all"], default: "all" },
-            description: "`upcoming` means future *and* still active.",
+            schema: {
+              type: "string",
+              enum: ["upcoming", "past", "all", "awaiting_outcome"],
+              default: "all",
+            },
+            description:
+              "`upcoming` means future *and* still active. `awaiting_outcome` means finished " +
+              "*and* still active — appointments the provider has not yet marked completed or " +
+              "no-show. Nothing settles those automatically, so this is the provider's outcome " +
+              "queue; it is returned oldest-first.",
           },
           { name: "status", in: "query", schema: { type: "string" }, description: "Comma-separated" },
           { name: "serviceId", in: "query", schema: { type: "integer" } },
@@ -1421,10 +1429,16 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
           `${bearerNote} Provider only. Computed in SQL rather than by summing a fetched list, so the ` +
           "figures stay correct however much history exists — the booking list caps at 500 rows, which is " +
           "fine for a page of cards and wrong for a total. Earnings count only `completed` bookings: an " +
-          "appointment that has not happened yet was not delivered, and a cancelled one was never paid for.",
+          "appointment that has not happened yet was not delivered, and a cancelled one was never paid for. " +
+          "Nothing reaches `completed` without the provider recording it, so a finished appointment they " +
+          "have not settled yet contributes nothing to `totalEarnings`; it is reported separately as " +
+          "`awaitingOutcome` (how many) and `awaitingOutcomeValue` (what they are worth if all are marked " +
+          "completed), which is deliberately not folded into the earnings figure.",
         responses: {
           200: {
-            description: "`{ totalEarnings, completedBookings, upcomingBookings, cancelledBookings, totalBookings }`",
+            description:
+              "`{ totalEarnings, completedBookings, upcomingBookings, cancelledBookings, " +
+              "awaitingOutcome, awaitingOutcomeValue, totalBookings }`",
           },
           401: errorRef("No session"),
           403: errorRef("FORBIDDEN — client accounts have no summary"),

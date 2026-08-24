@@ -15,23 +15,34 @@ export const BOOKING_STATUSES = ["booked", "rescheduled", "cancelled", "complete
 export const ACTIVE_STATUSES = ["booked", "rescheduled"];
 
 /**
- * How long after an appointment ends the provider still owns its outcome.
+ * True when an appointment has finished but nobody has said how it went.
  *
- * Nothing is settled automatically inside this window. Once it closes, a booking
- * nobody recorded an outcome for is taken to have happened — see
- * `autoCompleteExpired()` in the booking controller.
+ * ## Why nothing settles on its own
  *
- * The window exists because the alternative has no window at all: settling on
- * `ends_at` meant the first read after an appointment finished flipped it to
- * 'completed', and since opening the dashboard *is* a read, a provider could
- * never mark a no-show for an appointment that had already ended. The status
- * existed in the schema, the API and the UI, and was unreachable in practice.
+ * An earlier version of this app completed a finished appointment automatically:
+ * first on `ends_at`, then after a one-hour grace period. Both were wrong, for
+ * the same underlying reason — the app was inventing a fact it did not have.
  *
- * An hour is long enough to cover the realistic case — the client never turned
- * up, the provider waits, finishes the session slot, then records it — without
- * leaving yesterday's calendar ambiguous.
+ * Whether a client turned up is not derivable from the clock. Only the provider
+ * knows, and `price_snapshot` for a 'completed' booking feeds straight into
+ * lifetime earnings, so guessing meant a no-show the provider never got round to
+ * recording was silently counted as money earned, permanently: 'completed' is
+ * terminal, so there was no way back.
+ *
+ * The grace period only moved the deadline; it did not remove it. A provider who
+ * opened the app 61 minutes late still lost the outcome. So there is now no
+ * deadline at all. A finished appointment stays in its active status until the
+ * provider records 'completed' or 'no_show' themselves, however long that takes,
+ * and this predicate is what the API uses to keep asking them to.
+ *
+ * @param {{status: string, ends_at: Date|string}} booking
+ * @param {Date} [now] Instant to judge against.
+ * @returns {boolean} True when the appointment is over and still unrecorded.
  */
-export const OUTCOME_GRACE_MINUTES = 60;
+export function awaitsOutcome(booking, now = new Date()) {
+  if (!ACTIVE_STATUSES.includes(booking.status)) return false;
+  return toDate(booking.ends_at).getTime() <= now.getTime();
+}
 
 /**
  * Decides whether a client may still cancel their own booking.

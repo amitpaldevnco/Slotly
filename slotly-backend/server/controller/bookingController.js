@@ -41,7 +41,7 @@ import {
   describeRescheduleTerms,
   summariseAcceptedTerms,
   ACTIVE_STATUSES,
-  OUTCOME_GRACE_MINUTES,
+  awaitsOutcome,
 } from "../services/bookingRules.js";
 
 /** SQLSTATE raised by PostgreSQL when an exclusion constraint rejects a row. */
@@ -130,6 +130,12 @@ function serialiseBooking(row, { viewerRole } = {}) {
     cancellationReason: row.cancellation_reason,
     cancelledAt: row.cancelled_at,
     cancellationCutoffHours: row.cancellation_cutoff_hours_snapshot,
+    // "This appointment is over and nobody has said how it went." Sent to both
+    // parties because the client's own history should not show a finished
+    // appointment as merely 'booked' with no explanation, but only the provider
+    // is offered the two buttons — see `evaluateProviderTransition`. Nothing
+    // about this flag changes the status; it is the prompt, not the decision.
+    awaitingOutcome: awaitsOutcome(row, new Date()),
     // Precomputed so the UI never has to re-implement the cutoff rule to decide
     // whether to show a Cancel or Reschedule button. The server still re-checks
     // on the call — these are affordances, not the enforcement.
@@ -186,56 +192,24 @@ function describeServiceChangesFor(row, viewerRole) {
   };
 }
 
-/**
- * Flips any booking that is still 'booked'/'rescheduled' over to 'completed'
- * once its outcome window has closed — that is, once it ended more than
- * `OUTCOME_GRACE_MINUTES` ago. The provider owns the outcome inside that window
- * and can still record completed, no-show or cancelled; after it, a booking
- * nobody recorded is taken to have happened.
+/* ---------------------------------------------------------------------------
+ * Nothing settles a finished appointment automatically. This is deliberate, and
+ * this note is here because its absence is the surprising part.
  *
- * The grace period is the whole point of this function's timing. Settling on
- * `ends_at` exactly meant any read — including the dashboard list the provider
- * opens in order to record the outcome — closed the window before they could
- * act, which made 'no_show' unreachable. See OUTCOME_GRACE_MINUTES.
+ * There used to be an `autoCompleteExpired()` here, run lazily on every read,
+ * which flipped any finished-but-unrecorded booking to 'completed' — first on
+ * `ends_at`, later after a one-hour grace period. It is gone. Whether a client
+ * turned up is not something the clock knows, and 'completed' is both terminal
+ * and the status lifetime earnings are summed over, so guessing it turned every
+ * no-show the provider was slow to record into permanent phantom revenue.
  *
- * Runs lazily on read, scoped to whichever rows a given request needs, and logs
- * the transition as a 'system' actor in the audit trail.
- */
-async function autoCompleteExpired(whereClause, params) {
-  // Interval arithmetic in SQL rather than a JS cutoff instant, so the
-  // comparison uses the database's clock — the same one NOW() and every
-  // timestamp default already use.
-  //
-  // The grace is interpolated rather than bound because callers supply their own
-  // `$2`, `$3`… in `whereClause`, and inserting a placeholder here would silently
-  // renumber every one of them. Number() on our own module constant makes the
-  // interpolation inert: it is never request-derived, and a non-numeric value
-  // could not survive the coercion.
-  const graceMinutes = Number(OUTCOME_GRACE_MINUTES);
-  const expired = await query(
-    `SELECT id, status FROM bookings
-     WHERE status = ANY($1)
-       AND ends_at <= NOW() - INTERVAL '${graceMinutes} minutes'
-       AND ${whereClause}`,
-    [ACTIVE_STATUSES, ...params]
-  );
-  if (expired.rows.length === 0) return;
-
-  const ids = expired.rows.map((r) => r.id);
-  await transaction(async (tx) => {
-    await tx.query(`UPDATE bookings SET status = 'completed', updated_at = NOW() WHERE id = ANY($1)`, [ids]);
-    for (const row of expired.rows) {
-      await recordEvent(tx, {
-        bookingId: row.id,
-        fromStatus: row.status,
-        toStatus: "completed",
-        actorId: null,
-        actorRole: "system",
-        reason: `Automatically completed — ${OUTCOME_GRACE_MINUTES} minutes passed after the appointment ended without the provider recording an outcome.`,
-      });
-    }
-  });
-}
+ * A finished appointment now keeps its active status until the provider records
+ * 'completed' or 'no_show'. `awaitsOutcome()` in services/bookingRules.js is the
+ * predicate for "over, and still unrecorded"; it is surfaced on every serialised
+ * booking as `awaitingOutcome`, counted on the dashboard summary, and listable
+ * via `GET /bookings?scope=awaiting_outcome`, which together are what prompt the
+ * provider instead of deciding for them.
+ * ------------------------------------------------------------------------- */
 
 /**
  * The SELECT every read in this file shares, so the shapes never drift apart.
@@ -518,16 +492,23 @@ export const getBookingSummary = async (req, res) => {
       return errorResponse(res, "Only providers have a booking summary", 403, ERROR_CODES.FORBIDDEN);
     }
 
-    await autoCompleteExpired("provider_id = $2", [req.user.userId]);
-
     // Earnings count only completed appointments — a booked-but-not-yet-happened
     // appointment has not been rendered, and a cancelled one was never paid for.
+    //
+    // Nothing reaches 'completed' without the provider saying so, so a finished
+    // appointment they have not recorded yet contributes nothing here. That is
+    // the point: `awaiting_outcome` counts exactly those, and it is money the
+    // provider may well have earned but has not confirmed. Reporting the two
+    // separately is what stops the dashboard quietly banking the difference.
     const result = await query(
       `SELECT
          COALESCE(SUM(price_snapshot) FILTER (WHERE status = 'completed'), 0) AS total_earnings,
          COUNT(*) FILTER (WHERE status = 'completed') AS completed_bookings,
          COUNT(*) FILTER (WHERE status = ANY($2) AND starts_at >= NOW()) AS upcoming_bookings,
          COUNT(*) FILTER (WHERE status = 'cancelled') AS cancelled_bookings,
+         COUNT(*) FILTER (WHERE status = ANY($2) AND ends_at <= NOW()) AS awaiting_outcome,
+         COALESCE(SUM(price_snapshot) FILTER (WHERE status = ANY($2) AND ends_at <= NOW()), 0)
+           AS awaiting_outcome_value,
          COUNT(*) AS total_bookings
        FROM bookings
        WHERE provider_id = $1`,
@@ -540,6 +521,11 @@ export const getBookingSummary = async (req, res) => {
       completedBookings: Number(row.completed_bookings),
       upcomingBookings: Number(row.upcoming_bookings),
       cancelledBookings: Number(row.cancelled_bookings),
+      // How many finished appointments still need a result recorded, and what
+      // they are worth if every one of them is marked completed. The value is
+      // explicitly *not* folded into `totalEarnings`.
+      awaitingOutcome: Number(row.awaiting_outcome),
+      awaitingOutcomeValue: Number(row.awaiting_outcome_value),
       totalBookings: Number(row.total_bookings),
     });
   } catch (err) {
@@ -565,11 +551,6 @@ export const listBookings = async (req, res) => {
     }
     const role = user.rows[0].role;
 
-    await autoCompleteExpired(
-      role === "provider" ? "provider_id = $2" : "client_id = $2",
-      [req.user.userId]
-    );
-
     const conditions = [role === "provider" ? "b.provider_id = $1" : "b.client_id = $1"];
     const params = [req.user.userId];
 
@@ -579,6 +560,14 @@ export const listBookings = async (req, res) => {
       // "Upcoming" means still going to happen *and* still live — a cancelled
       // appointment next Tuesday belongs in history, not on the agenda.
       conditions.push(`b.starts_at >= NOW() AND b.status = ANY($${params.length + 1})`);
+      params.push(ACTIVE_STATUSES);
+    } else if (scope === "awaiting_outcome") {
+      // Finished, still active: the provider has not recorded completed or
+      // no-show yet. The mirror of the `awaitingOutcome` count on the summary,
+      // and what the dashboard's reminder panel lists. Ordered oldest-first
+      // below, because the appointment that has been waiting longest is the one
+      // whose details the provider is most at risk of forgetting.
+      conditions.push(`b.ends_at <= NOW() AND b.status = ANY($${params.length + 1})`);
       params.push(ACTIVE_STATUSES);
     } else if (scope === "past") {
       conditions.push(`(b.starts_at < NOW() OR b.status NOT IN ('booked','rescheduled'))`);
@@ -623,8 +612,10 @@ export const listBookings = async (req, res) => {
     }
 
     // Upcoming reads best oldest-first (what is next?); history reads best
-    // newest-first (what happened most recently?).
-    const order = scope === "upcoming" ? "ASC" : "DESC";
+    // newest-first (what happened most recently?). An outcome queue is a to-do
+    // list rather than history, so it reads oldest-first too — clear the
+    // backlog from the far end.
+    const order = scope === "upcoming" || scope === "awaiting_outcome" ? "ASC" : "DESC";
 
     const result = await query(
       `${BOOKING_SELECT} WHERE ${conditions.join(" AND ")} ORDER BY b.starts_at ${order} LIMIT 500`,
@@ -664,8 +655,6 @@ export const getBooking = async (req, res) => {
       // it leaks that the provider had an appointment at that id.
       return errorResponse(res, "Booking not found", 404, ERROR_CODES.NOT_FOUND);
     }
-
-    await autoCompleteExpired("id = $2", [req.params.id]);
 
     const result = await query(`${BOOKING_SELECT} WHERE b.id = $1`, [req.params.id]);
     if (result.rows.length === 0) {
@@ -1083,14 +1072,6 @@ export const updateBookingStatus = async (req, res) => {
     }
 
     // Settle the grace period *before* reading the row this decision is made on.
-    // Without it a provider who never opened their dashboard could still mark an
-    // appointment from last week as a no-show: nothing had run auto-completion
-    // for it, so it was still 'booked' and the transition looked legal. Every
-    // other endpoint that reads a booking already does this; this one was the
-    // gap, and it is the one endpoint where the stale status is not merely
-    // displayed but acted on.
-    await autoCompleteExpired("id = $2", [req.params.id]);
-
     const existing = await query("SELECT * FROM bookings WHERE id = $1", [req.params.id]);
     if (existing.rows.length === 0) {
       return errorResponse(res, "Booking not found", 404, ERROR_CODES.NOT_FOUND);

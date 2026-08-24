@@ -16,7 +16,7 @@
  * their own — `/calendar` and `/appointments` — matching the reference's sidebar.
  */
 
-import { useMemo } from "react";
+import { useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { DateTime } from "luxon";
 import * as bookingsApi from "../../api/bookings";
@@ -24,6 +24,8 @@ import * as providersApi from "../../api/providers";
 import * as messagesApi from "../../api/messages";
 import { useApiResource } from "../../hooks/useApiResource";
 import { useNotifications } from "../../context/NotificationsContext";
+import { useToast } from "../../context/ToastContext";
+import { parseApiError } from "../../api/client";
 import Avatar from "../ui/Avatar";
 import Icon from "../ui/Icon";
 import { SkeletonBlock, SkeletonRows } from "../ui/Feedback";
@@ -33,13 +35,13 @@ import { container, formatPrice, formatDuration, statusStyle, zoneName } from ".
 export default function ProviderDashboard({ user }) {
   // The account-health warnings are already loaded once per session by the
   // shell, so this screen reads them rather than repeating the requests.
-  const { warnings, unread } = useNotifications();
+  const { warnings, unread, reload: reloadNotices } = useNotifications();
 
   // The zone everything on this screen is drawn in: the provider's saved zone,
   // read from their user row. Nothing here consults the device's zone.
   const timezone = user.timezone || "UTC";
 
-  const { data: overview, loading: overviewLoading } = useApiResource(
+  const { data: overview, loading: overviewLoading, reload: reloadOverview } = useApiResource(
     async ({ signal }) => {
       const [services, summary] = await Promise.all([
         providersApi.listServices(user.id, { signal }).catch(() => []),
@@ -53,8 +55,27 @@ export default function ProviderDashboard({ user }) {
   const services = overview?.services ?? [];
   const summary = overview?.summary ?? null;
 
+  // Appointments that have finished with no result recorded. Nothing settles
+  // these automatically — see the note above `awaitsOutcome()` on the server —
+  // so this list is the only thing that gets them resolved, and it sits at the
+  // top of the page for that reason.
+  const {
+    data: outcomeData,
+    loading: outcomeLoading,
+    reload: reloadOutcomeQueue,
+  } = useApiResource(
+    ({ signal }) =>
+      bookingsApi
+        .list({ scope: "awaiting_outcome" }, { signal })
+        // A failure here must not take the whole dashboard down with it.
+        .catch(() => ({ bookings: [] })),
+    { deps: [user.id], initialData: { bookings: [] } }
+  );
+
+  const awaitingOutcome = outcomeData?.bookings ?? [];
+
   // Today's appointments, fetched independently of anything else on the screen.
-  const { data: todayData, loading: todayLoading } = useApiResource(
+  const { data: todayData, loading: todayLoading, reload: reloadToday } = useApiResource(
     ({ signal }) => {
       const dayStart = DateTime.now().setZone(timezone).startOf("day");
       return (
@@ -92,6 +113,40 @@ export default function ProviderDashboard({ user }) {
   const firstName = user.name?.split(" ")[0];
   const activeServiceCount = services.filter((service) => service.isActive !== false).length;
 
+  // Which row is mid-request, so only that row's buttons go quiet rather than
+  // the whole panel freezing while one appointment is settled.
+  const [settlingId, setSettlingId] = useState(null);
+  const toast = useToast();
+
+  /**
+   * Records an outcome the provider has chosen, then re-reads everything the
+   * choice moves: the queue itself, the earnings tiles, and the header badge.
+   */
+  const recordOutcome = async (booking, status) => {
+    setSettlingId(booking.id);
+    try {
+      await bookingsApi.setStatus(booking.id, status);
+      toast.success(
+        status === "completed"
+          ? `Marked completed. ${formatPrice(booking.service.price, booking.service.currency)} added to your earnings.`
+          : "Marked no-show. Nothing added to your earnings."
+      );
+      // Today's Schedule lists the same appointment lower down the page, so it
+      // has to be re-read too — otherwise the row the provider just settled
+      // still reads "BOOKED" directly beneath the panel that settled it.
+      await Promise.all([
+        reloadOutcomeQueue(),
+        reloadOverview(),
+        reloadToday(),
+        reloadNotices(),
+      ]);
+    } catch (err) {
+      toast.error(parseApiError(err, "Could not update this appointment.").message);
+    } finally {
+      setSettlingId(null);
+    }
+  };
+
   return (
     <div className={`${container} py-margin-mobile md:py-margin-desktop`}>
       {/* Welcome */}
@@ -103,6 +158,83 @@ export default function ProviderDashboard({ user }) {
           Here&apos;s what&apos;s happening with your practice today.
         </p>
       </div>
+
+      {/* Appointments waiting on a result.
+          Above the account-health warnings deliberately: those describe a
+          configuration that could be better, this one is unfinished work with
+          money attached, and it is the only thing on the page that will not
+          resolve itself if ignored. */}
+      {!outcomeLoading && awaitingOutcome.length > 0 && (
+        <section
+          aria-labelledby="awaiting-outcome-heading"
+          className="mb-8 overflow-hidden rounded-lg border border-primary/30 bg-surface"
+        >
+          <div className="flex flex-wrap items-center gap-2 border-b border-primary/20 bg-primary/5 px-6 py-3">
+            <Icon name="event_available" size={18} className="text-primary" />
+            <p
+              id="awaiting-outcome-heading"
+              className="font-small text-small font-semibold text-on-surface"
+            >
+              {awaitingOutcome.length === 1
+                ? "1 appointment has ended. Please mark the result as Completed or No-show."
+                : `${awaitingOutcome.length} appointments have ended. Please mark each result as Completed or No-show.`}
+            </p>
+            {summary?.awaitingOutcomeValue > 0 && (
+              <span className="ml-auto font-caption text-caption text-on-surface-variant">
+                {formatPrice(summary.awaitingOutcomeValue, user.currency)} unconfirmed
+              </span>
+            )}
+          </div>
+
+          <ul className="divide-y divide-outline-variant/50">
+            {awaitingOutcome.map((booking) => {
+              const busy = settlingId === booking.id;
+              return (
+                <li
+                  key={booking.id}
+                  className="flex flex-col gap-3 px-6 py-4 sm:flex-row sm:items-center sm:justify-between"
+                >
+                  <div className="min-w-0">
+                    <Link
+                      to={`/bookings/${booking.id}`}
+                      className="block truncate font-body text-body font-semibold text-on-surface hover:text-primary"
+                    >
+                      {booking.client.name}
+                    </Link>
+                    <p className="mt-0.5 truncate font-caption text-caption text-on-surface-variant">
+                      {booking.service.name} ·{" "}
+                      {formatTime(booking.startsAt, timezone)} ·{" "}
+                      {/* "ended 3 hours ago" is the fact that makes this actionable. */}
+                      ended {relativeTime(booking.endsAt)}
+                    </p>
+                  </div>
+
+                  <div className="flex shrink-0 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => recordOutcome(booking, "completed")}
+                      disabled={busy}
+                      className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 font-caption text-caption font-semibold text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
+                    >
+                      <Icon name="check" size={14} />
+                      Completed
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => recordOutcome(booking, "no_show")}
+                      disabled={busy}
+                      className="inline-flex items-center gap-1.5 rounded-md border border-outline-variant px-3 py-2 font-caption text-caption font-semibold text-on-surface transition-colors hover:bg-surface-container-low disabled:opacity-50"
+                    >
+                      <Icon name="ban" size={14} />
+                      No-show
+                    </button>
+                  </div>
+                </li>
+              );
+            })}
+          </ul>
+        </section>
+      )}
 
       {/* Warnings. The reference has no panel for these, but the application
           does raise them and they block bookings — so they sit directly under
@@ -157,10 +289,13 @@ export default function ProviderDashboard({ user }) {
           value={summary?.upcomingBookings}
           loading={overviewLoading}
         />
+        {/* `totalBookings`, not `completedBookings` — this tile read the latter
+            while carrying the former's label, so a provider with four bookings
+            and two finished ones saw "Total Bookings: 2". */}
         <MetricTile
           label="Total Bookings"
           icon="check_circle"
-          value={summary?.completedBookings}
+          value={summary?.totalBookings}
           loading={overviewLoading}
         />
         <MetricTile
