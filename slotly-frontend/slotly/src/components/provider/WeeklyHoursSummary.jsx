@@ -57,6 +57,36 @@ export default function WeeklyHoursSummary({ availability }) {
 
   if (rules.length === 0) return null;
 
+  /**
+   * Renders one closure's date range for a visitor.
+   *
+   * The year is included whenever the closure does not fall in the current one.
+   * Without that test, a block stored for 2099 rendered as "1 Feb – 3 Feb" and
+   * read exactly like one next week — the reader had no way to tell a genuine
+   * upcoming closure from a typo in the far future.
+   *
+   * @param {{startDate: string, endDate: string}} closure ISO calendar dates.
+   * @returns {string}
+   */
+  function formatClosure(closure) {
+    const start = DateTime.fromISO(closure.startDate);
+    const end = DateTime.fromISO(closure.endDate);
+    const thisYear = DateTime.now().year;
+    const spansOtherYear = start.year !== thisYear || end.year !== thisYear;
+
+    if (closure.startDate === closure.endDate) {
+      return start.toFormat(spansOtherYear ? "ccc d LLLL yyyy" : "ccc d LLLL");
+    }
+
+    // With both ends in one other year, the year is stated once at the end
+    // ("1 Feb – 3 Feb 2099") rather than repeated on both sides. A range that
+    // straddles a year boundary needs it on each.
+    if (start.year !== end.year) {
+      return `${start.toFormat("d LLL yyyy")} – ${end.toFormat("d LLL yyyy")}`;
+    }
+    return `${start.toFormat("d LLL")} – ${end.toFormat(spansOtherYear ? "d LLL yyyy" : "d LLL")}`;
+  }
+
   const byWeekday = {};
   for (const rule of rules) {
     if (!byWeekday[rule.weekday]) byWeekday[rule.weekday] = [];
@@ -103,11 +133,7 @@ export default function WeeklyHoursSummary({ availability }) {
           <ul className="mt-1 space-y-0.5">
             {upcomingClosures.map((closure) => (
               <li key={closure.id} className="text-xs text-ink-2">
-                {closure.startDate === closure.endDate
-                  ? DateTime.fromISO(closure.startDate).toFormat("ccc d LLLL")
-                  : `${DateTime.fromISO(closure.startDate).toFormat("d LLL")} – ${DateTime.fromISO(
-                      closure.endDate
-                    ).toFormat("d LLL")}`}
+                {formatClosure(closure)}
               </li>
             ))}
           </ul>
