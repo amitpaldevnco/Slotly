@@ -63,6 +63,7 @@ import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import Field, { Textarea, CharCount } from "../components/ui/Field";
 import EmptyState, { ErrorState, PageLoader, SkeletonRows } from "../components/ui/Feedback";
+import Pagination, { usePagination } from "../components/ui/Pagination";
 import { browserTimezone, formatTime, todayIn, zoneLabel } from "../lib/time";
 import {
   primaryButton,
@@ -78,6 +79,20 @@ const MAX_NOTE = 500;
 
 /** The design's week starts on Sunday. */
 const WEEKDAY_INITIALS = ["S", "M", "T", "W", "T", "F", "S"];
+
+/**
+ * Times shown per page in the slot column.
+ *
+ * The grid is two columns, so twelve is six rows — tall enough to feel like a
+ * real choice, short enough that Confirm Booking stays on screen beneath it.
+ *
+ * A short service on a fine-grained interval is what makes this necessary. A
+ * 2-minute service on a 10-minute grid across a working day yields well over
+ * fifty times, and an unpaginated column pushed the confirm button metres down
+ * the page — so picking a time and committing to it could not both be done
+ * without scrolling away from the other.
+ */
+const SLOTS_PER_PAGE = 12;
 
 /**
  * Cells in the month grid. Always six rows, so the calendar does not change
@@ -161,6 +176,10 @@ export default function BookServicePage() {
   const serviceDetail =
     (profile?.services ?? []).find((item) => String(item.id) === String(serviceId)) ?? null;
 
+  // The provider's own cancellation notice, already on the profile payload — no
+  // extra request needed to warn about it.
+  const cancellationCutoffHours = provider?.cancellationCutoffHours ?? null;
+
   // Paging to another month re-runs this. The hook aborts the previous request
   // first, so paging twice in quick succession cannot let the slower first
   // response land last and display the wrong month's times.
@@ -196,6 +215,21 @@ export default function BookServicePage() {
   // times that have gone by drop off the list without a request. See
   // useMinuteTick().
   const now = useMinuteTick();
+
+  /**
+   * True when the chosen slot is nearer than the provider's cancellation notice,
+   * which means the booking will be un-cancellable and un-reschedulable by the
+   * client from the instant it is created.
+   *
+   * Judged against `now` — the same minute tick the slot list uses — rather than
+   * a bare `Date.now()`, so on a page left open the boundary moves with the
+   * clock instead of being decided once on mount and then going stale.
+   */
+  const locksImmediately = useMemo(() => {
+    if (!selectedSlot || !cancellationCutoffHours) return false;
+    const hoursUntilStart = (Date.parse(selectedSlot.startsAt) - now) / 3_600_000;
+    return hoursUntilStart < cancellationCutoffHours;
+  }, [selectedSlot, cancellationCutoffHours, now]);
 
   /**
    * Date → its free slots, with anything already started left out.
@@ -258,6 +292,18 @@ export default function BookServicePage() {
   }, [now]);
 
   const daySlots = selectedDate ? (slotsByDate.get(selectedDate) ?? []) : [];
+
+  // The day's times, a page at a time. See SLOTS_PER_PAGE for why this is
+  // paginated rather than simply listed.
+  const slotPager = usePagination(daySlots, SLOTS_PER_PAGE);
+  const { setPage: setSlotPage } = slotPager;
+
+  // A new day starts at its first time, not wherever the client happened to be
+  // in the previous day's list. Without this, picking a day with four times
+  // after paging to page 5 of a busy one lands on an empty page.
+  useEffect(() => {
+    setSlotPage(1);
+  }, [selectedDate, setSlotPage]);
 
   // Local clock readings that appear more than once in the day on screen.
   //
@@ -569,7 +615,7 @@ export default function BookServicePage() {
                   </h3>
 
                   <ul className="mt-3 grid grid-cols-2 gap-2">
-                    {daySlots.map((slot) => {
+                    {slotPager.pageItems.map((slot) => {
                       const chosen = selectedSlot?.startsAt === slot.startsAt;
                       // On the day the clocks go back, one local reading covers
                       // two different real instants: 01:30 happens, an hour
@@ -612,6 +658,22 @@ export default function BookServicePage() {
                       );
                     })}
                   </ul>
+
+                  {/* Only renders once there is more than one page; below that
+                      it is a count and nothing else, which is not worth a row
+                      of chrome above the confirm button. */}
+                  {slotPager.pageCount > 1 && (
+                    <Pagination
+                      className="mt-3"
+                      unit="time"
+                      page={slotPager.page}
+                      pageCount={slotPager.pageCount}
+                      onChange={slotPager.setPage}
+                      total={slotPager.total}
+                      from={slotPager.from}
+                      to={slotPager.to}
+                    />
+                  )}
                 </>
               )}
 
@@ -619,6 +681,29 @@ export default function BookServicePage() {
                 {/* Both timezones at the moment of committing — the one place the
                     client is deciding, and the last chance to notice that 1:00 PM
                     for them is 8:30 PM for whoever they are booking. */}
+                {/* What is actually being confirmed, restated next to the
+                    button that confirms it.
+                    Load-bearing once the times are paginated: the chosen slot
+                    can be two pages back and entirely off screen, so without
+                    this the client would be pressing Confirm Booking with no
+                    reminder of which time it commits them to. */}
+                {selectedSlot && (
+                  <p className="mb-3 flex items-start gap-1.5 font-caption text-caption leading-relaxed text-on-surface-variant">
+                    <Icon name="check" size={14} className="mt-0.5 shrink-0 text-primary" />
+                    <span>
+                      Booking{" "}
+                      <span className="font-semibold text-on-surface">
+                        {selectedSlot.clientTime}
+                      </span>{" "}
+                      on{" "}
+                      <span className="font-semibold text-on-surface">
+                        {DateTime.fromISO(selectedSlot.localDate).toFormat("cccc, LLL d")}
+                      </span>
+                      .
+                    </span>
+                  </p>
+                )}
+
                 {selectedSlot && differentZones && (
                   <p className="mb-3 flex items-start gap-1.5 font-caption text-caption leading-relaxed text-on-surface-variant">
                     <Icon name="public" size={14} className="mt-0.5 shrink-0" />
@@ -628,6 +713,28 @@ export default function BookServicePage() {
                         {selectedSlot.providerTime}
                       </span>{" "}
                       for the provider in {zoneName(data.providerTimezone)}.
+                    </span>
+                  </p>
+                )}
+
+                {/* Slotly books in real time — there is no minimum notice — so a
+                    slot can legitimately be closer than the provider's own
+                    cancellation window. Booking it is allowed, but it is locked
+                    the moment it is made: the detail page will show Cancel and
+                    Reschedule already disabled. Saying so here is the whole
+                    point; discovering it one second after confirming is what
+                    this warning exists to prevent. */}
+                {locksImmediately && (
+                  <p className="mb-3 flex items-start gap-1.5 rounded-md border border-warn-line bg-warn-soft p-3 font-caption text-caption leading-relaxed text-warn-ink">
+                    <Icon name="warning" size={14} className="mt-0.5 shrink-0" />
+                    <span>
+                      This time is inside {provider?.name ?? "the provider"}&apos;s{" "}
+                      <span className="font-semibold">
+                        {cancellationCutoffHours}-hour
+                      </span>{" "}
+                      cancellation window, so you will not be able to cancel or
+                      reschedule it online. Message them directly if your plans
+                      change.
                     </span>
                   </p>
                 )}
