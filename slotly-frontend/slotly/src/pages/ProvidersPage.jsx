@@ -41,6 +41,15 @@ const SEARCH_DEBOUNCE_MS = 300;
 /** Providers per page. Four fills the two-column grid exactly, as the design draws it. */
 const PAGE_SIZE = 4;
 
+/**
+ * How many matched service names a card lists before summarising the rest.
+ *
+ * Three keeps the card the same height whether a provider matched on one service
+ * or on twenty — the QA fixture provider has twenty-six — so a broad search does
+ * not produce one card ten times taller than its neighbours.
+ */
+const MAX_MATCHED_SHOWN = 3;
+
 const SORT_OPTIONS = [
   { value: "relevance", label: "Recommended" },
   { value: "price", label: "Price: Low to High" },
@@ -219,7 +228,7 @@ export default function ProvidersPage() {
             type="search"
             value={search}
             onChange={(event) => setSearch(event.target.value)}
-            placeholder="Search by name or service..."
+            placeholder="Search by name, service or category…"
             className="w-full rounded-md border border-outline-variant bg-surface-container-lowest py-2.5 pl-10 pr-4 font-body text-base outline-none transition-all placeholder:text-on-surface-variant focus:border-primary focus:ring-2 focus:ring-primary/10 md:text-small"
           />
         </div>
@@ -348,7 +357,7 @@ export default function ProvidersPage() {
                 title={hasFilters ? "No providers match that search" : "No providers yet"}
                 description={
                   hasFilters
-                    ? "Try a different name, business or category."
+                    ? "Try a provider's name, a service you want to book, or a category."
                     : "Once providers publish their services they will appear here."
                 }
                 {...(hasFilters ? { actionLabel: "Clear filters", onAction: clearAll } : {})}
@@ -530,6 +539,35 @@ const ProviderCard = memo(function ProviderCard({ provider }) {
           <span className="rounded-md bg-surface-container px-2 py-1 font-caption text-caption text-on-surface">
             {provider.businessType}
           </span>
+        </div>
+      )}
+
+      {/* Why this provider is in the results.
+
+          The search matches service names as well as provider names, so a search
+          for "Haircut" can return a salon whose card contains that word nowhere
+          — the match is one level down, on a service. Naming the matched service
+          is what turns a plausible-looking list into an explicable one, and it is
+          the service the client was actually looking for.
+
+          Present only on a search, and only when the match came through a
+          service; the API sends an empty array otherwise. */}
+      {provider.matchedServices?.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="font-caption text-caption text-on-surface-variant">Matching:</span>
+          {provider.matchedServices.slice(0, MAX_MATCHED_SHOWN).map((name) => (
+            <span
+              key={name}
+              className="rounded-md bg-primary/10 px-2 py-1 font-caption text-caption font-medium text-primary"
+            >
+              {name}
+            </span>
+          ))}
+          {provider.matchedServices.length > MAX_MATCHED_SHOWN && (
+            <span className="font-caption text-caption text-on-surface-variant">
+              +{provider.matchedServices.length - MAX_MATCHED_SHOWN} more
+            </span>
+          )}
         </div>
       )}
 

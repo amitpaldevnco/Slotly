@@ -87,7 +87,7 @@ function DiscoverySearch() {
         type="text"
         value={term}
         onChange={(event) => setTerm(event.target.value)}
-        placeholder="Search providers, services…"
+        placeholder="Search providers, services, categories…"
         className="w-full rounded-md border border-outline-variant bg-surface-container-lowest py-2 pl-10 pr-4 font-body text-body outline-none transition-shadow focus:border-primary focus:ring-1 focus:ring-primary/10"
       />
     </form>

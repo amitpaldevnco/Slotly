@@ -14,12 +14,34 @@
  */
 import { query } from "../config/dbConfig.js";
 import { successResponse, errorResponse, ERROR_CODES } from "../responseController/responseHandler.js";
+import { rawTypesForCategorySearch } from "../utils/categories.js";
 
 /**
  * GET /api/providers — public.
  *
- * Query: search (matches name, business name or business type), businessType,
- * limit (default 50, max 100).
+ * Query: search, businessType, limit (default 50, max 100).
+ *
+ * ## What `search` looks at
+ *
+ * The provider's name, their business name, **the names of the services they
+ * offer**, and their category — including the category's other spellings.
+ *
+ * Services were the gap. The directory's search box has always been labelled
+ * "Search by name or service…", and the topbar's "Search providers, services…",
+ * but the query only ever looked at the three columns on `users`. So a client
+ * who knew what they wanted — "Haircut", "Math Tuition – 1 Hour" — and typed it
+ * got an empty directory, while the same words were sitting in `services` one
+ * join away. Searching by the thing you want to book is the most obvious way to
+ * use a booking site, and it was the one way that did not work.
+ *
+ * Category matching goes through `rawTypesForCategorySearch` rather than an
+ * `ILIKE` on the column, so that typing a category finds the same providers as
+ * clicking that category in the sidebar. Matching the raw text alone meant
+ * "Healthcare" returned the four providers stored under that exact word and
+ * skipped the physiotherapists the sidebar files under it.
+ *
+ * All four are OR'd: a term needs to match any one of them, so nothing that was
+ * findable before has become unfindable.
  */
 
 export const listProviders = async (req, res) => {
@@ -46,16 +68,49 @@ export const listProviders = async (req, res) => {
     }
     const conditions = ["u.role = 'provider'"];
     const params = [];
-    if (search && String(search).trim()) {
+    const term = search && String(search).trim() ? String(search).trim() : null;
+
+    // Holds the $n of the `%term%` pattern once bound, so the lateral join below
+    // can reuse the same parameter to report *which* services matched.
+    let patternParam = null;
+
+    if (term) {
       // The wildcards are added here rather than being taken from the query
       // string, so a search for "100%" is matched literally instead of the %
       // becoming a wildcard.
-      params.push(`%${String(search).trim()}%`);
-      conditions.push(
-        `(u.name ILIKE $${params.length}
-          OR u.business_name ILIKE $${params.length}
-          OR u.business_type ILIKE $${params.length})`
-      );
+      params.push(`%${term}%`);
+      patternParam = params.length;
+
+      const clauses = [
+        `u.name ILIKE $${patternParam}`,
+        `u.business_name ILIKE $${patternParam}`,
+        `u.business_type ILIKE $${patternParam}`,
+        // The service names. `EXISTS` rather than a join, so a provider with
+        // three matching services is still one row -- a join would multiply
+        // them and the directory would list the same practice three times.
+        //
+        // Gated on `is_active` for the same reason the counts and prices above
+        // are: a retired service is not bookable, so finding a provider by one
+        // would be an invitation to a dead end.
+        `EXISTS (
+           SELECT 1 FROM services s2
+           WHERE s2.provider_id = u.id
+             AND s2.is_active
+             AND s2.service_name ILIKE $${patternParam}
+         )`,
+      ];
+
+      // A term that names a category matches every stored spelling of it. Empty
+      // when the term names no category at all, in which case no clause is added
+      // -- an empty ANY(...) would match nothing and is simply not the question
+      // being asked.
+      const categoryTypes = rawTypesForCategorySearch(term);
+      if (categoryTypes.length > 0) {
+        params.push(categoryTypes);
+        clauses.push(`lower(u.business_type) = ANY($${params.length})`);
+      }
+
+      conditions.push(`(${clauses.join("\n          OR ")})`);
     }
 
     if (businessType && String(businessType).trim()) {
@@ -64,13 +119,31 @@ export const listProviders = async (req, res) => {
     }
 
     params.push(limit);
+
+    // Which of this provider's services matched the term, so a card can say why
+    // it is in the results. Without it, searching "Haircut" returns a list of
+    // salons with nothing on any card containing the word "Haircut", and the
+    // results look arbitrary.
+    //
+    // Only built when there is a term; an unfiltered directory has no "matched"
+    // to report and should not pay for the join.
+    const matchedServices = patternParam
+      ? `, (
+           SELECT array_agg(s3.service_name ORDER BY s3.service_name)
+           FROM services s3
+           WHERE s3.provider_id = u.id
+             AND s3.is_active
+             AND s3.service_name ILIKE $${patternParam}
+         ) AS matched_services`
+      : "";
+
     // The service count and cheapest price come from a lateral join rather than
     // a follow-up query per provider, so the directory costs one round trip
     // however many providers it returns.
     const result = await query(
       `SELECT u.id, u.name, u.avatar_url, u.bio, u.timezone,
               u.business_name, u.business_type, u.currency,
-              stats.service_count, stats.min_price, stats.min_duration
+              stats.service_count, stats.min_price, stats.min_duration${matchedServices}
        FROM users u
        LEFT JOIN LATERAL (
          SELECT COUNT(*)::int AS service_count,
@@ -102,6 +175,10 @@ export const listProviders = async (req, res) => {
         currency: row.currency,
         fromPrice: row.min_price,
         shortestDuration: row.min_duration,
+        // Present only on a search, and only for providers matched through a
+        // service name. `[]` rather than null when a provider matched on their
+        // own name instead, so a caller can render it without a type check.
+        matchedServices: row.matched_services ?? [],
       })),
     });
   } catch (err) {
