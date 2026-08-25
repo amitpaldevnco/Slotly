@@ -19,9 +19,9 @@
  *   - The summary counts *this client's own* bookings. The reference reads like
  *     a provider's business metrics; a client has no business, and platform-wide
  *     numbers here would be invented.
- *   - "Trending Services" is grouped from the public provider directory, so it
+ *   - "Popular categories" is grouped from the public provider directory, so it
  *     is honestly "most providers" — there is no view or booking telemetry to
- *     rank popularity by.
+ *     rank popularity by, and it is labelled for what it counts.
  *
  * The activity feed is likewise built from the booking records themselves
  * (created, rescheduled, cancelled, completed), because there is no activity
@@ -40,6 +40,7 @@ import EmptyState, { ErrorState, SkeletonRows } from "../ui/Feedback";
 import { countdownTo, formatTime, greeting, relativeTime } from "../../lib/time";
 import { container, formatDuration, statusStyle, zoneName } from "../../lib/ui";
 import { DISCOVERY_LABEL } from "../../lib/discovery";
+import { normaliseCategory } from "../../lib/categories";
 
 export default function ClientDashboard({ user }) {
   const viewerZone = user.timezone || "UTC";
@@ -148,7 +149,7 @@ export default function ClientDashboard({ user }) {
                 navigation. */}
             <div className="flex flex-col gap-4 md:col-span-4">
               <AppointmentSummary upcoming={upcoming} past={past} />
-              <TrendingServices />
+              <PopularCategories />
             </div>
 
             {/* Upcoming list */}
@@ -362,26 +363,48 @@ function categoryIcon(category) {
  *
  * Counted client-side from the provider directory rather than read from a
  * dedicated endpoint, because there isn't one and the directory is a single
- * cheap public request that the discovery page already makes. "Trending" is
+ * cheap public request that the discovery page already makes. The ranking is
  * therefore honestly just "most providers" — there is no view or booking
- * telemetry to rank by, and labelling a popularity ranking onto data that cannot
- * support it would be a lie told in the UI.
+ * telemetry to rank by, and labelling this "trending" claimed a signal the data
+ * cannot support, which is why the heading says what it actually measures.
+ *
+ * Grouping goes through `normaliseCategory` for the same reason the discovery
+ * page does: this card is a link to that page, and a count that disagrees with
+ * its own destination is worse than no count at all.
  *
  * The whole card is non-essential, so a failed request resolves to an empty list
  * and the card simply renders its call to action. A dashboard must not lose its
  * summary because a nice-to-have panel could not load.
  */
-function TrendingServices() {
+function PopularCategories() {
   const { data: providers } = useApiResource(
     ({ signal }) => providersApi.list({}, { signal }).catch(() => ({ providers: [] })),
     { deps: [], initialData: { providers: [] } }
   );
 
+  // Grouped by the *canonical* category, exactly as the discovery page groups
+  // its own filter list.
+  //
+  // This counted the raw `businessType` string, which is free text left over
+  // from before the category list existed — so the card reported the platform's
+  // spelling variants as if they were separate categories, and disagreed with
+  // the page it links to on both counts:
+  //
+  //   - It advertised "Therapy — 6 active providers", but Therapy is not one of
+  //     the categories the directory offers. `?category=Therapy` is matched
+  //     against the normalised value, which is "Healthcare" for every one of
+  //     those six, so the link promised six providers and returned none.
+  //   - It reported "Healthcare — 4" while the directory, folding Therapy and
+  //     Physiotherapy in, showed twelve. One dataset, two numbers, depending on
+  //     which screen you were looking at.
+  //
+  // Normalising here means the name, the count and the link all agree with the
+  // destination, which is the only way a count on a link is worth showing.
   const categories = useMemo(() => {
     const counts = new Map();
 
     for (const provider of providers?.providers ?? []) {
-      const name = provider.businessType?.trim();
+      const name = normaliseCategory(provider.businessType);
       if (!name) continue;
       counts.set(name, (counts.get(name) ?? 0) + 1);
     }
@@ -394,7 +417,12 @@ function TrendingServices() {
 
   return (
     <div className="rounded-lg border border-outline-variant bg-surface p-6">
-      <h3 className="mb-4 font-small text-small font-bold text-primary">Trending Services</h3>
+      {/* "Popular categories", not "Trending Services". The rows are categories
+          rather than services, and the ranking is by how many providers work in
+          each -- which is what the line beneath every row says. "Trending"
+          claimed a popularity signal that does not exist: there is no view or
+          booking telemetry to rank by. */}
+      <h3 className="mb-4 font-small text-small font-bold text-primary">Popular categories</h3>
 
       {categories.length === 0 ? (
         <p className="py-2 font-caption text-caption text-on-surface-variant">
