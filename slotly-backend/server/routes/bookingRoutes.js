@@ -16,6 +16,7 @@ import {
   cancelBooking,
   rescheduleBooking,
   updateBookingStatus,
+  getBookingCounts,
 } from "../controller/bookingController.js";
 import {
   listMessages,
@@ -42,6 +43,9 @@ router.get("/", listBookings);
 // Both literal paths must be registered before GET /:id, or Express would match
 // "summary" and "unread-count" as booking ids and hand them to getBooking.
 router.get("/summary", getBookingSummary);
+// Above the `/:bookingId` route for the same reason as /summary: otherwise
+// "counts" is read as a booking id.
+router.get("/counts", getBookingCounts);
 router.get("/unread-count", getUnreadCount);
 // Cross-booking, so it belongs beside unread-count rather than under /:id.
 router.get("/recent-messages", getRecentConversations);

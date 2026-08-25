@@ -50,7 +50,10 @@ export default function BackLink({ fallbackTo, fallbackLabel, className = "" }) 
     <button
       type="button"
       onClick={() => (canGoBack ? navigate(-1) : navigate(fallbackTo))}
-      className={`inline-flex items-center gap-1.5 font-small text-small text-on-surface-variant transition-colors hover:text-primary ${className}`}
+      // `-mx-2 -my-1.5` with padding widens the hit area without moving the
+      // label, which sat at 57x20px -- comfortably under the 24px minimum on the
+      // axis that matters for a thumb.
+      className={`-mx-2 -my-1.5 inline-flex items-center gap-1.5 rounded-md px-2 py-1.5 font-small text-small text-on-surface-variant transition-colors hover:text-primary ${className}`}
     >
       <Icon name="arrow_back" size={18} />
       {canGoBack || !fallbackLabel ? "Back" : fallbackLabel}

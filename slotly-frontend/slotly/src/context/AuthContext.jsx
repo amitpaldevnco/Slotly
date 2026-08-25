@@ -34,8 +34,17 @@
  * `NETWORK_ERROR` from an HTTP status for exactly this reason.
  */
 
-import { createContext, useCallback, useContext, useEffect, useMemo, useState } from "react";
+import {
+  createContext,
+  useCallback,
+  useContext,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import * as authApi from "../api/auth";
+import { onSessionExpired } from "../api/client";
 
 const AuthContext = createContext(null);
 
@@ -59,10 +68,21 @@ export function AuthProvider({ children }) {
   // top of this file for why conflating the two logged people out.
   const [offline, setOffline] = useState(false);
 
+  // True when a session that *was* valid stopped being so mid-visit, as opposed
+  // to a visitor who simply arrived signed out. Only the first case deserves an
+  // explanation on the sign-in page; telling a first-time visitor their session
+  // expired would be a lie.
+  const [sessionExpired, setSessionExpired] = useState(false);
+
   const fetchUser = useCallback(async () => {
     try {
       setUser(await authApi.getCurrentUser());
       setOffline(false);
+      // A session was just read successfully, so nothing is expired. This is
+      // where the notice is retired — not when the sign-in page unmounts, which
+      // under StrictMode happens once immediately after mounting and cleared the
+      // flag before the render that would have shown it.
+      setSessionExpired(false);
     } catch (err) {
       // No `response` at all means the request never arrived — DNS, a dropped
       // connection, a CORS refusal, or a host still waking from sleep. The
@@ -89,6 +109,10 @@ export function AuthProvider({ children }) {
       await authApi.logout();
     } finally {
       setOffline(false);
+      // Signing out deliberately is not an expiry. Cleared here so the sign-in
+      // page does not greet someone who just pressed Log Out with "your session
+      // expired".
+      setSessionExpired(false);
       // Cleared even if the request fails: the user asked to sign out, and
       // leaving them looking signed in is the worse outcome. The cookie expires
       // on its own regardless.
@@ -100,9 +124,46 @@ export function AuthProvider({ children }) {
     fetchUser();
   }, [fetchUser]);
 
+  // Mirrors `user` so the 401 handler below can read "was somebody signed in?"
+  // without taking `user` as a dependency — which would re-subscribe the handler
+  // on every sign-in and sign-out.
+  const userRef = useRef(null);
+  useEffect(() => {
+    userRef.current = user;
+  }, [user]);
+
+  // Any authenticated request answering 401 means the cookie this app is holding
+  // is no longer good. Dropping `user` is what lets the route guards do their
+  // ordinary job and send the visitor to /login with `state.from` set, instead
+  // of leaving them on a screen whose only content is an error they cannot act
+  // on.
+  //
+  // The "was there a session?" test reads the ref rather than being folded into
+  // a `setUser` updater. A state updater must be pure — React invokes it twice
+  // under StrictMode — so raising the notice from inside one meant the flag was
+  // set and then lost, and the sign-in page appeared with no explanation of why
+  // the user was looking at it. It also guards the honest case: a stray 401 while
+  // already signed out must not tell a first-time visitor their session expired.
+  useEffect(
+    () =>
+      onSessionExpired(() => {
+        if (userRef.current) setSessionExpired(true);
+        setUser(null);
+      }),
+    []
+  );
+
   const value = useMemo(
-    () => ({ user, setUser, loading, offline, logout, refetchUser: fetchUser }),
-    [user, loading, offline, logout, fetchUser]
+    () => ({
+      user,
+      setUser,
+      loading,
+      offline,
+      sessionExpired,
+      logout,
+      refetchUser: fetchUser,
+    }),
+    [user, loading, offline, sessionExpired, logout, fetchUser]
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
@@ -112,10 +173,12 @@ export function AuthProvider({ children }) {
  * Reads the session.
  *
  * @returns {{user: object|null, setUser: Function, loading: boolean,
- *   offline: boolean, logout: Function, refetchUser: Function}} `offline` is
- *   true when the session could not be read because the server was unreachable.
- *   Callers must not read that as signed out — see the note at the top of this
- *   file.
+ *   offline: boolean, sessionExpired: boolean, logout: Function,
+ *   refetchUser: Function}} `offline` is true when the session
+ *   could not be read because the server was unreachable. Callers must not read
+ *   that as signed out — see the note at the top of this file. `sessionExpired`
+ *   is true when a session that had been valid was rejected mid-visit, and is
+ *   what the sign-in page uses to say so.
  * @throws {Error} When called outside `AuthProvider` — a wiring mistake that
  *   would otherwise surface as an unexplained null far from its cause.
  */

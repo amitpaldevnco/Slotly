@@ -109,3 +109,20 @@ export const completeProfile = (payload) =>
  *   `businessName`, `businessType`, `qualifications`, `profilePicture`.
  */
 export const updateProfile = (formData) => api.patch("/auth/profile", formData).then(unwrap);
+
+/**
+ * Changes the signed-in user's own password.
+ *
+ * `currentPassword` is required for an account that has one, and ignored for an
+ * account created through Google or GitHub — which has no password to verify, so
+ * this *adds* one rather than replacing it.
+ *
+ * There is no "forgot password" counterpart. Sending a reset link needs an email
+ * transport this deployment does not have, so recovery for a genuinely forgotten
+ * password is signing in with Google or GitHub instead.
+ *
+ * @param {{currentPassword?: string, newPassword: string}} payload
+ * @returns {Promise<{hadPassword: boolean}>} `hadPassword` is false when a
+ *   password was added rather than changed, so the caller can word it correctly.
+ */
+export const changePassword = (payload) => api.patch("/auth/password", payload).then(unwrap);

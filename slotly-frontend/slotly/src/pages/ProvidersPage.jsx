@@ -22,7 +22,7 @@
  * that is genuinely returned.
  */
 
-import { memo, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import * as providersApi from "../api/providers";
 import { useApiResource } from "../hooks/useApiResource";
@@ -32,6 +32,9 @@ import Icon from "../components/ui/Icon";
 import EmptyState, { ErrorState, SkeletonRows } from "../components/ui/Feedback";
 import { usePagination, pageWindow } from "../components/ui/Pagination";
 import { container, formatPrice, formatDuration, zoneName } from "../lib/ui";
+import { comparablePrice } from "../lib/currencies";
+import { normaliseCategory } from "../lib/categories";
+import usePageTitle from "../hooks/usePageTitle";
 
 const SEARCH_DEBOUNCE_MS = 300;
 
@@ -55,8 +58,16 @@ export default function ProvidersPage() {
   // someone can bookmark or send, rather than a state you have to arrive at by
   // clicking.
   const [category, setCategory] = useState(() => searchParams.get("category") || "");
-  const [sort, setSort] = useState("relevance");
   const [filtersOpen, setFiltersOpen] = useState(false);
+
+  usePageTitle("Find a provider");
+
+  // Sort lives in the URL for the same reason the search term and the category
+  // do: a sorted, filtered directory should be a link. It was the one control
+  // held only in component state, so "cheapest first" was unshareable and lost
+  // on reload while the other two survived.
+  const sortParam = searchParams.get("sort") || "";
+  const sort = SORT_OPTIONS.some((option) => option.value === sortParam) ? sortParam : "relevance";
 
   const queryParam = searchParams.get("q") || "";
   useEffect(() => {
@@ -69,6 +80,36 @@ export default function ProvidersPage() {
   }, [categoryParam]);
 
   const term = useDebouncedValue(search.trim(), SEARCH_DEBOUNCE_MS);
+
+  /**
+   * Writes one control's value into the query string.
+   *
+   * The URL is the single place these three live, so every control goes through
+   * here. Before this, the top bar's search box wrote `?q=` and the page read
+   * it, but typing into the page's *own* box changed only local state — so the
+   * same search was a shareable link when it came from one input and not from
+   * the other. `replace` because filtering is not a navigation: twenty
+   * keystrokes should not be twenty entries to press Back through.
+   */
+  const setParam = useCallback(
+    (key, value) => {
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          if (value) next.set(key, value);
+          else next.delete(key);
+          return next;
+        },
+        { replace: true }
+      );
+    },
+    [setSearchParams]
+  );
+
+  // The debounced term is what goes into the URL, not every keystroke.
+  useEffect(() => {
+    if (term !== queryParam) setParam("q", term);
+  }, [term, queryParam, setParam]);
 
   const {
     data,
@@ -84,26 +125,36 @@ export default function ProvidersPage() {
 
   const providers = useMemo(() => data?.providers ?? [], [data]);
 
+  // Counted against the *canonical* category, so a provider stored as
+  // "Physiotherapy" is counted under Healthcare rather than creating a second
+  // near-duplicate filter beside it. That split was visible in the sidebar as
+  // Healthcare, Physiotherapy and Therapy listed as three separate things.
   const categories = useMemo(() => {
     const counts = new Map();
     for (const provider of providers) {
-      if (!provider.businessType) continue;
-      counts.set(provider.businessType, (counts.get(provider.businessType) || 0) + 1);
+      const canonical = normaliseCategory(provider.businessType);
+      if (!canonical) continue;
+      counts.set(canonical, (counts.get(canonical) || 0) + 1);
     }
     return [...counts.entries()].sort((a, b) => a[0].localeCompare(b[0]));
   }, [providers]);
 
   const visible = useMemo(() => {
     const filtered = category
-      ? providers.filter((provider) => provider.businessType === category)
+      ? providers.filter((provider) => normaliseCategory(provider.businessType) === category)
       : providers;
 
     if (sort === "relevance") return filtered;
 
     return [...filtered].sort((a, b) => {
       if (sort === "price" || sort === "price_desc") {
-        const left = a.fromPrice == null ? null : Number(a.fromPrice);
-        const right = b.fromPrice == null ? null : Number(b.fromPrice);
+        // Compared in a common unit rather than as bare numbers. `fromPrice` is
+        // denominated in each provider's own currency, so subtracting one from
+        // the other ranked ₹900 above £250 — roughly £8 sorted as dearer than
+        // £250. See `comparablePrice` for why an indicative rate is the right
+        // tool for an ordering and the wrong one for a displayed figure.
+        const left = comparablePrice(a.fromPrice, a.currency);
+        const right = comparablePrice(b.fromPrice, b.currency);
 
         // A provider with no published price sorts last in *either* direction,
         // rather than first — which is what `null` compares as by default.
@@ -121,18 +172,24 @@ export default function ProvidersPage() {
     });
   }, [providers, category, sort]);
 
-  const { pageItems, page, setPage, pageCount } = usePagination(visible, PAGE_SIZE);
+  const {
+    pageItems,
+    page,
+    setPage,
+    pageCount,
+    from: firstRow,
+    to: lastRow,
+  } = usePagination(visible, PAGE_SIZE);
 
   const hasFilters = Boolean(category) || sort !== "relevance" || Boolean(search.trim());
 
   const clearAll = () => {
     setSearch("");
     setCategory("");
-    setSort("relevance");
-    // Both filters can arrive in the URL, so both have to be cleared from it —
-    // otherwise "Clear filters" leaves an address that would re-apply the filter
-    // the moment the page was reloaded or shared.
-    if (queryParam || categoryParam) setSearchParams({}, { replace: true });
+    // Every control lives in the URL, so clearing them all is one write. Leaving
+    // any behind would produce an address that re-applies a filter the user has
+    // just dismissed, the moment the page is reloaded or shared.
+    setSearchParams({}, { replace: true });
   };
 
   return (
@@ -144,8 +201,7 @@ export default function ProvidersPage() {
             Find a Provider
           </h1>
           <p className="font-body text-body text-on-surface-variant">
-            Discover professionals for your needs. Filter by category to find the right match — every
-            time you see is shown in your own timezone.
+            Filter by category to find the right match. All times are shown in your own timezone.
           </p>
         </div>
 
@@ -212,7 +268,7 @@ export default function ProvidersPage() {
                       label="All categories"
                       count={providers.length}
                       checked={category === ""}
-                      onSelect={() => setCategory("")}
+                      onSelect={() => setParam("category", "")}
                     />
                   </li>
                   {categories.map(([name, count]) => (
@@ -221,7 +277,7 @@ export default function ProvidersPage() {
                         label={name}
                         count={count}
                         checked={category === name}
-                        onSelect={() => setCategory(name)}
+                        onSelect={() => setParam("category", name)}
                       />
                     </li>
                   ))}
@@ -239,7 +295,15 @@ export default function ProvidersPage() {
                 "Loading providers…"
               ) : (
                 <>
-                  Showing <strong className="text-on-surface">{visible.length}</strong>{" "}
+                  {/* The range as well as the total. "Showing 13 professionals"
+                      above a grid of four was accurate about the result set and
+                      wrong about the page, which is the number the reader is
+                      looking at. */}
+                  Showing{" "}
+                  <strong className="text-on-surface">
+                    {visible.length === 0 ? 0 : `${firstRow}–${lastRow}`}
+                  </strong>{" "}
+                  of <strong className="text-on-surface">{visible.length}</strong>{" "}
                   {visible.length === 1 ? "professional" : "professionals"}
                 </>
               )}
@@ -252,7 +316,7 @@ export default function ProvidersPage() {
               <select
                 id="provider-sort"
                 value={sort}
-                onChange={(event) => setSort(event.target.value)}
+                onChange={(event) => setParam("sort", event.target.value)}
                 className="cursor-pointer border-none bg-transparent py-1 pr-8 font-small text-small text-on-surface focus:ring-0"
               >
                 {SORT_OPTIONS.map((option) => (

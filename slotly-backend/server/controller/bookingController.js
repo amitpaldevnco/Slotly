@@ -535,6 +535,61 @@ export const getBookingSummary = async (req, res) => {
 };
 
 /**
+ * GET /api/bookings/counts — any signed-in user.
+ *
+ * How many bookings fall in each of the three tabs the appointments screen
+ * offers. Role-aware, unlike `getBookingSummary`, which is a provider's earnings
+ * report and refuses a client outright.
+ *
+ * ## Why this exists rather than counting the fetched list
+ *
+ * The screen fetches one tab at a time, so it could only ever label the tab it
+ * was looking at — "Upcoming (2) · Past · Cancelled", then "Upcoming · Past ·
+ * Cancelled (1)" once you moved. A count that appears only on the tab you are
+ * already reading is the one place it tells you nothing; the whole point of the
+ * number is to decide whether the *other* tabs are worth opening.
+ *
+ * Counted in SQL for the same reason the summary is: `listBookings` caps at 500
+ * rows, which is right for a page of cards and wrong for a total.
+ *
+ * The three conditions are deliberately the same expressions `listBookings` uses
+ * for `scope=upcoming`, `scope=past` and `status=cancelled`, so a count can never
+ * disagree with the list it labels.
+ *
+ * @returns 200 `{ upcoming, past, cancelled }`.
+ */
+export const getBookingCounts = async (req, res) => {
+  try {
+    const user = await query("SELECT id, role FROM users WHERE id = $1", [req.user.userId]);
+    if (user.rows.length === 0) {
+      return errorResponse(res, "User not found", 404, ERROR_CODES.NOT_FOUND);
+    }
+
+    const column = user.rows[0].role === "provider" ? "provider_id" : "client_id";
+
+    const result = await query(
+      `SELECT
+         COUNT(*) FILTER (WHERE starts_at >= NOW() AND status = ANY($2)) AS upcoming,
+         COUNT(*) FILTER (WHERE starts_at < NOW())                      AS past,
+         COUNT(*) FILTER (WHERE status = 'cancelled')                    AS cancelled
+       FROM bookings
+       WHERE ${column} = $1`,
+      [req.user.userId, ACTIVE_STATUSES]
+    );
+
+    const row = result.rows[0];
+    return successResponse(res, "Counts fetched", {
+      upcoming: Number(row.upcoming),
+      past: Number(row.past),
+      cancelled: Number(row.cancelled),
+    });
+  } catch (err) {
+    console.error("getBookingCounts error:", err.message);
+    return errorResponse(res, "Could not fetch counts", 500);
+  }
+};
+
+/**
  * GET /api/bookings — any signed-in user.
  *
  * Query: scope (upcoming|past|all), status, serviceId, from, to.
@@ -570,7 +625,18 @@ export const listBookings = async (req, res) => {
       conditions.push(`b.ends_at <= NOW() AND b.status = ANY($${params.length + 1})`);
       params.push(ACTIVE_STATUSES);
     } else if (scope === "past") {
-      conditions.push(`(b.starts_at < NOW() OR b.status NOT IN ('booked','rescheduled'))`);
+      // "Past" means the appointment time has actually gone by.
+      //
+      // It used to mean "not upcoming" -- `starts_at < NOW() OR status NOT IN
+      // (active)` -- which put a cancelled appointment *next Friday* under a tab
+      // labelled Past, dated in the future, while it also sat under Cancelled.
+      // One booking in two tabs, one of them contradicting its own heading.
+      //
+      // Cancelled work that has not happened yet is reachable under Cancelled,
+      // which is where someone looking for it would go. Cancellations whose slot
+      // has since passed stay here, so history remains complete: the filter is
+      // on the clock alone, exactly as the label says.
+      conditions.push(`b.starts_at < NOW()`);
     }
 
     if (status) {

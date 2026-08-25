@@ -39,6 +39,7 @@ import Icon from "../ui/Icon";
 import EmptyState, { ErrorState, SkeletonRows } from "../ui/Feedback";
 import { countdownTo, formatTime, greeting, relativeTime } from "../../lib/time";
 import { container, formatDuration, statusStyle, zoneName } from "../../lib/ui";
+import { DISCOVERY_LABEL } from "../../lib/discovery";
 
 export default function ClientDashboard({ user }) {
   const viewerZone = user.timezone || "UTC";
@@ -97,9 +98,12 @@ export default function ClientDashboard({ user }) {
       <div className="space-y-8">
         {/* Welcome */}
         <div>
-          <h2 className="mb-2 font-h1-mobile text-h1-mobile text-primary md:font-h1 md:text-h1">
+          {/* `h1` to match ProviderDashboard, which already used one. The two
+              dashboards render the same greeting at the same size, and only one
+              of them was a top-level heading. */}
+          <h1 className="mb-2 font-h1-mobile text-h1-mobile text-primary md:font-h1 md:text-h1">
             {firstName ? `${greeting(viewerZone)}, ${firstName}` : "Your bookings"}
-          </h2>
+          </h1>
           <p className="font-body text-body text-on-surface-variant">
             Here is what&apos;s happening with your schedule today.
           </p>
@@ -131,7 +135,7 @@ export default function ClientDashboard({ user }) {
                         : "Nothing coming up. Pick a provider and a time whenever you are ready."
                       : "Find a provider, pick a service and choose a time that suits you. It takes about a minute."
                   }
-                  actionLabel={hasHistory ? "Book again" : "Find a service"}
+                  actionLabel={hasHistory ? "Book again" : DISCOVERY_LABEL}
                   actionTo="/providers"
                 />
               </div>
@@ -153,7 +157,9 @@ export default function ClientDashboard({ user }) {
                 <h3 className="font-h3 text-h3 text-primary">Upcoming Appointments</h3>
                 <Link
                   to="/appointments"
-                  className="font-small text-small text-primary hover:underline"
+                  // Padded for the same reason as its twin on the provider
+                  // dashboard: the label alone is under the 24px tap minimum.
+                  className="-my-2 rounded px-1 py-2 font-small text-small text-primary hover:underline"
                 >
                   View All
                 </Link>
@@ -163,7 +169,7 @@ export default function ClientDashboard({ user }) {
                 <p className="py-6 text-center font-caption text-caption text-on-surface-variant">
                   {next
                     ? "That is your only upcoming appointment."
-                    : "Nothing scheduled after today."}
+                    : "No upcoming appointments."}
                 </p>
               ) : (
                 <div className="space-y-4">
@@ -423,7 +429,7 @@ function TrendingServices() {
         to="/providers"
         className="mt-4 flex w-full items-center justify-center rounded-md border border-outline-variant py-2 font-small text-small font-semibold text-primary transition-colors hover:bg-surface-container-low"
       >
-        Explore All Services
+        {DISCOVERY_LABEL}
       </Link>
     </div>
   );

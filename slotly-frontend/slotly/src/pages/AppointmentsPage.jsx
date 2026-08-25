@@ -47,6 +47,7 @@ import {
   formatDuration,
   inputClasses,
 } from "../lib/ui";
+import usePageTitle from "../hooks/usePageTitle";
 
 /**
  * The three tabs, and the query each one stands for.
@@ -68,6 +69,8 @@ const TABS = [
 const PAGE_SIZE = 10;
 
 export default function AppointmentsPage() {
+  usePageTitle("Appointments");
+
   const { user } = useAuth();
   const [searchParams, setSearchParams] = useSearchParams();
 
@@ -139,6 +142,14 @@ export default function AppointmentsPage() {
 
   const hasHistory = (historyData?.bookings?.length ?? 0) > 0;
 
+  // Counts for every tab, not just the open one. Re-read when the open tab's
+  // data changes, because acting on a booking — cancelling it, moving it — moves
+  // it between tabs, and a stale badge is worse than none.
+  const { data: tabCounts } = useApiResource(
+    ({ signal }) => bookingsApi.counts({ signal }).catch(() => null),
+    { deps: [data] }
+  );
+
   const {
     pageItems,
     page,
@@ -170,7 +181,10 @@ export default function AppointmentsPage() {
       {/* Header */}
       <div className="mb-8 flex flex-col justify-between gap-4 md:flex-row md:items-center">
         <div>
-          <h2 className="font-h2 text-h2 font-bold text-primary">Appointments</h2>
+          {/* `h1`, not `h2`. This is the page's own name, and it was the only
+              heading on the screen -- so the document started at level 2 and a
+              screen reader's heading list had no top level to anchor on. */}
+          <h1 className="font-h2 text-h2 font-bold text-primary">Appointments</h1>
           <p className="mt-1 font-body text-body text-on-surface-variant">
             {isProvider
               ? "Manage your upcoming schedule and client bookings."
@@ -320,7 +334,13 @@ export default function AppointmentsPage() {
               }`}
             >
               {option.label}
-              {active && !loading ? ` (${visible.length})` : ""}
+              {/* The open tab shows what is actually on screen, which the
+                  search box can narrow; the others show their server-side
+                  total. Using `visible.length` for the open tab keeps the
+                  number honest while filtering. */}
+              {active
+                ? !loading && ` (${visible.length})`
+                : tabCounts && ` (${tabCounts[option.id] ?? 0})`}
             </button>
           );
         })}

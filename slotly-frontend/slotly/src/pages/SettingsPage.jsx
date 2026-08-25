@@ -64,6 +64,8 @@ import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import { useNotifications } from "../context/NotificationsContext";
 import { parseApiError } from "../api/client";
+import PasswordCard from "../components/settings/PasswordCard";
+import usePageTitle from "../hooks/usePageTitle";
 import * as authApi from "../api/auth";
 import * as availabilityApi from "../api/availability";
 import * as providersApi from "../api/providers";
@@ -174,6 +176,7 @@ export default function SettingsPage() {
   const sections = useMemo(() => {
     const list = [
       { id: "account", label: "Account" },
+      { id: "password", label: "Password" },
       { id: "timezone", label: "Timezone" },
       { id: "notifications", label: "Notifications" },
     ];
@@ -183,6 +186,8 @@ export default function SettingsPage() {
   }, [isProvider]);
 
   const active = useActiveSection(sections);
+
+  usePageTitle("Settings");
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -243,8 +248,8 @@ export default function SettingsPage() {
       <div className="grid items-start gap-8 lg:grid-cols-[13rem_minmax(0,1fr)]">
         <SectionNav items={sections} active={active} />
 
-        <form onSubmit={handleSubmit} noValidate className="min-w-0 space-y-10">
-          {/* Account */}
+        <div className="min-w-0 space-y-10">
+          {/* Account is read-only, so it is not inside the form. */}
           <SettingsSection
             id="account"
             title="Account"
@@ -264,8 +269,8 @@ export default function SettingsPage() {
             </dl>
 
             <p className="mt-5 border-t border-line-soft pt-5 text-xs leading-relaxed text-ink-3">
-              Your photo, phone number
-              {isProvider ? ", business details and bio" : ""} are edited on{" "}
+              Your name, photo and phone number
+              {isProvider ? ", business details and bio" : ""} are all edited on{" "}
               <Link to="/profile" className="font-medium text-ink underline underline-offset-2">
                 your profile
               </Link>
@@ -273,20 +278,45 @@ export default function SettingsPage() {
             </p>
           </SettingsSection>
 
+          {/* Password.
+              Outside the page's main <form> — it posts on its own, because the
+              main form saves the timezone and a timezone change has its own
+              reasons to be refused. Nesting forms is invalid HTML anyway. */}
+          <SettingsSection
+            id="password"
+            title="Password"
+            description={
+              user.has_password
+                ? "Change the password you sign in with."
+                : "You signed in with Google or GitHub. Add a password to sign in with your email as well."
+            }
+          >
+            <PasswordCard hasPassword={Boolean(user.has_password)} />
+          </SettingsSection>
+
+          <form onSubmit={handleSubmit} noValidate className="space-y-10">
+
+
           {/* Timezone */}
           <SettingsSection
             id="timezone"
             title="Timezone"
             description="Every appointment time in Slotly is drawn in this zone."
           >
+            {/* `timezone-select` rather than `timezone`, because the section
+                wrapping this already owns `id="timezone"` as the anchor the
+                section nav scrolls to. Two elements shared the id, so
+                `<label for="timezone">` resolved to the *section* — clicking the
+                label focused nothing, and assistive technology had no label for
+                the control at all. */}
             <Field
-              id="timezone"
+              id="timezone-select"
               label="Your working timezone"
               error={errors.timezone}
               hint="Change it while travelling and your appointments follow — they do not move, the clock does. Other people always see the same appointment converted to their own zone."
             >
               <TimezoneSelect
-                inputId="timezone"
+                inputId="timezone-select"
                 value={timezone}
                 onChange={setTimezone}
                 labelStyle="original"
@@ -429,8 +459,9 @@ export default function SettingsPage() {
             >
               {saving ? "Saving…" : "Save changes"}
             </button>
-          </div>
-        </form>
+            </div>
+          </form>
+        </div>
       </div>
     </Page>
   );
@@ -568,13 +599,17 @@ function SettingsSection({ id, title, description, children }) {
   );
 }
 
-function ReadOnlyRow({ label, value, hint }) {
+function ReadOnlyRow({ label, value, hint, action }) {
   return (
     <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1 py-3 first:pt-0">
       <dt className="text-[0.8125rem] font-medium text-ink">{label}</dt>
       <dd className="min-w-0 text-right">
         <span className="block truncate text-sm text-ink-2">{value || "—"}</span>
         {hint && <span className="mt-0.5 block text-xs text-ink-3">{hint}</span>}
+        {/* For a row that is read-only *by default* but has one way to change it
+            — the role. Kept in the row rather than floated elsewhere so the
+            control sits next to the value it changes. */}
+        {action && <div className="mt-2 flex justify-end">{action}</div>}
       </dd>
     </div>
   );
@@ -664,9 +699,10 @@ function BookingPolicySection() {
         error={error}
         hint="You can always cancel or reschedule anything on your calendar yourself."
       >
+        {(wiring) => (
         <div className="flex flex-wrap items-center gap-3">
           <Input
-            id="settings-cutoff-hours"
+            {...wiring}
             type="number"
             min="0"
             max="720"
@@ -692,6 +728,7 @@ function BookingPolicySection() {
             </button>
           )}
         </div>
+        )}
       </Field>
 
       <p className="mt-5 flex items-start gap-2 border-t border-line-soft pt-5 text-xs leading-relaxed text-ink-3">

@@ -19,7 +19,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { DateTime } from "luxon";
 import * as bookingsApi from "../api/bookings";
 import { useApiResource } from "../hooks/useApiResource";
@@ -38,6 +38,7 @@ import {
   buttonSm,
   secondaryButton,
 } from "../lib/ui";
+import usePageTitle from "../hooks/usePageTitle";
 
 const FILTERS = [
   { id: "all", label: "All" },
@@ -56,6 +57,8 @@ const FILTERS = [
 const UNREAD_POLL_MS = 30_000;
 
 export default function MessagesPage() {
+  usePageTitle("Messages");
+
   const { user } = useAuth();
   const { bookingId } = useParams();
   const navigate = useNavigate();
@@ -252,7 +255,6 @@ export default function MessagesPage() {
                     conversation={conversation}
                     active={selected?.id === conversation.id}
                     viewerZone={viewerZone}
-                    onSelect={() => navigate(`/messages/${conversation.id}`)}
                   />
                 </li>
               ))}
@@ -331,14 +333,23 @@ export default function MessagesPage() {
   );
 }
 
-function ConversationRow({ conversation, active, viewerZone, onSelect }) {
+/**
+ * One row in the conversation list.
+ *
+ * A `<Link>`, not a `<button>`. `/messages/:bookingId` is a real, deep-linkable
+ * route, but rendering the row as a button meant none of the things a person
+ * expects of a list of links worked: no middle-click to open in a new tab, no
+ * "Copy link address", no Cmd-click, and nothing to hover for the destination.
+ * The click behaviour is identical either way, since the handler navigated to
+ * exactly this URL.
+ */
+function ConversationRow({ conversation, active, viewerZone }) {
   const { unread } = conversation;
   const hasUnread = unread > 0;
 
   return (
-    <button
-      type="button"
-      onClick={onSelect}
+    <Link
+      to={`/messages/${conversation.id}`}
       aria-current={active ? "true" : undefined}
       className={`relative flex w-full cursor-pointer items-start gap-3 border-b border-line-soft p-4 text-left transition ${
         active ? "bg-subtle" : "hover:bg-subtle"
@@ -403,6 +414,6 @@ function ConversationRow({ conversation, active, viewerZone, onSelect }) {
           {unread} unread {unread === 1 ? "message" : "messages"}
         </span>
       )}
-    </button>
+    </Link>
   );
 }

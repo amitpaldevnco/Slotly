@@ -31,6 +31,7 @@ import {
   loginUser,
   updateProfile,
 } from "../controller/authController.js";
+import { changePassword } from "../controller/passwordController.js";
 import { verifyToken } from "../middleware/authMiddleware.js";
 import { upload } from "../middleware/uploadMiddleware.js";
 import { credentialsLimiter, signupLimiter } from "../middleware/rateLimit.js";
@@ -49,5 +50,12 @@ router.get("/me", verifyToken, getCurrentUser);
 router.post("/logout", logout);
 router.post("/register", signupLimiter, registerUser);
 router.post("/login", credentialsLimiter, loginUser);
+
+// Changing your own password. Authenticated, and rate limited as well: it
+// verifies a secret, so it is a place someone with a stolen cookie could grind at
+// the current password. `verifyToken` proves the session; the controller proves
+// the person. There is deliberately no unauthenticated reset route — see
+// controller/passwordController.js for why, and what stands in for it.
+router.patch("/password", verifyToken, credentialsLimiter, changePassword);
 
 export default router;

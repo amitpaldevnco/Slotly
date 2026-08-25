@@ -95,14 +95,29 @@ export default function EmptyState({
 
 //Error
 
-export function ErrorState({ message, onRetry, children, bare = false, className = "" }) {
+/**
+ * @param {object} props
+ * @param {string} [props.title] Overrides the default heading. Worth setting
+ *   whenever the failure has a name: a mistyped service id produced
+ *   "Something went wrong / Service not found for this provider", where the
+ *   heading contradicted the message it sat above — one says the app broke, the
+ *   other says the link is wrong.
+ */
+export function ErrorState({
+  message,
+  title = "Something went wrong",
+  onRetry,
+  children,
+  bare = false,
+  className = "",
+}) {
   return (
     <div className={`${bare ? "" : cardClasses} px-4 py-12 text-center ${className}`}>
       <span className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-danger-soft text-danger-ink">
         <Icon name="alert" size={22} />
       </span>
 
-      <p className="font-display text-base font-semibold text-ink">Something went wrong</p>
+      <p className="font-display text-base font-semibold text-ink">{title}</p>
       <p role="alert" className="mx-auto mt-1.5 max-w-[48ch] text-sm leading-relaxed text-ink-2">
         {message}
       </p>

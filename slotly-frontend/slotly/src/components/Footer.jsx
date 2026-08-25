@@ -12,37 +12,44 @@
 
 import { Link } from "react-router-dom";
 import Logo from "./ui/Logo";
+import { LEGAL_ROUTES } from "./ui/LegalLinks";
+import { DISCOVERY_ROUTE, DISCOVERY_LABEL } from "../lib/discovery";
 import { container } from "../lib/ui";
 
 /**
  * The link columns.
  *
- * `to` is an internal route; `href` is anything else. Several of the design's
- * labels have no page behind them yet — those carry `href: "#"` and are listed
- * here rather than spelled out in the markup, so wiring each one up later is a
- * single edit in a single place and nothing in the layout has to move.
+ * `to` is an internal route; `href` is anything else.
+ *
+ * Every one of these was `href: "#"` — seven labels that looked like navigation
+ * and did nothing, two of them documents the sign-up card asks people to agree
+ * to. They now point at real pages (see `pages/LegalPage`), except the two that
+ * described features Slotly does not have: there is no pricing, because nothing
+ * is charged for, and a "Features" page listing what a visitor can already see
+ * on the landing page is filler. Those are replaced by the two links a visitor
+ * to the footer actually wants — find someone to book, or read the FAQ.
  */
 const COLUMNS = [
   {
     title: "Product",
     links: [
-      { label: "Features", href: "#" },
-      { label: "Pricing", href: "#" },
+      { label: DISCOVERY_LABEL, to: DISCOVERY_ROUTE },
+      { label: "How booking works", to: LEGAL_ROUTES.help },
     ],
   },
   {
     title: "Legal",
     links: [
-      { label: "Privacy Policy", href: "#" },
-      { label: "Terms of Service", href: "#" },
-      { label: "Cookie Settings", href: "#" },
+      { label: "Privacy Policy", to: LEGAL_ROUTES.privacy },
+      { label: "Terms of Service", to: LEGAL_ROUTES.terms },
+      { label: "Cookie Settings", to: LEGAL_ROUTES.cookies },
     ],
   },
   {
     title: "Support",
     links: [
-      { label: "Contact Us", href: "#" },
-      { label: "Help Center", href: "#" },
+      { label: "Contact Us", to: LEGAL_ROUTES.contact },
+      { label: "Help Center", to: LEGAL_ROUTES.help },
     ],
   },
 ];

@@ -24,6 +24,7 @@ import {
   formatPrice,
   zoneName,
 } from "../lib/ui";
+import usePageTitle from "../hooks/usePageTitle";
 
 const FILTERS = [
   { id: "active", label: "Active" },
@@ -34,6 +35,8 @@ const FILTERS = [
 const BOOKINGS_PAGE_SIZE = 8;
 
 export default function ServicesPage() {
+  usePageTitle("Services");
+
   const { user } = useAuth();
   const toast = useToast();
 

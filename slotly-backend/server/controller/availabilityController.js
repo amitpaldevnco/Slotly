@@ -2,6 +2,7 @@
  * Availability endpoints: a provider's recurring weekly hours and their one-off
  * exceptions.
  */
+import { DateTime } from "luxon";
 import { query, transaction } from "../config/dbConfig.js";
 import {
   successResponse,
@@ -731,6 +732,29 @@ export const createAvailabilityException = async (req, res) => {
       errors.push({ field: "endDate", message: "End date must be a real date in YYYY-MM-DD form" });
     } else if (isValidIsoDate(startDate) && resolvedEndDate < startDate) {
       errors.push({ field: "endDate", message: "End date cannot be before the start date" });
+    }
+
+    // Not in the past.
+    //
+    // The date inputs carry `min="today"`, but an attribute is a courtesy to the
+    // browser and not a rule: the form is submitted with `noValidate` so the app
+    // can render its own messages, and the API is reachable directly regardless.
+    // Without this a provider could block January 2020, which does nothing to
+    // their calendar and sits in their exception list forever.
+    //
+    // Compared in the provider's own timezone, because "today" is a wall-clock
+    // question and an exception is a wall-clock date -- comparing against the
+    // server's UTC date would refuse a legitimate "today" for anyone far enough
+    // east, and accept a stale one for anyone far enough west.
+    if (isValidIsoDate(startDate) && isValidIsoDate(resolvedEndDate)) {
+      const owner = await query("SELECT timezone FROM users WHERE id = $1", [req.user.userId]);
+      const providerToday = DateTime.now()
+        .setZone(owner.rows[0]?.timezone || "UTC")
+        .toISODate();
+
+      if (resolvedEndDate < providerToday) {
+        errors.push({ field: "startDate", message: "That date has already passed" });
+      }
     }
 
     // A range is bounded so one request cannot write a decade of blocked days.

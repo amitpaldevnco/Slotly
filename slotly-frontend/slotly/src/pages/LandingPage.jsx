@@ -11,6 +11,7 @@ import {
 import { DISCOVERY_ROUTE } from "../lib/discovery";
 import HERO_IMAGE  from "../assets/HERO_IMAGE.png";
 import CONSULTING_IMAGE  from "../assets/CONSULTING_IMAGE.jpg";
+import usePageTitle from "../hooks/usePageTitle";
 
 /**
  * The two photographs the design places in the hero and in the large category
@@ -25,20 +26,41 @@ const PRESS = ["Secure Scheduling", "Easy Booking", "Built for Professionals"];
  * The two small tiles in the bento grid. The large one is spelled out in the
  * markup because it carries a photograph and an overlay rather than an icon.
  */
+/**
+ * `category` is the canonical value from `lib/categories`, and it is the whole
+ * point of these tiles: all three used to link to the bare directory, so
+ * pressing "Healthcare" under a heading that says "Explore by Category" applied
+ * no category at all. Two of the three did not even name a real one.
+ */
 const CATEGORIES = [
   {
     icon: "stethoscope",
     title: "Healthcare",
+    category: "Healthcare",
     body: "Therapy, Nutrition & Wellness",
   },
   {
     icon: "fitness_center",
     title: "Fitness",
+    category: "Fitness",
     body: "Personal Training & Yoga",
   },
 ];
 
+/** The large tile, which carries a photograph rather than an icon. */
+const FEATURED_CATEGORY = {
+  title: "Consulting",
+  category: "Consulting",
+  body: "Strategy, Finance & Operations",
+};
+
+/** `/providers?category=Healthcare` — the directory reads this on mount. */
+const categoryHref = (category) =>
+  `${DISCOVERY_ROUTE}?category=${encodeURIComponent(category)}`;
+
 export default function LandingPage() {
+  usePageTitle(null);
+
   return (
     <div>
       {/* ---- Hero --------------------------------------------------------- */}
@@ -63,7 +85,7 @@ export default function LandingPage() {
               <Icon name="arrowRight" size={20} />
             </Link>
             <Link to="/login" className={`${secondaryButton} ${buttonLg}`}>
-              Join as a Services Provider
+              Join as a provider
             </Link>
           </div>
 
@@ -100,7 +122,7 @@ export default function LandingPage() {
         <div className="grid auto-rows-[240px] grid-cols-1 gap-6 md:grid-cols-3">
           {/* The feature tile: two columns wide, two rows tall from `md`. */}
           <Link
-            to={DISCOVERY_ROUTE}
+            to={categoryHref(FEATURED_CATEGORY.category)}
             className="group relative overflow-hidden rounded-xl border border-outline-variant focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary md:col-span-2 md:row-span-2"
           >
             <img
@@ -114,17 +136,15 @@ export default function LandingPage() {
 
             <div className="absolute bottom-0 left-0 w-full p-6 text-on-primary sm:p-8">
               <Icon name="lightbulb" size={36} className="mb-2" />
-              <h3 className="mb-1 font-h3 text-h3 text-on-primary">Business Consulting</h3>
-              <p className="font-small text-small text-on-primary/80">
-                Strategy, Finance &amp; Operations
-              </p>
+              <h3 className="mb-1 font-h3 text-h3 text-on-primary">{FEATURED_CATEGORY.title}</h3>
+              <p className="font-small text-small text-on-primary/80">{FEATURED_CATEGORY.body}</p>
             </div>
           </Link>
 
           {CATEGORIES.map((category) => (
             <Link
               key={category.title}
-              to={DISCOVERY_ROUTE}
+              to={categoryHref(category.category)}
               className="group relative flex flex-col justify-between overflow-hidden rounded-xl border border-outline-variant bg-surface p-6 transition-colors hover:border-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
             >
               <span className="flex h-12 w-12 items-center justify-center rounded-lg bg-surface-container-low text-primary transition-colors group-hover:bg-primary group-hover:text-on-primary">

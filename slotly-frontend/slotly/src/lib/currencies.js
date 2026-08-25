@@ -147,3 +147,75 @@ export function currencyLabel({ code, name }) {
     return `${code} — ${name}`;
   }
 }
+
+/**
+ * Roughly how much one unit of each currency is worth, in a common unit.
+ *
+ * **For ordering only. Never render a converted amount from these.**
+ *
+ * The directory's "Price: Low to High" used to compare `Number(fromPrice)`
+ * directly, with no reference to what the number was denominated in — so a
+ * provider charging ₹900 (about £8) was ranked above one charging £250, and the
+ * sort was not merely imprecise but backwards. Sorting numbers of different
+ * units is not a rounding problem; it is a category error.
+ *
+ * Fixing it properly needs live rates, a date and a payments story, none of
+ * which Slotly has. Fixing it *usefully* needs only the order to be right, and
+ * for that an approximation is enough: the difference between ₹900 and £250 is
+ * two orders of magnitude, and no plausible rate drift reverses it. So these are
+ * indicative figures, deliberately rounded, used to put rows in a sensible order
+ * and for nothing else. Every price a user sees is still the provider's own
+ * number in the provider's own currency, unconverted.
+ *
+ * A code that is missing here falls back to 1, which sorts it as though it were
+ * the reference unit — wrong, but bounded and stable, and better than dropping
+ * the provider out of a sorted list.
+ */
+const INDICATIVE_UNIT_VALUE = {
+  USD: 1,
+  EUR: 1.08,
+  GBP: 1.27,
+  CHF: 1.12,
+  CAD: 0.74,
+  AUD: 0.66,
+  NZD: 0.61,
+  SGD: 0.74,
+  HKD: 0.128,
+  CNY: 0.14,
+  JPY: 0.0067,
+  INR: 0.012,
+  PKR: 0.0036,
+  LKR: 0.0034,
+  IDR: 0.000063,
+  MYR: 0.21,
+  PHP: 0.018,
+  THB: 0.028,
+  AED: 0.27,
+  SAR: 0.27,
+  ZAR: 0.055,
+  NGN: 0.00065,
+  KES: 0.0078,
+  BRL: 0.18,
+  MXN: 0.058,
+  PLN: 0.25,
+  SEK: 0.095,
+  NOK: 0.094,
+  DKK: 0.145,
+  TRY: 0.029,
+};
+
+/**
+ * A price expressed in a common unit, for comparing two providers' prices.
+ *
+ * @param {number|string|null|undefined} amount The stored price.
+ * @param {string|null|undefined} code Its ISO 4217 currency.
+ * @returns {number|null} A comparable magnitude, or null when there is no price
+ *   to compare — which callers must handle rather than coercing, so that an
+ *   unpriced provider does not sort as free.
+ */
+export function comparablePrice(amount, code) {
+  if (amount == null || amount === "") return null;
+  const value = Number(amount);
+  if (!Number.isFinite(value)) return null;
+  return value * (INDICATIVE_UNIT_VALUE[code] ?? 1);
+}

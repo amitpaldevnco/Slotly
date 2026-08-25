@@ -15,10 +15,13 @@ import * as availabilityApi from "../../api/availability";
 import { useToast } from "../../context/ToastContext";
 import Icon from "../ui/Icon";
 import Field, { Input, CardRadioGroup } from "../ui/Field";
+import Modal from "../ui/Modal";
 import EmptyState from "../ui/Feedback";
 import { formatClockTime, todayIn } from "../../lib/time";
 import {
   primaryButton,
+  secondaryButton,
+  dangerButton,
   ghostButton,
   buttonSm,
   badgeVariants,
@@ -53,6 +56,10 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
   const [endTime, setEndTime] = useState("17:00");
   const [note, setNote] = useState("");
   const [errors, setErrors] = useState({});
+
+  // The exception awaiting confirmation, or null. Holds the whole row rather
+  // than an id so the dialog can describe exactly what is about to go.
+  const [pendingDelete, setPendingDelete] = useState(null);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
 
@@ -72,6 +79,16 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+
+    // Checked here as well as on the server, because the form is submitted with
+    // `noValidate` -- so the inputs' own `min` no longer stops anything -- and a
+    // date already gone by is worth refusing before the round trip.
+    const effectiveEnd = endDate || startDate;
+    if (effectiveEnd && effectiveEnd < today) {
+      setErrors({ startDate: "That date has already passed" });
+      return;
+    }
+
     setErrors({});
     setSaving(true);
 
@@ -101,12 +118,25 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
     }
   };
 
-  const handleDelete = async (id) => {
-    setDeletingId(id);
+  /**
+   * Removing an exception is confirmed first, because it is not reversible and
+   * it is not obviously destructive.
+   *
+   * Deleting a blocked holiday immediately reopens those dates for booking, so a
+   * mis-tapped bin icon can hand out appointments on days the provider is away —
+   * and there is nothing on the screen afterwards to suggest anything happened.
+   * Service removal already confirms; this was the one destructive control in
+   * the availability screen that did not.
+   */
+  const handleDelete = async (exception) => {
+    setDeletingId(exception.id);
     try {
-      await availabilityApi.deleteException(id);
-      onChanged(exceptions.filter((exception) => exception.id !== id));
-      toast.success("Exception removed.");
+      await availabilityApi.deleteException(exception.id);
+      onChanged(exceptions.filter((item) => item.id !== exception.id));
+      toast.success(
+        exception.kind === "block" ? "Those dates are open again." : "Extra hours removed."
+      );
+      setPendingDelete(null);
     } catch (err) {
       toast.error(parseApiError(err, "Could not remove that exception.").message);
     } finally {
@@ -140,6 +170,12 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
       {formOpen && (
         <form
           onSubmit={handleSubmit}
+          // `noValidate`: the date inputs carry `min`, so the browser's own
+          // constraint check would fire before `handleSubmit` and block the
+          // request without this form ever getting to render the server's
+          // field-level answer -- "End date cannot be before the start date"
+          // and the rest.
+          noValidate
           className="space-y-5 border-b border-outline-variant bg-surface-container-low p-6"
         >
           <CardRadioGroup
@@ -289,7 +325,7 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
 
                 <button
                   type="button"
-                  onClick={() => handleDelete(exception.id)}
+                  onClick={() => setPendingDelete(exception)}
                   disabled={deletingId === exception.id}
                   aria-label={`Remove exception on ${describeRange(exception)}`}
                   className={`${ghostButton} ${buttonSm} shrink-0 hover:bg-danger-soft hover:text-danger-ink`}
@@ -301,6 +337,40 @@ export default function ExceptionsEditor({ exceptions, timezone, serviceId, onCh
           })}
         </ul>
       )}
+
+      <Modal
+        open={Boolean(pendingDelete)}
+        onClose={() => setPendingDelete(null)}
+        title={
+          pendingDelete?.kind === "open" ? "Remove these extra hours?" : "Open these dates again?"
+        }
+        description={pendingDelete ? describeRange(pendingDelete) : undefined}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setPendingDelete(null)}
+              className={secondaryButton}
+            >
+              Keep it
+            </button>
+            <button
+              type="button"
+              onClick={() => handleDelete(pendingDelete)}
+              disabled={deletingId === pendingDelete?.id}
+              className={dangerButton}
+            >
+              {deletingId === pendingDelete?.id ? "Removing…" : "Remove"}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm leading-relaxed text-ink-2">
+          {pendingDelete?.kind === "open"
+            ? "These hours stop being offered. Your usual weekly hours are unaffected, and appointments already booked in this window still go ahead."
+            : "Your usual weekly hours apply to these dates again, so clients will be able to book them straight away. Appointments already booked are unaffected."}
+        </p>
+      </Modal>
     </div>
   );
 }

@@ -408,6 +408,45 @@ export const openApiDocument = {
       },
     },
 
+    "/auth/password": {
+      patch: {
+        tags: ["Auth"],
+        summary: "Change your own password",
+        description:
+          `${bearerNote} Requires the current password as well as the session, because a cookie proves ` +
+          "the browser is signed in and not that the person holding it owns the account — without the " +
+          "check, an unattended laptop is enough to take the account permanently.\n\nAn account that " +
+          "signed up with Google or GitHub has no password to verify, so `currentPassword` is not " +
+          "required for it and this call *adds* one rather than replacing it.\n\nThere is deliberately " +
+          "no unauthenticated reset route: delivering a reset link needs an email transport, which this " +
+          "deployment does not have. An account with a genuinely forgotten password and no social " +
+          "identity attached cannot be recovered — social sign-in is the recovery path.",
+        requestBody: {
+          required: true,
+          content: {
+            "application/json": {
+              schema: {
+                type: "object",
+                required: ["newPassword"],
+                properties: {
+                  currentPassword: {
+                    type: "string",
+                    description: "Required unless the account has no password yet.",
+                  },
+                  newPassword: { type: "string", minLength: 8 },
+                },
+              },
+            },
+          },
+        },
+        responses: {
+          200: { description: "`{ hadPassword }` — false when a password was added rather than changed" },
+          400: errorRef("New password too short, or unchanged"),
+          401: errorRef("No session, or the current password is wrong (INVALID_CREDENTIALS)"),
+        },
+      },
+    },
+
     "/auth/google": {
       post: {
         tags: ["Auth"],
@@ -1417,6 +1456,24 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
           400: errorRef("INVALID_TRANSITION — use /cancel to cancel"),
           403: errorRef("Not the provider"),
           409: errorRef("APPOINTMENT_NOT_STARTED or BOOKING_NOT_ACTIVE"),
+        },
+      },
+    },
+
+    "/bookings/counts": {
+      get: {
+        tags: ["Bookings"],
+        summary: "How many bookings fall in each tab of the appointments screen",
+        description:
+          `${bearerNote} Role-aware — a client is counted on the bookings they made, a provider on ` +
+          "the bookings on their calendar — which is what distinguishes this from `/bookings/summary`, " +
+          "a provider's earnings report that refuses a client outright. The three conditions are the " +
+          "same expressions `GET /bookings` uses for `scope=upcoming`, `scope=past` and " +
+          "`status=cancelled`, so a count cannot disagree with the list it labels. Counted in SQL, " +
+          "because the booking list caps at 500 rows.",
+        responses: {
+          200: { description: "`{ upcoming, past, cancelled }`" },
+          401: errorRef("No session"),
         },
       },
     },

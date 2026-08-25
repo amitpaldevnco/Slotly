@@ -29,8 +29,17 @@ import { parseApiError } from "../../api/client";
 import Avatar from "../ui/Avatar";
 import Icon from "../ui/Icon";
 import { SkeletonBlock, SkeletonRows } from "../ui/Feedback";
+import Modal from "../ui/Modal";
 import { countdownTo, formatTime, greeting, relativeTime } from "../../lib/time";
-import { container, formatPrice, formatDuration, statusStyle, zoneName } from "../../lib/ui";
+import {
+  container,
+  formatPrice,
+  formatDuration,
+  statusStyle,
+  zoneName,
+  secondaryButton,
+  dangerButton,
+} from "../../lib/ui";
 
 export default function ProviderDashboard({ user }) {
   // The account-health warnings are already loaded once per session by the
@@ -116,6 +125,14 @@ export default function ProviderDashboard({ user }) {
   // Which row is mid-request, so only that row's buttons go quiet rather than
   // the whole panel freezing while one appointment is settled.
   const [settlingId, setSettlingId] = useState(null);
+
+  // The appointment awaiting a no-show confirmation, or null.
+  //
+  // Only no-show is confirmed. "Completed" is the expected outcome and is
+  // correctable by marking it again; a no-show is a statement about the client
+  // that shows on their record, withholds the fee from earnings and blocks the
+  // review, and it sat one mis-tap away from Completed with no undo.
+  const [pendingNoShow, setPendingNoShow] = useState(null);
   const toast = useToast();
 
   /**
@@ -123,6 +140,7 @@ export default function ProviderDashboard({ user }) {
    * choice moves: the queue itself, the earnings tiles, and the header badge.
    */
   const recordOutcome = async (booking, status) => {
+    setPendingNoShow(null);
     setSettlingId(booking.id);
     try {
       await bookingsApi.setStatus(booking.id, status);
@@ -221,7 +239,7 @@ export default function ProviderDashboard({ user }) {
                     </button>
                     <button
                       type="button"
-                      onClick={() => recordOutcome(booking, "no_show")}
+                      onClick={() => setPendingNoShow(booking)}
                       disabled={busy}
                       className="inline-flex items-center gap-1.5 rounded-md border border-outline-variant px-3 py-2 font-caption text-caption font-semibold text-on-surface transition-colors hover:bg-surface-container-low disabled:opacity-50"
                     >
@@ -383,7 +401,10 @@ export default function ProviderDashboard({ user }) {
               <h3 className="font-h3 text-[20px] leading-tight text-primary">Recent Messages</h3>
               <Link
                 to="/messages"
-                className="font-caption text-caption text-primary hover:underline"
+                // `-my-2 py-2` widens the tap area without moving the text. At
+                // caption size this was a 47x17px target, under the 24x24
+                // minimum and awkward to hit with a thumb.
+                className="-my-2 rounded px-1 py-2 font-caption text-caption text-primary hover:underline"
               >
                 View All
               </Link>
@@ -403,6 +424,41 @@ export default function ProviderDashboard({ user }) {
           </p>
         </div>
       </div>
+
+      <Modal
+        open={Boolean(pendingNoShow)}
+        onClose={() => setPendingNoShow(null)}
+        title="Mark this as a no-show?"
+        description={
+          pendingNoShow
+            ? `${pendingNoShow.client?.name ?? "This client"} · ${pendingNoShow.service?.name ?? ""}`
+            : undefined
+        }
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setPendingNoShow(null)}
+              className={secondaryButton}
+            >
+              Go back
+            </button>
+            <button
+              type="button"
+              onClick={() => recordOutcome(pendingNoShow, "no_show")}
+              disabled={settlingId === pendingNoShow?.id}
+              className={dangerButton}
+            >
+              {settlingId === pendingNoShow?.id ? "Saving…" : "Mark no-show"}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm leading-relaxed text-ink-2">
+          Nothing is added to your earnings, the client sees this on their own record, and they
+          cannot review the appointment. If they did attend, choose Completed instead.
+        </p>
+      </Modal>
     </div>
   );
 }

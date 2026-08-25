@@ -4,8 +4,11 @@ import { useAuth } from "../context/AuthContext";
 import ClientDashboard from "../components/dashboard/ClientDashboard";
 import ProviderDashboard from "../components/dashboard/ProviderDashboard";
 import { PageLoader } from "../components/ui/Feedback";
+import usePageTitle from "../hooks/usePageTitle";
 
 export default function DashboardPage() {
+  usePageTitle("Dashboard");
+
   const { user, loading } = useAuth();
 
   // ProtectedRoute has already guaranteed a user with a role by this point;

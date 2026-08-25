@@ -73,6 +73,7 @@ import {
   formatDuration,
   zoneName,
 } from "../lib/ui";
+import usePageTitle from "../hooks/usePageTitle";
 
 /** Longest a note may be, matching the API's own validation. */
 const MAX_NOTE = 500;
@@ -127,6 +128,8 @@ function useMinuteTick() {
 }
 
 export default function BookServicePage() {
+  usePageTitle("Book an appointment");
+
   const { providerId, serviceId } = useParams();
   const { user } = useAuth();
   const toast = useToast();
@@ -401,7 +404,15 @@ export default function BookServicePage() {
   if (error && !data) {
     return (
       <Page narrow>
-        <ErrorState message={error} onRetry={loadSlots}>
+        {/* A wrong or retired service id is a bad link, not a failure, so the
+            heading says which. `notFound` keys off the server's own wording
+            rather than a status code, because this page's loader collapses
+            several calls and reports only the message. */}
+        <ErrorState
+          title={/not found/i.test(error) ? "Service not found" : undefined}
+          message={error}
+          onRetry={loadSlots}
+        >
           <Link to={`/providers/${providerId}`} className={`${primaryButton} ${buttonSm}`}>
             Back to provider
           </Link>
@@ -756,7 +767,11 @@ export default function BookServicePage() {
                       type="button"
                       onClick={loadSlots}
                       disabled={busy}
-                      className="cursor-pointer font-semibold text-primary underline underline-offset-2 disabled:opacity-50"
+                      // `-my-2 py-2` widens the tap area vertically without
+                      // shifting the line: at caption size this rendered as a
+                      // 46x17px target, under the 24x24 minimum and genuinely
+                      // hard to hit on a phone.
+                      className="-my-2 cursor-pointer rounded px-1 py-2 font-semibold text-primary underline underline-offset-2 disabled:opacity-50"
                     >
                       {busy ? "Refreshing…" : "Refresh"}
                     </button>

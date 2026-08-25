@@ -16,6 +16,7 @@ import { parseApiError } from "../../api/client";
 import * as messagesApi from "../../api/messages";
 import { useApiResource } from "../../hooks/useApiResource";
 import { useToast } from "../../context/ToastContext";
+import { useAuth } from "../../context/AuthContext";
 import Avatar from "../ui/Avatar";
 import Icon from "../ui/Icon";
 import { ErrorState, SkeletonRows } from "../ui/Feedback";
@@ -24,17 +25,31 @@ import { ErrorState, SkeletonRows } from "../ui/Feedback";
 const MAX_LENGTH = 2000;
 
 /**
- * Openers for an empty thread.
+ * Openers for an empty thread, by who is looking at it.
  *
  * A blank box with a cursor in it is the reason most of these conversations
  * never start; four concrete questions is a lower bar than composing one.
+ *
+ * They have to differ by role, because the questions a client wants to ask are
+ * not questions a provider would ever ask their own client. Both sides were
+ * being offered the client's set, so a physiotherapist opening a thread with
+ * someone booked into their own clinic was invited to ask "Is there parking
+ * nearby?" and "Should I arrive early?".
  */
-const STARTERS = [
-  "Should I arrive early?",
-  "Do I need to bring anything?",
-  "Is there parking nearby?",
-  "Can I request something specific?",
-];
+const STARTERS = {
+  client: [
+    "Should I arrive early?",
+    "Do I need to bring anything?",
+    "Is there parking nearby?",
+    "Can I request something specific?",
+  ],
+  provider: [
+    "Anything I should know before we start?",
+    "Is this a new problem or a recurring one?",
+    "Please arrive five minutes early.",
+    "Let me know if you need to move this.",
+  ],
+};
 
 export default function MessageThread({
   bookingId,
@@ -44,6 +59,9 @@ export default function MessageThread({
   onSent,
 }) {
   const toast = useToast();
+  const { user } = useAuth();
+
+  const starters = STARTERS[user?.role === "provider" ? "provider" : "client"];
 
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
@@ -128,7 +146,7 @@ export default function MessageThread({
             <ul
               className={`mt-3 flex flex-wrap gap-2 ${isPage ? "justify-center" : ""}`}
             >
-              {STARTERS.map((starter) => (
+              {starters.map((starter) => (
                 <li key={starter}>
                   <button
                     type="button"

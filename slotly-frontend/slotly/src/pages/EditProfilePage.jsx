@@ -36,23 +36,10 @@ import {
   cardClasses,
   zoneName,
 } from "../lib/ui";
-
-const BUSINESS_TYPES = [
-  "Healthcare",
-  "Salon & Beauty",
-  "Fitness",
-  "Education",
-  "Legal",
-  "Consulting",
-  "Automotive",
-  "Home Services",
-  "Repair Services",
-  "Photography",
-  "Pet Care",
-  "Travel",
-  "Finance",
-  "Other",
-];
+import { categoryOptions } from "../lib/categories";
+import { checkBusinessName, checkName, checkPhone, collectErrors } from "../lib/validation";
+import usePageTitle from "../hooks/usePageTitle";
+import { NAME_MAX } from "../lib/validation";
 
 const MAX_BIO = 500;
 const MAX_QUALIFICATIONS = 500;
@@ -63,6 +50,7 @@ export default function EditProfilePage() {
   const toast = useToast();
   const { reload: reloadNotifications } = useNotifications();
 
+  const [name, setName] = useState("");
   const [phoneNumber, setPhoneNumber] = useState("");
   const [bio, setBio] = useState("");
   const [qualifications, setQualifications] = useState("");
@@ -79,8 +67,11 @@ export default function EditProfilePage() {
 
   const isProvider = user?.role === "provider";
 
+  usePageTitle("Profile");
+
   useEffect(() => {
     if (user) {
+      setName(user.name || "");
       setPhoneNumber(user.phone_number || "");
       setBio(user.bio || "");
       setQualifications(user.qualifications || "");
@@ -132,6 +123,23 @@ export default function EditProfilePage() {
 
   const handleSubmit = async (event) => {
     event.preventDefault();
+
+    // Checked here before the request, so a bad value is reported against its
+    // own field instead of coming back as the server's generic
+    // "Failed to update profile" — which is what an over-long phone number used
+    // to produce, with no indication of which field was at fault.
+    const problems = collectErrors({
+      name: checkName(name),
+      phoneNumber: checkPhone(phoneNumber, { allowEmpty: true }),
+      ...(isProvider ? { businessName: checkBusinessName(businessName) } : {}),
+    });
+    if (Object.keys(problems).length > 0) {
+      setErrors(problems);
+      setFormError("");
+      setSuccessMessage("");
+      return;
+    }
+
     setLoading(true);
     setFormError("");
     setSuccessMessage("");
@@ -140,11 +148,18 @@ export default function EditProfilePage() {
     try {
       const formData = new FormData();
 
-      if (phoneNumber) formData.append("phoneNumber", phoneNumber);
+      formData.append("name", name.trim());
+
+      // Sent even when empty, which is what makes clearing it possible. Under
+      // `if (phoneNumber)` a cleared field was simply omitted, the request ended
+      // up with nothing in it, and the server answered "No fields to update" —
+      // so a number already shared with providers could never be withdrawn.
+      formData.append("phoneNumber", phoneNumber.trim());
+
       if (user.role === "provider") {
         formData.append("bio", bio);
         formData.append("qualifications", qualifications);
-        if (businessName) formData.append("businessName", businessName);
+        formData.append("businessName", businessName.trim());
         if (businessType) formData.append("businessType", businessType);
         if (currency) formData.append("currency", currency);
       }
@@ -207,7 +222,7 @@ export default function EditProfilePage() {
           <ProfileSection
             id="basic-info"
             title="Basic information"
-            description="Your name and email come from the account you signed in with."
+            description="Your email is fixed to the account you signed in with. Everything else here you can change."
           >
             <div className="flex flex-col gap-6 sm:flex-row sm:items-start">
               <div className="flex shrink-0 flex-col items-center gap-3">
@@ -244,7 +259,22 @@ export default function EditProfilePage() {
 
               <div className="min-w-0 flex-1 space-y-5">
                 <div className="grid gap-5 sm:grid-cols-2">
-                  <ReadOnlyField label="Full name" value={user.name} />
+                  {/* Editable, where it used to be read-only on the grounds
+                      that it "comes from the account you signed in with". That
+                      is true of Google and GitHub but not of a password
+                      account, which types its own name at sign-up — so a typo
+                      there was permanent and followed the user onto every
+                      appointment and review. */}
+                  <Field id="name" label="Full name" error={errors.name} required>
+                    <Input
+                      type="text"
+                      autoComplete="name"
+                      maxLength={NAME_MAX}
+                      value={name}
+                      onChange={(event) => setName(event.target.value)}
+                      placeholder="Your name"
+                    />
+                  </Field>
                   <ReadOnlyField label="Email" value={user.email} />
                 </div>
 
@@ -313,9 +343,17 @@ export default function EditProfilePage() {
                       <option value="" disabled>
                         Select a category
                       </option>
-                      {BUSINESS_TYPES.map((type) => (
-                        <option key={type} value={type}>
-                          {type}
+                      {/* Built from what is stored, not from the fixed list
+                          alone. A `<select>` whose value matches no option
+                          silently falls back to the first one, so a provider
+                          stored as "Physiotherapy" was shown "Healthcare" —
+                          a category that was not theirs, which saving the form
+                          would then have written. `categoryOptions` surfaces the
+                          real value, marked as unlisted, so they can see it and
+                          choose a listed one. */}
+                      {categoryOptions(user?.business_type).map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
                         </option>
                       ))}
                     </Select>

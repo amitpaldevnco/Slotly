@@ -31,6 +31,7 @@ import Icon from "../components/ui/Icon";
 import BackLink from "../components/ui/BackLink";
 import EmptyState, { PageLoader } from "../components/ui/Feedback";
 import { container, formatPrice, formatDuration, zoneName } from "../lib/ui";
+import usePageTitle from "../hooks/usePageTitle";
 
 export default function ProviderPublicProfilePage() {
   const { providerId } = useParams();
@@ -56,6 +57,9 @@ export default function ProviderPublicProfilePage() {
   const provider = data?.provider ?? null;
   const services = data?.services ?? [];
   const availability = data?.availability ?? null;
+
+  // Named once it is known, so a tab left open on a provider says who.
+  usePageTitle(provider ? provider.business_name || provider.name : "Provider");
 
   // Taken from the server's answer rather than compared client-side.
   const isOwner = Boolean(provider?.isOwner);

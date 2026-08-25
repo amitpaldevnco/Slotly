@@ -35,8 +35,11 @@ import Icon from "../components/ui/Icon";
 import Field, { Input } from "../components/ui/Field";
 import { Alert, ErrorState, PageLoader } from "../components/ui/Feedback";
 import { container, primaryButton, secondaryButton, buttonSm, zoneName } from "../lib/ui";
+import usePageTitle from "../hooks/usePageTitle";
 
 export default function AvailabilityPage() {
+  usePageTitle("Availability");
+
   const { user, refetchUser } = useAuth();
   const toast = useToast();
 
@@ -399,26 +402,40 @@ function CancellationPolicyCard({ value, onSaved }) {
         Scheduling Rules
       </h2>
 
-      <form onSubmit={handleSubmit}>
+      {/* `noValidate` so this form's own validation is the one that runs.
+          Without it the browser's constraint check fired first -- the input is
+          `min="0"` -- and blocked submission before `handleSubmit`, so entering
+          a negative value produced no styled error, no toast and no request: a
+          Save that appeared to do nothing at all. Every other form in the app
+          validates itself for exactly this reason. */}
+      <form onSubmit={handleSubmit} noValidate>
         <Field
           id="cutoff-hours"
           label="Cancellation notice"
           error={error}
           hint="How far in advance a client must cancel. You can always cancel or reschedule anything on your calendar yourself."
         >
-          <div className="flex items-center gap-3">
-            <Input
-              id="cutoff-hours"
-              type="number"
-              min="0"
-              max="720"
-              step="1"
-              value={hours}
-              onChange={(e) => setHours(e.target.value)}
-              className="w-24"
-            />
-            <span className="font-small text-small text-on-surface-variant">hours before</span>
-          </div>
+          {/* The render-function form, because the control is inside a layout
+              wrapper rather than being the child itself. `Field` clones its
+              wiring onto whatever child it is given, so passing the wrapper put
+              the id on the `<div>` — leaving two elements with the same id and
+              the label pointing at the wrong one. Taking the wiring as an
+              argument puts it where it belongs. */}
+          {(wiring) => (
+            <div className="flex items-center gap-3">
+              <Input
+                {...wiring}
+                type="number"
+                min="0"
+                max="720"
+                step="1"
+                value={hours}
+                onChange={(e) => setHours(e.target.value)}
+                className="w-24"
+              />
+              <span className="font-small text-small text-on-surface-variant">hours before</span>
+            </div>
+          )}
         </Field>
 
         {/* Only offered once the value has actually changed. A permanently

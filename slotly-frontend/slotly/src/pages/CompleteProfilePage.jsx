@@ -15,26 +15,12 @@ import {
 import Page from "../components/ui/Page";
 import Field, { Input, Select, CardRadioGroup } from "../components/ui/Field";
 import { CURRENCIES, currencyLabel, currencyForTimezone } from "../lib/currencies";
+import { CATEGORIES } from "../lib/categories";
+import { checkBusinessName, checkPhone, collectErrors } from "../lib/validation";
+import usePageTitle from "../hooks/usePageTitle";
 import { Alert } from "../components/ui/Feedback";
 import Icon from "../components/ui/Icon";
 import { primaryButton, buttonBlock, buttonLg, cardClasses, eyebrow } from "../lib/ui";
-
-const BUSINESS_TYPES = [
-  "Healthcare",
-  "Salon & Beauty",
-  "Fitness",
-  "Education",
-  "Legal",
-  "Consulting",
-  "Automotive",
-  "Home Services",
-  "Repair Services",
-  "Photography",
-  "Pet Care",
-  "Travel",
-  "Finance",
-  "Other",
-];
 
 export default function CompleteProfilePage() {
   const navigate = useNavigate();
@@ -65,6 +51,20 @@ export default function CompleteProfilePage() {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    // Checked locally first. The phone field had no format rule on either side
+    // of this screen, which is how `abcdef` came to be stored as a number whose
+    // only purpose is being reachable when an appointment has to move.
+    const problems = collectErrors({
+      phoneNumber: checkPhone(phoneNumber),
+      ...(role === "provider" ? { businessName: checkBusinessName(businessName) } : {}),
+    });
+    if (Object.keys(problems).length > 0) {
+      setErrors(problems);
+      setFormError("");
+      return;
+    }
+
     setLoading(true);
     setFormError("");
     setErrors({});
@@ -72,9 +72,11 @@ export default function CompleteProfilePage() {
     try {
       await authApi.completeProfile({
         role,
-        phoneNumber,
+        phoneNumber: phoneNumber.trim(),
         timezone: normalizeTimezone(typeof timezone === "string" ? timezone : timezone.value),
-        ...(role === "provider" ? { businessName, businessType, currency } : {}),
+        ...(role === "provider"
+          ? { businessName: businessName.trim(), businessType, currency }
+          : {}),
       });
 
       await refetchUser();
@@ -93,6 +95,8 @@ export default function CompleteProfilePage() {
   };
 
   const isProvider = role === "provider";
+
+  usePageTitle("Complete your profile");
 
   return (
     <Page narrow>
@@ -199,7 +203,7 @@ export default function CompleteProfilePage() {
                     <option value="" disabled>
                       Select a category
                     </option>
-                    {BUSINESS_TYPES.map((type) => (
+                    {CATEGORIES.map((type) => (
                       <option key={type} value={type}>
                         {type}
                       </option>

@@ -1,5 +1,6 @@
 // Form field primitives.
 
+import { cloneElement, isValidElement } from "react";
 import Icon from "./Icon";
 import {
   labelClasses,
@@ -17,6 +18,7 @@ export default function Field({
   hint,
   error,
   optional = false,
+  required = false,
   action,
   children,
   className = "",
@@ -24,12 +26,32 @@ export default function Field({
   const hintId = hint ? `${id}-hint` : undefined;
   const errorId = error ? `${id}-error` : undefined;
 
+  // The wiring that makes an error belong to its input rather than merely sit
+  // near it: `aria-describedby` so a screen reader reads the message when the
+  // field takes focus, and `aria-invalid` so it announces the field as invalid
+  // at all.
+  const wiring = {
+    id,
+    "aria-describedby": [hintId, errorId].filter(Boolean).join(" ") || undefined,
+    "aria-invalid": error ? true : undefined,
+    "aria-required": required || undefined,
+  };
+
   return (
     <div className={className}>
       {label && (
         <div className="flex flex-wrap items-baseline justify-between gap-x-3">
           <label htmlFor={id} className={labelClasses}>
             {label}
+            {/* Marked on the required fields rather than the optional ones, so a
+                form is scannable for what it insists on. `aria-hidden` because
+                `aria-required` on the control already says this properly, and a
+                screen reader announcing a bare asterisk says nothing useful. */}
+            {required && (
+              <span aria-hidden="true" className="ml-0.5 font-normal text-danger">
+                *
+              </span>
+            )}
             {optional && <span className="ml-1 font-normal text-ink-3">(optional)</span>}
           </label>
           {action}
@@ -38,10 +60,19 @@ export default function Field({
 
       {/* The control is cloned so the field can attach the ids it just minted.
           Doing it here rather than at each call site is the whole point: it is
-          the accessible wiring that gets dropped when it is manual. */}
+          the accessible wiring that gets dropped when it is manual.
+
+          Element children are cloned as well as function children. Only the
+          function form used to receive the wiring, and almost every call site
+          passes an element — so in practice the ids were minted, rendered onto
+          the hint and error paragraphs, and then referenced by nothing at all.
+          Sign-in was one of them: its "Email is required" was visible on screen
+          and invisible to a screen reader. */}
       {typeof children === "function"
-        ? children({ id, "aria-describedby": [hintId, errorId].filter(Boolean).join(" ") || undefined, "aria-invalid": error ? true : undefined })
-        : children}
+        ? children(wiring)
+        : isValidElement(children)
+          ? cloneElement(children, wiring)
+          : children}
 
       {hint && (
         <p id={hintId} className={hintClasses}>
@@ -49,8 +80,11 @@ export default function Field({
         </p>
       )}
 
+      {/* `role="alert"` so a message that appears after a failed submit is
+          announced immediately, rather than only when the field happens to be
+          focused. */}
       {error && (
-        <p id={errorId} className={fieldErrorClasses}>
+        <p id={errorId} role="alert" className={fieldErrorClasses}>
           <Icon name="alert" size={13} className="mt-px" />
           <span>{error}</span>
         </p>

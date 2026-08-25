@@ -17,7 +17,7 @@
  * support screen, contact form or help centre to point it at.
  */
 
-import { DISCOVERY_ROUTE } from "../../lib/discovery";
+import { DISCOVERY_ROUTE, DISCOVERY_LABEL } from "../../lib/discovery";
 
 export function navItemsFor(user) {
   if (user?.role === "provider") {
@@ -36,7 +36,13 @@ export function navItemsFor(user) {
   return [
     { to: "/dashboard", label: "Dashboard", icon: "dashboard" },
     { to: "/appointments", label: "Appointments", icon: "event_available" },
-    { to: DISCOVERY_ROUTE, label: "Services", icon: "search", end: true },
+    // `DISCOVERY_LABEL`, not "Services". Two problems with the old label: a
+    // provider's own rail uses "Services" for /services — their catalogue — so
+    // the same word named two unrelated screens depending on who was signed in;
+    // and it was a fifth name for this one destination, which the landing page,
+    // the public header and the client dashboard were already calling three
+    // other things. `lib/discovery` exists to settle exactly this.
+    { to: DISCOVERY_ROUTE, label: DISCOVERY_LABEL, icon: "search", end: true },
     { to: "/messages", label: "Messages", icon: "chat", badge: "unread" },
     { to: "/profile", label: "Profile", icon: "person" },
     { to: "/settings", label: "Settings", icon: "settings" },
@@ -55,7 +61,11 @@ export function primaryActionFor(user) {
     return { to: "/services?new=1", label: "New Service", icon: "add" };
   }
   if (user?.role === "client") {
-    return { to: DISCOVERY_ROUTE, label: "New Appointment", icon: "add" };
+    // "Book appointment" rather than the design's "New Appointment": this goes
+    // to the directory, and a client does not create an appointment out of
+    // nothing — they find someone and take one of their open times. "New" reads
+    // as a blank form that does not exist.
+    return { to: DISCOVERY_ROUTE, label: "Book appointment", icon: "add" };
   }
   return null;
 }

@@ -43,6 +43,13 @@ import { storeImage, deleteImage } from "../services/imageStorage.js";
 import { resolveSocialAccount } from "../services/accountLinking.js";
 import { assessTimezoneChange } from "../services/timezoneChange.js";
 import {
+  normaliseEmail,
+  validateEmail,
+  validateName,
+  validatePhone,
+  validateBusinessName,
+} from "../utils/identity.js";
+import {
   frontendBaseUrl,
   sessionCookieOptions,
   sessionCookieClearOptions,
@@ -259,7 +266,13 @@ export const completeProfile = async (req, res) => {
     if (!role || !["client", "provider"].includes(role)) {
       errors.push({ field: "role", message: "role must be 'client' or 'provider'" });
     }
-    if (!phoneNumber) errors.push({ field: "phoneNumber", message: "Phone number is required" });
+    // Format-checked, not merely present. This endpoint used to accept any
+    // truthy string, which is how `abcdef` became a stored phone number while
+    // `updateProfile` — the very next screen — applied a real check.
+    const checkedPhone = validatePhone(phoneNumber);
+    if (!checkedPhone.ok) {
+      errors.push({ field: "phoneNumber", message: checkedPhone.message });
+    }
     if (!timezone) {
       errors.push({ field: "timezone", message: "Timezone is required" });
     } else if (!isValidTimezone(timezone)) {
@@ -270,12 +283,16 @@ export const completeProfile = async (req, res) => {
     // Leaving it to a default would mean a London physiotherapist publishing
     // prices in rupees until they noticed.
     let resolvedCurrency = null;
+    let cleanBusinessName = null;
     if (role === "provider") {
-      if (!businessName) {
-        errors.push({ field: "businessName", message: "Business name is required for providers" });
+      const checkedBusinessName = validateBusinessName(businessName);
+      if (!checkedBusinessName.ok) {
+        errors.push({ field: "businessName", message: checkedBusinessName.message });
+      } else {
+        cleanBusinessName = checkedBusinessName.value;
       }
-      if (!businessType) {
-        errors.push({ field: "businessType", message: "Business type is required" });
+      if (!businessType || !String(businessType).trim()) {
+        errors.push({ field: "businessType", message: "Choose the category you work in" });
       }
       if (!currency) {
         errors.push({ field: "currency", message: "Choose the currency you charge in" });
@@ -307,10 +324,10 @@ export const completeProfile = async (req, res) => {
        RETURNING *`,
       [
         role,
-        phoneNumber,
+        checkedPhone.value,
         timezone,
-        role === "provider" ? businessName : null,
-        role === "provider" ? businessType : null,
+        role === "provider" ? cleanBusinessName : null,
+        role === "provider" ? String(businessType).trim() : null,
         // NULL for a client, so COALESCE leaves the column on its default. A
         // client never sets a price, so there is nothing for them to denominate.
         resolvedCurrency,
@@ -358,7 +375,12 @@ export const getCurrentUser = async (req, res) => {
     const result = await query(
       `SELECT id, name, email, avatar_url, role, phone_number, timezone,
               business_name, business_type, bio, qualifications, currency,
-              cancellation_cutoff_hours
+              cancellation_cutoff_hours,
+              -- A boolean, never the hash. Settings needs to know whether it is
+              -- offering "change your password" or "add one" -- a Google or
+              -- GitHub account has none -- and that is the whole of what the
+              -- browser is told about it.
+              (password_hash IS NOT NULL) AS has_password
        FROM users WHERE id = $1`,
       [userId]
     );
@@ -377,6 +399,7 @@ export const getCurrentUser = async (req, res) => {
       role: user.role,
       phone_number: user.phone_number,
       timezone: user.timezone,
+      has_password: user.has_password,
       business_name: user.business_name,
       business_type: user.business_type,
       bio: user.bio,
@@ -531,11 +554,15 @@ export const registerUser = async (req, res) => {
   try {
     const { name, email, password } = req.body;
 
+    // Both are normalised rather than merely checked, and the normalised values
+    // are what gets inserted below — otherwise trimming a name or casefolding an
+    // address would validate one string and store a different one.
+    const checkedName = validateName(name);
+    const checkedEmail = validateEmail(email);
+
     const errors = [];
-    if (!name) errors.push({ field: "name", message: "Name is required" });
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
-      errors.push({ field: "email", message: "Valid email is required" });
-    }
+    if (!checkedName.ok) errors.push({ field: "name", message: checkedName.message });
+    if (!checkedEmail.ok) errors.push({ field: "email", message: checkedEmail.message });
     if (!password || password.length < 8) {
       errors.push({ field: "password", message: "Password must be at least 8 characters" });
     }
@@ -543,7 +570,10 @@ export const registerUser = async (req, res) => {
       return validationErrorResponse(res, "Please fix the errors below", errors);
     }
 
-    const existing = await query(`SELECT * FROM users WHERE email = $1`, [email]);
+    const cleanName = checkedName.value;
+    const cleanEmail = checkedEmail.value;
+
+    const existing = await query(`SELECT * FROM users WHERE email = $1`, [cleanEmail]);
 
     // Case 1 — email not present: brand new user
     if (existing.rows.length === 0) {
@@ -553,7 +583,7 @@ export const registerUser = async (req, res) => {
         `INSERT INTO users (email, name, password_hash)
          VALUES ($1, $2, $3)
          RETURNING *`,
-        [email, name, passwordHash]
+        [cleanEmail, cleanName, passwordHash]
       );
       const user = inserted.rows[0];
 
@@ -607,7 +637,7 @@ export const registerUser = async (req, res) => {
 
     // Edge case: email exists but has no google_id, github_id, or password_hash.
     // Should never happen under normal flow — flag it instead of guessing what to do with it.
-    console.error(`Data integrity issue: user ${existingUser.id} (${email}) has no linked auth method`);
+    console.error(`Data integrity issue: user ${existingUser.id} (${cleanEmail}) has no linked auth method`);
     return errorResponse(res, "We couldn't process this account. Please contact support.", 500);
   } catch (err) {
     console.error("registerUser error:", err.message);
@@ -642,7 +672,9 @@ export const loginUser = async (req, res) => {
       ]);
     }
 
-    const result = await query(`SELECT * FROM users WHERE email = $1`, [email]);
+    // Casefolded before the lookup, so an address typed with a capital — which
+    // is what a mobile keyboard offers by default — still finds its account.
+    const result = await query(`SELECT * FROM users WHERE email = $1`, [normaliseEmail(email)]);
 
     // One wording, one code, for both "no such address" and "wrong password".
     //
@@ -751,26 +783,65 @@ export const loginUser = async (req, res) => {
 export async function updateProfile(req, res) {
   try {
     const userId = req.user.userId;
-    const { phoneNumber, timezone, bio, businessName, businessType, qualifications, currency } =
-      req.body;
+    const {
+      name,
+      phoneNumber,
+      timezone,
+      bio,
+      businessName,
+      businessType,
+      qualifications,
+      currency,
+    } = req.body;
 
-    const currentUser = await query("SELECT role FROM users WHERE id = $1", [userId]);
+    const currentUser = await query(
+      "SELECT role, business_name, business_type FROM users WHERE id = $1",
+      [userId]
+    );
     if (currentUser.rows.length === 0) {
       return errorResponse(res, "User not found", 404);
     }
+    // Read from the database rather than from the request, because a role decides
+    // which fields below are allowed to be written at all -- so trusting the
+    // caller for it would let a client set a bio that appears on a public page.
+    //
+    // `role` is not editable here or anywhere else: `completeProfile` writes it
+    // exactly once, guarded by `AND role IS NULL`.
     const role = currentUser.rows[0].role;
 
     // Prepare update object
     const updateData = {};
 
-    // Validate & add phone number
-    if (phoneNumber) {
-      if (!phoneNumber.match(/^[\d\s\-\+()]+$/)) {
-        return validationErrorResponse(res, "Invalid phone number format", [
-          { field: "phoneNumber", message: "Phone number format is invalid" },
+    // Name is editable here, which it previously was not.
+    //
+    // It was treated as immutable on the grounds that it "comes from the account
+    // you signed in with" -- true for Google and GitHub, but a password account
+    // types its own name at registration, so a typo there was permanent and
+    // followed the user onto every appointment and review they were part of.
+    // Editing it changes nothing about identity: the account is keyed by email.
+    if (name !== undefined) {
+      const checkedName = validateName(name);
+      if (!checkedName.ok) {
+        return validationErrorResponse(res, "Please fix the errors below", [
+          { field: "name", message: checkedName.message },
         ]);
       }
-      updateData.phone_number = phoneNumber;
+      updateData.name = checkedName.value;
+    }
+
+    // `!== undefined` rather than truthiness, so an empty string reads as a
+    // deliberate "remove my number" and is stored as NULL. Under the old
+    // truthiness test clearing the field changed nothing, the request ended up
+    // with no fields at all, and the user was told "No fields to update" --
+    // leaving a number already shared with providers impossible to withdraw.
+    if (phoneNumber !== undefined) {
+      const checkedPhone = validatePhone(phoneNumber, { allowEmpty: true });
+      if (!checkedPhone.ok) {
+        return validationErrorResponse(res, "Please fix the errors below", [
+          { field: "phoneNumber", message: checkedPhone.message },
+        ]);
+      }
+      updateData.phone_number = checkedPhone.value;
     }
 
     // Validate & add timezone.
@@ -836,8 +907,27 @@ export async function updateProfile(req, res) {
 
     // Business fields — providers only
     if (role === "provider") {
-      if (businessName) updateData.business_name = businessName;
-      if (businessType) updateData.business_type = businessType;
+      // Trimmed and checked rather than accepted on truthiness: `"   "` is
+      // truthy and used to be stored verbatim, publishing a directory listing
+      // whose heading rendered as nothing at all.
+      if (businessName !== undefined) {
+        const checkedBusinessName = validateBusinessName(businessName);
+        if (!checkedBusinessName.ok) {
+          return validationErrorResponse(res, "Please fix the errors below", [
+            { field: "businessName", message: checkedBusinessName.message },
+          ]);
+        }
+        updateData.business_name = checkedBusinessName.value;
+      }
+      if (businessType !== undefined) {
+        const trimmedType = String(businessType).trim();
+        if (!trimmedType) {
+          return validationErrorResponse(res, "Please fix the errors below", [
+            { field: "businessType", message: "Choose the category you work in" },
+          ]);
+        }
+        updateData.business_type = trimmedType;
+      }
 
       // Changing this re-denominates every price the provider already has: the
       // stored numbers do not move, only the currency they are read in. That is
@@ -900,7 +990,10 @@ export async function updateProfile(req, res) {
     // Update user in database
     const columns = Object.keys(updateData);
     if (columns.length === 0) {
-      return errorResponse(res, "No fields to update", 400);
+      // Phrased for the person reading it. "No fields to update" described the
+      // request rather than the situation, and surfaced most often when someone
+      // pressed Save without having changed anything.
+      return errorResponse(res, "Nothing has changed yet", 400, ERROR_CODES.VALIDATION_FAILED);
     }
 
     const setClause = columns
@@ -912,7 +1005,8 @@ export async function updateProfile(req, res) {
       SET ${setClause}, updated_at = NOW()
       WHERE id = $${columns.length + 1}
       RETURNING id, email, name, phone_number, timezone, bio, qualifications,
-                avatar_url, role, business_name, business_type
+                avatar_url, role, business_name, business_type, currency,
+                cancellation_cutoff_hours
     `;
 
     const result = await query(updateSql, [...Object.values(updateData), userId]);

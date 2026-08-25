@@ -26,7 +26,7 @@
  * in `CREATE TABLE` for a new database, and again as `ALTER TABLE ... ADD COLUMN
  * IF NOT EXISTS` for an existing one.
  */
-import { exec } from "./dbConfig.js";
+import { exec, query } from "./dbConfig.js";
 
 export async function initSchema() {
   await exec("CREATE EXTENSION IF NOT EXISTS btree_gist;");
@@ -468,4 +468,44 @@ export async function initSchema() {
     CREATE INDEX IF NOT EXISTS idx_reviews_provider
       ON reviews (provider_id, created_at DESC);
   `);
+
+  // ---------------------------------------------------------------------------
+  // Email is an identifier, not a display string, so it is stored casefolded.
+  //
+  // Postgres compares VARCHAR case-sensitively, so `Casey@x.com` and
+  // `casey@x.com` were two different rows under the UNIQUE constraint — and a
+  // login typed with a capital first letter (which every mobile keyboard offers)
+  // simply did not match. The controller now lowercases on the way in; this
+  // backfills the rows written before it did.
+  //
+  // Done one row at a time, skipping any address whose lowercase form is already
+  // taken, because a straight UPDATE would violate the UNIQUE constraint and
+  // abort the whole boot. A skipped row is a genuine duplicate pair that needs a
+  // human decision about which account survives, so it is logged rather than
+  // guessed at.
+  // ---------------------------------------------------------------------------
+  const mixedCase = await query(`SELECT id, email FROM users WHERE email <> lower(email)`);
+  for (const row of mixedCase.rows ?? []) {
+    const lowered = row.email.trim().toLowerCase();
+    const clash = await query(`SELECT id FROM users WHERE email = $1 AND id <> $2`, [
+      lowered,
+      row.id,
+    ]);
+    if ((clash.rows ?? []).length > 0) {
+      console.warn(
+        `[schema] user ${row.id} <${row.email}> not casefolded: <${lowered}> already exists. ` +
+          `Merge these two accounts by hand.`
+      );
+      continue;
+    }
+    await query(`UPDATE users SET email = $1 WHERE id = $2`, [lowered, row.id]);
+  }
+
+  // Belt and braces: even with the controller lowercasing, this makes a
+  // case-variant duplicate unrepresentable rather than merely unlikely.
+  await exec(`
+    CREATE UNIQUE INDEX IF NOT EXISTS idx_users_email_lower
+      ON users (lower(email));
+  `);
+
 }

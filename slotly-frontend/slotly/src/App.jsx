@@ -26,6 +26,7 @@ import Layout from "./components/Layout";
 
 import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
+import LegalPage from "./pages/LegalPage";
 import CompleteProfilePage from "./pages/CompleteProfilePage";
 import EditProfilePage from "./pages/EditProfilePage";
 import ProvidersPage from "./pages/ProvidersPage";
@@ -55,9 +56,15 @@ export default function App() {
                 element={<ProviderPublicProfilePage />}
               />
 
+              {/* The policy pages named on the sign-up card and in the footer.
+                  Public and outside every guard: someone deciding whether to
+                  create an account has not got one yet. */}
+              <Route path="/legal/:document" element={<LegalPage />} />
+
               {/* Signed out only. */}
               <Route element={<GuestOnlyRoute />}>
                 <Route path="/login" element={<LoginPage />} />
+
               </Route>
 
               {/* Signed in, but no role chosen yet. */}

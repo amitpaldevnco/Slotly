@@ -28,6 +28,7 @@ import Icon from "../components/ui/Icon";
 import { Alert, SkeletonBlock } from "../components/ui/Feedback";
 import { fromDisplayDate, toDisplayDate } from "../lib/time";
 import { container } from "../lib/ui";
+import usePageTitle from "../hooks/usePageTitle";
 
 /** A phone cannot show seven columns legibly, so it opens on a single day. */
 function initialCalendarView() {
@@ -38,6 +39,8 @@ function initialCalendarView() {
 }
 
 export default function CalendarPage() {
+  usePageTitle("Calendar");
+
   const { user } = useAuth();
   const navigate = useNavigate();
 

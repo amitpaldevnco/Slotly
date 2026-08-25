@@ -36,6 +36,71 @@ export const api = axios.create({
 });
 
 /**
+ * Endpoints where a 401 is an *answer*, not an expired session.
+ *
+ * `POST /auth/login` replies 401 for a wrong password — that is the endpoint
+ * working correctly, and treating it as an expiry would fire the "you have been
+ * signed out" path at somebody who was never signed in. `GET /auth/me` answers
+ * 401 for every signed-out visitor on the landing page, and `AuthContext`
+ * already handles it as the ordinary signed-out case.
+ *
+ * `PATCH /auth/password` is the subtle one: it is an *authenticated* route that
+ * nonetheless answers 401, because it verifies a second secret — the current
+ * password — on top of the session. Without it here, mistyping your current
+ * password in Settings signed you out of a session that was perfectly valid,
+ * which is both alarming and the opposite of what the form was for.
+ */
+const EXPECTS_401 = [
+  /\/auth\/me$/,
+  /\/auth\/login$/,
+  /\/auth\/register$/,
+  /\/auth\/google$/,
+  /\/auth\/password$/,
+];
+
+/** Handlers registered via `onSessionExpired`. */
+const sessionExpiredHandlers = new Set();
+
+/**
+ * Subscribes to "the session this app is holding is no longer valid".
+ *
+ * Exists because a session can die between page loads — the cookie expires, or
+ * the token was issued by a server that has since restarted with a new secret —
+ * and until now nothing noticed. The first request to fail simply rendered its
+ * own error, so a user mid-session saw the raw string "Not authenticated" inside
+ * a panel, with the sidebar still showing them signed in and a "Try again"
+ * button that could never succeed. There was no route back except typing a URL.
+ *
+ * Wiring it here rather than in each caller is the point: every screen makes API
+ * calls, and any of them can be the one that discovers the session is gone.
+ *
+ * @param {() => void} handler Called once per 401 from a route that should have
+ *   been authenticated.
+ * @returns {() => void} Unsubscribe.
+ */
+export function onSessionExpired(handler) {
+  sessionExpiredHandlers.add(handler);
+  return () => sessionExpiredHandlers.delete(handler);
+}
+
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    const status = error?.response?.status;
+    const url = error?.config?.url ?? "";
+
+    if (status === 401 && !EXPECTS_401.some((pattern) => pattern.test(url))) {
+      for (const handler of sessionExpiredHandlers) handler();
+    }
+
+    // Re-thrown either way. The interceptor's job is to notice, not to swallow:
+    // the calling screen still needs to stop its spinner and the guard still
+    // needs a render to redirect on.
+    return Promise.reject(error);
+  }
+);
+
+/**
  * Pulls the payload out of the API's success envelope.
  *
  * Every successful response is `{ success, message, data }`, so callers want

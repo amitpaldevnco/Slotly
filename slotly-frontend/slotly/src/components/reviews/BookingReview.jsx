@@ -22,7 +22,13 @@ import { formatDateTime } from "../../lib/time";
 const MAX_COMMENT = 1000;
 const MAX_REPLY = 1000;
 
-export default function BookingReview({ bookingId, viewerRole, viewerZone, otherPartyName }) {
+export default function BookingReview({
+  bookingId,
+  bookingStatus: currentStatus,
+  viewerRole,
+  viewerZone,
+  otherPartyName,
+}) {
   const toast = useToast();
 
   const [editing, setEditing] = useState(false);
@@ -33,9 +39,16 @@ export default function BookingReview({ bookingId, viewerRole, viewerZone, other
   const [saving, setSaving] = useState(false);
   const [fieldErrors, setFieldErrors] = useState({});
 
+  // `currentStatus` is in the deps so this re-reads when the appointment's
+  // status changes under it. Cancelling a booking from this same page used to
+  // leave the panel showing the answer it had fetched while the booking was
+  // still live — "You can leave a review once this appointment has been
+  // completed", on an appointment that had just been cancelled and never would
+  // be. The component always knew how to word a cancelled booking; it was simply
+  // never told the status had moved.
   const { data: state, loading, reload: load } = useApiResource(
     ({ signal }) => reviewsApi.getForBooking(bookingId, { signal }),
-    { deps: [bookingId] }
+    { deps: [bookingId, currentStatus] }
   );
 
   // Seed the form from whatever review already exists, so "Edit" opens on the

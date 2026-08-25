@@ -25,6 +25,7 @@ import {
   guest,
   client,
   testEmail,
+  testPool,
   cleanupApiTestData,
   closeTestPool,
   TEST_PASSWORD,
@@ -120,6 +121,155 @@ describe("registration and login", () => {
 
     expect(response.status).toBe(200);
     expect(response.body.data.user.email).toBe(clientA.email);
+  });
+
+  // An email is an identifier, not a display string. Postgres compares VARCHAR
+  // case-sensitively, so before the address was casefolded on the way in, a
+  // capital first letter — which is what every phone keyboard offers by default
+  // — simply did not match the row it belonged to, and the same person could
+  // register a second account under `Casey@` beside their `casey@` one.
+  it("logs in regardless of how the email is capitalised", async () => {
+    const response = await client()
+      .post("/api/auth/login")
+      .send({ email: clientA.email.toUpperCase(), password: TEST_PASSWORD });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.user.email).toBe(clientA.email);
+  });
+
+  it("logs in with surrounding whitespace on the email", async () => {
+    const response = await client()
+      .post("/api/auth/login")
+      .send({ email: `  ${clientA.email}  `, password: TEST_PASSWORD });
+
+    expect(response.status).toBe(200);
+  });
+
+  it("refuses to register the same address under a different capitalisation", async () => {
+    const response = await client().post("/api/auth/register").send({
+      name: "Case Twin",
+      email: clientA.email.toUpperCase(),
+      password: TEST_PASSWORD,
+    });
+
+    expect(response.status).toBe(409);
+    expect(response.body.code).toBe("ACCOUNT_EXISTS");
+  });
+
+  it("stores a registered name trimmed, and refuses a blank one", async () => {
+    const blank = await client()
+      .post("/api/auth/register")
+      .send({ name: "   ", email: testEmail("blankname"), password: TEST_PASSWORD });
+
+    expect(blank.status).toBe(400);
+    expect(blank.body.details.some((d) => d.field === "name")).toBe(true);
+
+    const padded = await client()
+      .post("/api/auth/register")
+      .send({ name: "  Padded Name  ", email: testEmail("padded"), password: TEST_PASSWORD });
+
+    expect(padded.status).toBe(201);
+    expect(padded.body.data.user.name).toBe("Padded Name");
+  });
+});
+
+// ---------------------------------------------------------------------------
+describe("changing your own password", () => {
+  const NEW_PASSWORD = "An0therStr0ngPass!";
+
+  it("refuses without a session", async () => {
+    const response = await guest()
+      .patch("/api/auth/password")
+      .send({ currentPassword: TEST_PASSWORD, newPassword: NEW_PASSWORD });
+
+    expect(response.status).toBe(401);
+  });
+
+  it("refuses a new password under eight characters", async () => {
+    const user = await createUser({ role: "client", label: "pwshort" });
+    const response = await user.agent
+      .patch("/api/auth/password")
+      .send({ currentPassword: TEST_PASSWORD, newPassword: "short" });
+
+    expect(response.status).toBe(400);
+    expect(response.body.details.some((d) => d.field === "newPassword")).toBe(true);
+  });
+
+  it("insists on the current password", async () => {
+    const user = await createUser({ role: "client", label: "pwmissing" });
+    const response = await user.agent
+      .patch("/api/auth/password")
+      .send({ newPassword: NEW_PASSWORD });
+
+    expect(response.status).toBe(400);
+    expect(response.body.details.some((d) => d.field === "currentPassword")).toBe(true);
+  });
+
+  // A session cookie proves the browser is signed in, not that the person
+  // holding it owns the account. Without this an unattended laptop is enough to
+  // take the account permanently.
+  it("refuses when the current password is wrong", async () => {
+    const user = await createUser({ role: "client", label: "pwwrong" });
+    const response = await user.agent
+      .patch("/api/auth/password")
+      .send({ currentPassword: "not-the-password", newPassword: NEW_PASSWORD });
+
+    expect(response.status).toBe(401);
+    expect(response.body.code).toBe("INVALID_CREDENTIALS");
+  });
+
+  it("refuses a new password identical to the current one", async () => {
+    const user = await createUser({ role: "client", label: "pwsame" });
+    const response = await user.agent
+      .patch("/api/auth/password")
+      .send({ currentPassword: TEST_PASSWORD, newPassword: TEST_PASSWORD });
+
+    expect(response.status).toBe(400);
+    expect(response.body.details.some((d) => d.field === "newPassword")).toBe(true);
+  });
+
+  it("changes the password, and the new one is the one that works", async () => {
+    const user = await createUser({ role: "client", label: "pwchange" });
+
+    const changed = await user.agent
+      .patch("/api/auth/password")
+      .send({ currentPassword: TEST_PASSWORD, newPassword: NEW_PASSWORD });
+
+    expect(changed.status).toBe(200);
+    expect(changed.body.data.hadPassword).toBe(true);
+
+    const withNew = await client()
+      .post("/api/auth/login")
+      .send({ email: user.email, password: NEW_PASSWORD });
+    expect(withNew.status).toBe(200);
+
+    const withOld = await client()
+      .post("/api/auth/login")
+      .send({ email: user.email, password: TEST_PASSWORD });
+    expect(withOld.status).toBe(401);
+  });
+
+  // A Google- or GitHub-only account has nothing to verify, so this adds a
+  // password rather than replacing one — a second way in, not a swap.
+  it("adds a password to an account that had none, without asking for one", async () => {
+    const user = await createUser({ role: "client", label: "pwsocial" });
+
+    await testPool().query(
+      `UPDATE users SET password_hash = NULL, google_id = $2 WHERE email = $1`,
+      [user.email, `google-pw-${Date.now()}`]
+    );
+
+    const response = await user.agent
+      .patch("/api/auth/password")
+      .send({ newPassword: NEW_PASSWORD });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.hadPassword).toBe(false);
+
+    const login = await client()
+      .post("/api/auth/login")
+      .send({ email: user.email, password: NEW_PASSWORD });
+    expect(login.status).toBe(200);
   });
 });
 

@@ -452,7 +452,10 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
         </button>
       </div>
 
-      <form onSubmit={handleSubmit}>
+      {/* `noValidate`: the editor reports "End must be after start" and
+          "This overlaps another window" itself, and a native bubble arriving
+          first would suppress those and say something vaguer. */}
+      <form onSubmit={handleSubmit} noValidate>
         {feasibility.services.map((service) => (
           <NoSlotsWarning key={service.serviceId} report={service} />
         ))}
@@ -534,19 +537,33 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
                               className={timeInputClasses}
                             />
 
-                            {/* Revealed on hover at desktop widths, always present
-                                on touch — where there is no hover, and a control
-                                that only appears on one is unreachable. */}
-                            {windows.length > 1 && (
-                              <button
-                                type="button"
-                                onClick={() => removeWindow(day.value, index)}
-                                aria-label={`Remove ${day.label} window ${index + 1}`}
-                                className="cursor-pointer rounded-md p-2 text-on-surface-variant transition-colors hover:bg-error-container/50 hover:text-error focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
-                              >
-                                <Icon name="delete" size={20} />
-                              </button>
-                            )}
+                            {/* The slot is always this wide, whether or not it
+                                holds a button.
+                                
+                                Only a day with two or more windows can have one
+                                removed, so on every other row the button was
+                                simply absent — and its width came off the time
+                                fields instead. The result was that Wednesday's
+                                inputs were narrower than Monday's, and the
+                                column of end times down the week did not line
+                                up. Reserving the space keeps one grid.
+
+                                The button itself is revealed on hover at desktop
+                                widths and always present on touch, where there
+                                is no hover and a control that needs one is
+                                unreachable. */}
+                            <span className="flex h-9 w-9 shrink-0 items-center justify-center">
+                              {windows.length > 1 && (
+                                <button
+                                  type="button"
+                                  onClick={() => removeWindow(day.value, index)}
+                                  aria-label={`Remove ${day.label} window ${index + 1}`}
+                                  className="cursor-pointer rounded-md p-2 text-on-surface-variant transition-colors hover:bg-error-container/50 hover:text-error focus:opacity-100 sm:opacity-0 sm:group-hover:opacity-100"
+                                >
+                                  <Icon name="delete" size={20} />
+                                </button>
+                              )}
+                            </span>
                           </div>
 
                           {error && (

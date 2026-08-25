@@ -162,10 +162,16 @@ export default function ServiceCard({
               </span>{" "}
               earned
             </span>
+            {/* Carries its own separator, like the pair above it. Without one
+                the row read "2 booked · £0 earned 2 upcoming", where the third
+                figure ran straight into the second and looked like part of it. */}
             {Number(service.stats?.upcomingBookings) > 0 && (
-              <span className="font-semibold text-on-surface">
-                {service.stats.upcomingBookings} upcoming
-              </span>
+              <>
+                <span aria-hidden="true">·</span>
+                <span className="font-semibold text-on-surface">
+                  {service.stats.upcomingBookings} upcoming
+                </span>
+              </>
             )}
           </div>
 

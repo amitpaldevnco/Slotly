@@ -8,8 +8,11 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import Icon from "../components/ui/Icon";
 import { primaryButton, secondaryButton, eyebrow } from "../lib/ui";
+import usePageTitle from "../hooks/usePageTitle";
 
 export default function NotFoundPage() {
+  usePageTitle("Page not found");
+
   const { user } = useAuth();
 
   return (

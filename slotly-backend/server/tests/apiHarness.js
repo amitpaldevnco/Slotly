@@ -61,10 +61,18 @@ export function guest() {
 let counter = 0;
 const runId = Math.random().toString(36).slice(2, 8);
 
-/** A unique address inside the prefix this harness is allowed to delete. */
+/**
+ * A unique address inside the prefix this harness is allowed to delete.
+ *
+ * Lowercased, because that is what the API stores: an email is an identifier, so
+ * `registerUser` casefolds it on the way in. A fixture label with a capital in it
+ * (`authcliA`) would otherwise hand back an address that no longer matches the
+ * row it created, and every assertion comparing the two would fail for a reason
+ * that has nothing to do with what it was testing.
+ */
 export function testEmail(label = "user") {
   counter += 1;
-  return `${TEST_EMAIL_PREFIX}${label}.${runId}.${counter}@slotly.test`;
+  return `${TEST_EMAIL_PREFIX}${label}.${runId}.${counter}@slotly.test`.toLowerCase();
 }
 
 /**

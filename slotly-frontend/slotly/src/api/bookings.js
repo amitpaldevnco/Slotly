@@ -96,3 +96,13 @@ export const unreadCount = (options = {}) =>
 
 /** Earnings and per-status counts for the provider's overview panel. */
 export const summary = (options = {}) => api.get("/bookings/summary", options).then(unwrap);
+
+/**
+ * How many bookings sit in each of the appointments screen's three tabs.
+ *
+ * Role-aware, and separate from `summary` (which is a provider's earnings report
+ * and refuses a client). Used to label every tab rather than only the open one.
+ *
+ * @returns {Promise<{upcoming: number, past: number, cancelled: number}>}
+ */
+export const counts = (options = {}) => api.get("/bookings/counts", options).then(unwrap);

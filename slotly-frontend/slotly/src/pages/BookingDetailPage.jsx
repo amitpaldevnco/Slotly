@@ -56,10 +56,13 @@ import {
   metaLine,
   zoneName,
 } from "../lib/ui";
+import usePageTitle from "../hooks/usePageTitle";
 
 const MAX_REASON = 500;
 
 export default function BookingDetailPage() {
+  usePageTitle("Appointment");
+
   const { bookingId } = useParams();
   const [searchParams] = useSearchParams();
   const toast = useToast();
@@ -253,6 +256,7 @@ export default function BookingDetailPage() {
 
             <BookingReview
               bookingId={booking.id}
+              bookingStatus={booking.status}
               viewerRole={booking.viewerRole}
               viewerZone={viewerZone}
               otherPartyName={otherParty.businessName || otherParty.name}
@@ -347,7 +351,11 @@ export default function BookingDetailPage() {
                     ? `You can move or cancel this yourself up to ${booking.cancellationCutoffHours} hour${
                         booking.cancellationCutoffHours === 1 ? "" : "s"
                       } before it starts.`
-                    : `The ${booking.cancellationCutoffHours}-hour window for changing this has closed. Contact ${otherParty.name} directly if you need to move or cancel it.`}
+                    : // "Contact them directly" pointed at nothing: no phone
+                      // number or email for the provider appears anywhere on
+                      // this page, while the message thread that does reach them
+                      // is a few inches below and works on a closed booking.
+                      `The ${booking.cancellationCutoffHours}-hour window for changing this has closed. Message ${otherParty.name} below to ask about moving or cancelling it.`}
                 </span>
               </p>
             )}

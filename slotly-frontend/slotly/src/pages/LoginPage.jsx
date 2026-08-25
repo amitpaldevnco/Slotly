@@ -7,10 +7,21 @@ import { useAuth } from "../context/AuthContext";
 import { parseApiError } from "../api/client";
 import * as authApi from "../api/auth";
 import Field, { Input } from "../components/ui/Field";
+import PasswordInput from "../components/ui/PasswordInput";
+import LegalLinks from "../components/ui/LegalLinks";
+import { NAME_MAX } from "../lib/validation";
+import {
+  checkEmail,
+  checkName,
+  checkPassword,
+  checkPasswordConfirmation,
+  collectErrors,
+} from "../lib/validation";
 import { Alert } from "../components/ui/Feedback";
 import Icon from "../components/ui/Icon";
 import Logo from "../components/ui/Logo";
 import { primaryButton, buttonBlock, buttonLg, secondaryButton, cardClasses } from "../lib/ui";
+import usePageTitle from "../hooks/usePageTitle";
 
 function GoogleMark() {
   return (
@@ -93,12 +104,13 @@ export default function LoginPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
+  const [confirmPassword, setConfirmPassword] = useState("");
   const [fieldErrors, setFieldErrors] = useState({});
 
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
   const location = useLocation();
-  const { refetchUser } = useAuth();
+  const { refetchUser, sessionExpired } = useAuth();
 
   // Where to land after signing in. A guard or a "Sign in to book" link puts the
   // page the user was actually reaching for in `location.state.from`, so they
@@ -139,17 +151,44 @@ export default function LoginPage() {
     }
   };
 
+  /**
+   * The rules for whichever form is on screen.
+   *
+   * Checked before the request rather than after it. Registration is rate
+   * limited counting failures, so a form submitted empty used to spend one of
+   * the ten attempts an address gets per hour purely to be told it was empty.
+   */
+  const validate = () => {
+    if (mode === "register") {
+      return collectErrors({
+        name: checkName(name),
+        email: checkEmail(email),
+        password: checkPassword(password),
+        confirmPassword: checkPasswordConfirmation(password, confirmPassword),
+      });
+    }
+
+    return collectErrors({ email: checkEmail(email), password: checkPassword(password) });
+  };
+
   const handleEmailAuth = async (e) => {
     e.preventDefault();
 
-    setLoading(true);
     resetMessages();
+
+    const problems = validate();
+    if (Object.keys(problems).length > 0) {
+      setFieldErrors(problems);
+      return;
+    }
+
+    setLoading(true);
 
     try {
       const { profileComplete } =
         mode === "register"
-          ? await authApi.registerWithEmail({ name, email, password })
-          : await authApi.loginWithEmail({ email, password });
+          ? await authApi.registerWithEmail({ name: name.trim(), email: email.trim(), password })
+          : await authApi.loginWithEmail({ email: email.trim(), password });
 
       await refetchUser();
       goAfterAuth(profileComplete);
@@ -185,6 +224,18 @@ export default function LoginPage() {
 
   const isRegister = mode === "register";
 
+  const heading = isRegister ? "Create your account" : "Welcome back";
+
+  const subheading = isRegister
+    ? "Set a password, or continue with Google or GitHub."
+    : "Log in to manage your appointments.";
+
+  const submitLabel = isRegister ? "Create account" : "Log in";
+
+  // Declared after `heading` on purpose: it is the same string, and calling the
+  // hook above the `const` would read it inside its temporal dead zone.
+  usePageTitle(heading);
+
   return (
     <div className="flex min-h-[calc(100dvh-4rem)] items-center justify-center px-4 py-10 sm:px-6 sm:py-16">
       {/* One centred card on the canvas, per the design. The form is the whole
@@ -195,14 +246,17 @@ export default function LoginPage() {
             <Logo size="lg" />
 
             <h1 className="mt-6 font-display text-3xl font-semibold tracking-[-0.02em] text-ink">
-              {isRegister ? "Create your account" : "Welcome back"}
+              {heading}
             </h1>
-            <p className="mt-2 text-[0.9375rem] text-ink-2">
-              {isRegister
-                ? "Set a password, or continue with Google or GitHub."
-                : "Log in to manage your appointments."}
-            </p>
+            <p className="mt-2 text-[0.9375rem] text-ink-2">{subheading}</p>
           </div>
+
+          {/* Why they are looking at a sign-in page they did not ask for. */}
+          {sessionExpired && (
+            <Alert tone="warn" className="mt-6">
+              Your session has expired. Please sign in again to pick up where you left off.
+            </Alert>
+          )}
 
           {/* Account exists under a different sign-in method. */}
           {conflictNotice && (
@@ -226,52 +280,70 @@ export default function LoginPage() {
           )}
 
           <form onSubmit={handleEmailAuth} noValidate className="mt-8 space-y-5">
-            {isRegister && (
-              <Field id="name" label="Full name" error={fieldErrors.name}>
+              {isRegister && (
+                <Field id="name" label="Full name" error={fieldErrors.name} required>
+                  <Input
+                    type="text"
+                    autoComplete="name"
+                    maxLength={NAME_MAX}
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    placeholder="Your name"
+                  />
+                </Field>
+              )}
+
+              <Field id="email" label="Email address" error={fieldErrors.email} required>
                 <Input
-                  id="name"
-                  type="text"
-                  autoComplete="name"
-                  value={name}
-                  onChange={(e) => setName(e.target.value)}
-                  placeholder="Your name"
+                  type="email"
+                  autoComplete="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  placeholder="name@company.com"
                 />
               </Field>
-            )}
 
-            <Field id="email" label="Email address" error={fieldErrors.email}>
-              <Input
-                id="email"
-                type="email"
-                autoComplete="email"
-                value={email}
-                onChange={(e) => setEmail(e.target.value)}
-                placeholder="name@company.com"
-              />
-            </Field>
-
-            <Field
-              id="password"
-              label="Password"
-              error={fieldErrors.password}
-              hint={isRegister ? "At least 8 characters." : undefined}
-            >
-              <Input
+              <Field
                 id="password"
-                type="password"
-                autoComplete={isRegister ? "new-password" : "current-password"}
-                value={password}
-                onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
-              />
-            </Field>
+                label="Password"
+                error={fieldErrors.password}
+                required
+                hint={isRegister ? "At least 8 characters." : undefined}
+              >
+                <PasswordInput
+                  autoComplete={isRegister ? "new-password" : "current-password"}
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  placeholder="••••••••"
+                />
+              </Field>
+
+              {/* Asked for once more, because sign-up is the one moment a typo
+                  becomes permanent: the password is never shown again and, until
+                  the reset flow above existed, there was no way back into the
+                  account at all. */}
+              {isRegister && (
+                <Field
+                  id="confirmPassword"
+                  label="Confirm password"
+                  error={fieldErrors.confirmPassword}
+                  required
+                >
+                  <PasswordInput
+                    autoComplete="new-password"
+                    value={confirmPassword}
+                    onChange={(e) => setConfirmPassword(e.target.value)}
+                    placeholder="••••••••"
+                  />
+                </Field>
+              )}
 
             <button
               type="submit"
               disabled={loading}
               className={`${primaryButton} ${buttonBlock} ${buttonLg}`}
             >
-              {loading ? "Please wait…" : isRegister ? "Create account" : "Log in"}
+              {loading ? "Please wait…" : submitLabel}
             </button>
           </form>
 
@@ -321,9 +393,15 @@ export default function LoginPage() {
           </p>
         </div>
 
+        {/* The two documents are named because agreeing to them is a condition of
+            using the account, and something a person is asked to agree to has to
+            be reachable from where they agree to it. They were plain text here. */}
         <p className="mt-6 flex items-start justify-center gap-1.5 text-xs leading-relaxed text-ink-3">
           <Icon name="info" size={13} className="mt-px shrink-0" />
-          <span>By continuing, you agree to Slotly&apos;s Terms of Service and Privacy Policy.</span>
+          <span>
+            By continuing, you agree to Slotly&apos;s <LegalLinks.Terms /> and{" "}
+            <LegalLinks.Privacy />.
+          </span>
         </p>
       </div>
     </div>

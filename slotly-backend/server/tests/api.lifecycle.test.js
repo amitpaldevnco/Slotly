@@ -139,12 +139,41 @@ describe("client cancellation and the cutoff", () => {
     expect(detail.status).toBe(200);
     expect(detail.body.data.status).toBe("cancelled");
 
-    const past = await clientUser.agent.get("/api/bookings?scope=past");
-    expect(past.body.data.bookings.some((b) => b.id === booking.id)).toBe(true);
+    // Still retrievable, which is what "not deleted" means here.
+    const cancelled = await clientUser.agent.get("/api/bookings?status=cancelled");
+    expect(cancelled.body.data.bookings.some((b) => b.id === booking.id)).toBe(true);
 
     // …and it no longer counts as upcoming.
     const upcoming = await clientUser.agent.get("/api/bookings?scope=upcoming");
     expect(upcoming.body.data.bookings.some((b) => b.id === booking.id)).toBe(false);
+  });
+
+  // `scope=past` used to mean "not upcoming" — `starts_at < NOW() OR status NOT
+  // IN (active)` — which put a cancelled appointment *next week* under a tab the
+  // UI labels "Past", dated in the future, while it also appeared under
+  // "Cancelled". One booking in two tabs, one of them contradicting its own
+  // heading. `past` is now the clock alone.
+  it("does not file a cancelled future booking under past", async () => {
+    const booking = await bookFirstFreeSlot();
+    await clientUser.agent.post(`/api/bookings/${booking.id}/cancel`).send({});
+
+    const past = await clientUser.agent.get("/api/bookings?scope=past");
+    expect(past.body.data.bookings.some((b) => b.id === booking.id)).toBe(false);
+  });
+
+  // The counts behind the tab labels. They read the same expressions the list
+  // does, so a badge cannot disagree with the list it sits above.
+  it("counts a cancelled future booking as cancelled and not as past", async () => {
+    const before = await clientUser.agent.get("/api/bookings/counts");
+
+    const booking = await bookFirstFreeSlot();
+    await clientUser.agent.post(`/api/bookings/${booking.id}/cancel`).send({});
+
+    const after = await clientUser.agent.get("/api/bookings/counts");
+
+    expect(after.status).toBe(200);
+    expect(after.body.data.cancelled).toBe(before.body.data.cancelled + 1);
+    expect(after.body.data.past).toBe(before.body.data.past);
   });
 });
 
