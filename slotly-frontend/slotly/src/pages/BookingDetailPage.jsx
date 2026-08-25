@@ -198,8 +198,8 @@ export default function BookingDetailPage() {
       />
 
       {justBooked && isActive && (
-        <Alert tone="success" title="You're booked in." className="mb-4">
-          Here is everything about your appointment, in both timezones.
+        <Alert tone="success" title="Appointment confirmed" className="mb-4">
+         Your appointment details are shown in both time zones.
         </Alert>
       )}
 
@@ -269,7 +269,7 @@ export default function BookingDetailPage() {
         <AppointmentPanel booking={booking} isClient={isClient} otherParty={otherParty} />
 
         {isActive && (
-          <Section title={isClient ? "Manage this booking" : "Actions"}>
+          <Section title={isClient ? "Manage appointment" : "Actions"}>
             <div className="flex flex-wrap gap-2">
               {isClient ? (
                 <>
@@ -482,7 +482,7 @@ function AppointmentPanel({ booking, isClient, otherParty }) {
         <p className="mb-3">
           <span className={highlightPill}>
             <Icon name="clock" size={12} />
-            {relativeTime(booking.startsAt)}
+            Starts in {relativeTime(booking.startsAt)}
           </span>
         </p>
       )}

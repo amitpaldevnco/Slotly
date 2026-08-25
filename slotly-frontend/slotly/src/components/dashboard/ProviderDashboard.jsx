@@ -257,7 +257,7 @@ export default function ProviderDashboard({ user }) {
       {/* Warnings. The reference has no panel for these, but the application
           does raise them and they block bookings — so they sit directly under
           the greeting, where the eye already is. */}
-      {warnings.length > 0 && (
+      {/* {warnings.length > 0 && (
         <div className="mb-8 overflow-hidden rounded-lg border border-outline-variant bg-surface">
           <div className="flex items-center gap-2 border-b border-outline-variant bg-surface-container-low px-6 py-3">
             <Icon name="warning" size={18} className="text-error" />
@@ -292,7 +292,7 @@ export default function ProviderDashboard({ user }) {
             ))}
           </ul>
         </div>
-      )}
+      )} */}
 
       {/* Metrics */}
       <div className="mb-8 grid grid-cols-2 gap-4 lg:grid-cols-5 md:gap-gutter">
