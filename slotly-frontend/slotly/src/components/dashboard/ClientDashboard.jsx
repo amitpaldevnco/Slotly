@@ -68,7 +68,10 @@ export default function ClientDashboard({ user }) {
   const next = upcoming[0] ?? null;
   const rest = upcoming.slice(1, 4);
 
-  const activity = useMemo(() => buildActivity(upcoming, past), [upcoming, past]);
+  const activity = useMemo(
+    () => buildActivity(upcoming, past, viewerZone),
+    [upcoming, past, viewerZone]
+  );
 
   // Has this client ever booked anything? A cancelled booking still counts —
   // they have been through the flow, so "your first appointment" would be wrong.
@@ -166,11 +169,17 @@ export default function ClientDashboard({ user }) {
                 </Link>
               </div>
 
+              {/* When there is nothing upcoming at all, the feature panel beside
+                  this one is already an empty state headed "Book your next
+                  appointment" — so "No upcoming appointments" here was the same
+                  sentence a second time, in two panels the eye reads together.
+                  Only that wording changes: this line now says what the panel
+                  will hold, and the single-appointment case is untouched. */}
               {rest.length === 0 ? (
                 <p className="py-6 text-center font-caption text-caption text-on-surface-variant">
                   {next
                     ? "That is your only upcoming appointment."
-                    : "No upcoming appointments."}
+                    : "Your next few appointments will be listed here."}
                 </p>
               ) : (
                 <div className="space-y-4">
@@ -195,17 +204,30 @@ export default function ClientDashboard({ user }) {
                     <div key={entry.id} className="relative">
                       <span
                         aria-hidden="true"
-                        className={`absolute -left-[30px] top-1 h-3 w-3 rounded-full border-2 bg-surface ${
+                        className={`absolute -left-[30px] top-2 h-3 w-3 rounded-full border-2 bg-surface ${
                           index === 0 ? "border-primary" : "border-outline"
                         }`}
                       />
-                      <p className="font-small text-small text-primary">{entry.title}</p>
-                      <p className="font-caption text-caption text-on-surface-variant">
-                        {entry.body}
-                      </p>
-                      <span className="mt-1 block font-caption text-caption text-outline">
-                        {relativeTime(entry.at)}
-                      </span>
+                      {/* Every entry is an event on one booking, so the row is a
+                          link to that booking. It read as a static log before,
+                          which left the obvious next question — "which
+                          appointment was that?" — with nothing to click. The
+                          negative margin lets the hover surface reach past the
+                          text without moving it; the dot sits outside the link,
+                          so it keeps the timeline's colour rather than the
+                          row's. */}
+                      <Link
+                        to={`/bookings/${entry.bookingId}`}
+                        className="-mx-2 block rounded-md px-2 py-1 transition-colors hover:bg-surface-container-low"
+                      >
+                        <p className="font-small text-small text-primary">{entry.title}</p>
+                        <p className="font-caption text-caption text-on-surface-variant">
+                          {entry.body}
+                        </p>
+                        <span className="mt-1 block font-caption text-caption text-outline">
+                          {relativeTime(entry.at)}
+                        </span>
+                      </Link>
                     </div>
                   ))}
                 </div>
@@ -309,9 +331,9 @@ function NextAppointment({ booking, viewerZone }) {
 function AppointmentSummary({ upcoming, past }) {
   const done = past.filter((booking) => booking.status === "completed").length;
   const stats = [
-    { value: upcoming.length + past.length, label: "Total" },
-    { value: done, label: "Done" },
-    { value: upcoming.length, label: "Next" },
+    { value: upcoming.length + past.length, label: "Total booked" },
+    { value: done, label: "Completed" },
+    { value: upcoming.length, label: "Upcoming" },
   ];
 
   return (
@@ -509,49 +531,80 @@ function UpcomingRow({ booking, viewerZone }) {
  * `updatedAt` on a completed or rescheduled booking is when that happened. Those
  * four columns are the whole of what Slotly records about a booking's life
  * outside its audit trail, which has no cross-booking endpoint.
+ *
+ * One entry per booking, and it is the *latest* of that booking's events.
+ *
+ * This used to push every event it could find, so a booking that had been booked
+ * and then completed contributed two rows — at four rows deep, a client with two
+ * bookings saw each of them twice. Collapsing to the newest event keeps the four
+ * slots on four different appointments, and the newest event is the one worth
+ * showing: "cancelled" is the state of a booking that was booked and then called
+ * off, and a reader who wants the full history has the booking's own page one
+ * click away.
+ *
+ * @param {string} viewerZone The client's timezone, for the date in each body.
  */
-function buildActivity(upcoming, past) {
+function buildActivity(upcoming, past, viewerZone) {
   const entries = [];
 
   for (const booking of [...upcoming, ...past]) {
-    const who = booking.provider.businessName || booking.provider.name;
-
-    if (booking.createdAt) {
-      entries.push({
-        id: `created-${booking.id}`,
-        at: booking.createdAt,
-        title: "Appointment booked",
-        body: `${booking.service.name} with ${who}.`,
-      });
-    }
-
-    if (booking.status === "cancelled" && booking.cancelledAt) {
-      entries.push({
-        id: `cancelled-${booking.id}`,
-        at: booking.cancelledAt,
-        title: "Appointment cancelled",
-        body: `${booking.service.name} with ${who}.`,
-      });
-    }
-
-    if (booking.status === "rescheduled" && booking.updatedAt) {
-      entries.push({
-        id: `moved-${booking.id}`,
-        at: booking.updatedAt,
-        title: "Appointment rescheduled",
-        body: `${booking.service.name} with ${who} moved.`,
-      });
-    }
-
-    if (booking.status === "completed" && booking.updatedAt) {
-      entries.push({
-        id: `done-${booking.id}`,
-        at: booking.updatedAt,
-        title: "Appointment completed",
-        body: `${booking.service.name} with ${who}.`,
-      });
-    }
+    const event = latestEvent(booking, viewerZone);
+    if (!event) continue;
+    entries.push({ id: booking.id, bookingId: booking.id, ...event });
   }
 
   return entries.sort((a, b) => new Date(b.at) - new Date(a.at)).slice(0, 4);
+}
+
+/**
+ * The most recent thing to have happened to one booking, or `null` if it records
+ * no timestamp at all.
+ *
+ * Ordered by timestamp rather than by status, so an untouched booking — where
+ * `updatedAt` still equals `createdAt` — reads as "booked" rather than as
+ * whatever status it happens to carry.
+ *
+ * The body names the appointment's own date as well as its service and provider,
+ * because the first two alone do not identify it. A client who sees the same
+ * physiotherapist for the same service twice produced two rows that were equal
+ * character for character, which read as the feed repeating itself — and now
+ * that each row is a link, two indistinguishable rows would lead to two
+ * different pages. The date is the thing that tells them apart: no two of one
+ * provider's bookings can start at the same moment.
+ */
+function latestEvent(booking, viewerZone) {
+  const who = booking.provider.businessName || booking.provider.name;
+  const start = DateTime.fromISO(booking.startsAt).setZone(viewerZone);
+
+  // A booking with no readable start still gets a row; it just cannot be dated,
+  // and "Invalid DateTime" in the feed would be worse than the shorter line.
+  const subject = start.isValid
+    ? `${booking.service.name} with ${who} · ${start.toFormat("ccc d LLL")}`
+    : `${booking.service.name} with ${who}`;
+
+  const events = [];
+
+  if (booking.createdAt) {
+    events.push({ at: booking.createdAt, title: "Appointment booked" });
+  }
+
+  if (booking.status === "cancelled" && booking.cancelledAt) {
+    events.push({ at: booking.cancelledAt, title: "Appointment cancelled" });
+  }
+
+  if (booking.status === "rescheduled" && booking.updatedAt) {
+    events.push({ at: booking.updatedAt, title: "Appointment rescheduled" });
+  }
+
+  if (booking.status === "completed" && booking.updatedAt) {
+    events.push({ at: booking.updatedAt, title: "Appointment completed" });
+  }
+
+  if (events.length === 0) return null;
+
+  const latest = events.reduce((newest, event) =>
+    new Date(event.at) > new Date(newest.at) ? event : newest
+  );
+
+  return { ...latest, body: `${subject}.` };
 }
