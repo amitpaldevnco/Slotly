@@ -26,8 +26,9 @@
  * step the next time a status is added. The tab is named for what it contains.
  */
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
+import { DateTime } from "luxon";
 import * as bookingsApi from "../api/bookings";
 import * as providersApi from "../api/providers";
 import { useApiResource } from "../hooks/useApiResource";
@@ -68,6 +69,32 @@ const TABS = [
 
 const PAGE_SIZE = 10;
 
+/** No filter set. Also the shape of the filter state, in one place. */
+const EMPTY_FILTERS = { serviceId: "", providerId: "", status: "", from: "", to: "" };
+
+/** Lifted out of the panel below, where it was the same string four times. */
+const filterLabel =
+  "mb-2 block font-caption text-caption font-bold uppercase tracking-wider text-on-surface-variant";
+
+/**
+ * A calendar day from a `<input type="date">`, as the instant that day begins in
+ * the viewer's own timezone.
+ *
+ * The server compares `from`/`to` against `starts_at`, an instant — so a bare
+ * "2026-09-01" is parsed as UTC midnight, and a client in New York asking for
+ * appointments from 1 September was shown ones from 8pm on 31 August. Pinning
+ * the boundary to the zone the dates were picked in is what makes the filter
+ * mean the days it displays.
+ *
+ * @param {number} plusDays Offset in days, for turning an inclusive end date
+ *   into the exclusive bound the server wants.
+ */
+function dayBoundary(date, zone, plusDays = 0) {
+  if (!date) return null;
+  const start = DateTime.fromISO(date, { zone }).plus({ days: plusDays }).startOf("day");
+  return start.isValid ? start.toISO() : null;
+}
+
 export default function AppointmentsPage() {
   usePageTitle("Appointments");
 
@@ -83,7 +110,7 @@ export default function AppointmentsPage() {
 
   const [term, setTerm] = useState("");
   const [filtersOpen, setFiltersOpen] = useState(false);
-  const [filters, setFilters] = useState({ serviceId: "", from: "", to: "" });
+  const [filters, setFilters] = useState(EMPTY_FILTERS);
   const [rescheduling, setRescheduling] = useState(null);
 
   const search = useDebouncedValue(term.trim().toLowerCase(), 250);
@@ -95,29 +122,62 @@ export default function AppointmentsPage() {
     { enabled: isProvider && Boolean(user?.id), deps: [user?.id], initialData: [] }
   );
 
+  // Only some of the filters are the server's to apply, and the split follows
+  // what `GET /bookings` accepts: `status`, `serviceId`, `from` and `to` go to
+  // it, because it can filter the whole history rather than just the 500 rows
+  // it returns. There is no provider parameter — a client's bookings are
+  // already scoped to them by the session — so that one filter is the
+  // exception, and it narrows the fetched page the way the search box does.
+  const serverFilters = useMemo(
+    () => ({
+      status: filters.status,
+      serviceId: filters.serviceId,
+      from: filters.from,
+      to: filters.to,
+    }),
+    [filters.status, filters.serviceId, filters.from, filters.to]
+  );
+
   const { data, loading, error, reload } = useApiResource(
     ({ signal }) => {
       const params = { ...TABS.find((option) => option.id === tab).params };
-      // Empty filters are dropped rather than sent as blanks, which the API
-      // would otherwise have to interpret.
-      for (const [key, value] of Object.entries(filters)) {
-        if (value !== "") params[key] = value;
-      }
+
+      // After the tab's own parameters, so a status chosen here narrows what
+      // the tab asked for. Cancelled is the only tab that sets a status of its
+      // own, and it is also the only one where the control is hidden — there is
+      // one status in it, so there is nothing to narrow.
+      if (serverFilters.status) params.status = serverFilters.status;
+      if (serverFilters.serviceId) params.serviceId = serverFilters.serviceId;
+
+      const from = dayBoundary(serverFilters.from, viewerZone);
+      if (from) params.from = from;
+
+      // The server's `to` is exclusive (`starts_at < to`), so the day *after*
+      // the one chosen is what includes the chosen day itself. Sending the date
+      // as picked made "To: 1 September" mean "before 1 September", and a range
+      // whose two ends were the same day returned nothing at all.
+      const to = dayBoundary(serverFilters.to, viewerZone, 1);
+      if (to) params.to = to;
+
       return bookingsApi.list(params, { signal });
     },
-    { deps: [tab, filters], fallback: "Could not load your appointments." }
+    { deps: [tab, serverFilters, viewerZone], fallback: "Could not load your appointments." }
   );
 
   // Memoised because it feeds a `useMemo` below; a fresh `[]` on every render
   // would make that filter re-run on every render too.
   const bookings = useMemo(() => data?.bookings ?? [], [data]);
 
-  // The reference puts a search box on this screen. `GET /bookings` has no text
-  // parameter, so this narrows the page that has already been fetched rather
-  // than pretending to query the server.
+  // What the search box and the provider filter narrow down to. Neither has a
+  // parameter on `GET /bookings`, so both work on the list already fetched
+  // rather than pretending to query the server.
   const visible = useMemo(() => {
-    if (!search) return bookings;
+    if (!search && !filters.providerId) return bookings;
+
     return bookings.filter((booking) => {
+      if (filters.providerId && String(booking.provider?.id) !== filters.providerId) return false;
+      if (!search) return true;
+
       const other = isProvider ? booking.client : booking.provider;
       return (
         (other?.name || "").toLowerCase().includes(search) ||
@@ -125,15 +185,27 @@ export default function AppointmentsPage() {
         (booking.service?.name || "").toLowerCase().includes(search)
       );
     });
-  }, [bookings, search, isProvider]);
+  }, [bookings, search, isProvider, filters.providerId]);
+
+  const filterOptions = useFilterOptions(bookings, tab);
+
+  const activeFilterCount = Object.values(filters).filter(Boolean).length;
+
+  // Whether the list on screen is a narrowed view of the tab rather than the
+  // whole of it. Decides what an empty result means.
+  const narrowed = Boolean(search) || activeFilterCount > 0;
 
   // Whether this client has ever booked anything — which decides whether the
   // empty Upcoming tab reads "your first appointment" or "your next one". The
   // tab's own request cannot answer it: it returns what is upcoming, which is
   // nothing in both cases. So the history is asked for separately, and only when
   // it is needed — a client, on Upcoming, with an empty list and no search term.
+  // Filters count for the same reason the search term does, and `narrowed`
+  // covers both: an Upcoming tab emptied by a date range has not run out of
+  // appointments, so asking whether this client has any history at all would
+  // answer a question nobody asked.
   const needsHistory =
-    !isProvider && tab === "upcoming" && !loading && !error && !search && visible.length === 0;
+    !isProvider && tab === "upcoming" && !loading && !error && !narrowed && visible.length === 0;
 
   const { data: historyData, loading: historyLoading } = useApiResource(
     ({ signal }) => bookingsApi.list({ scope: "past" }, { signal }).catch(() => ({ bookings: [] })),
@@ -166,8 +238,6 @@ export default function AppointmentsPage() {
   useEffect(() => {
     setPage(1);
   }, [tab, search, filters, setPage]);
-
-  const activeFilterCount = Object.values(filters).filter(Boolean).length;
 
   const selectTab = (id) => {
     const next = new URLSearchParams(searchParams);
@@ -212,74 +282,129 @@ export default function AppointmentsPage() {
             />
           </div>
 
-          {isProvider && (
-            <button
-              type="button"
-              onClick={() => setFiltersOpen((open) => !open)}
-              aria-expanded={filtersOpen}
-              // The word "Filter" is hidden below md, so on a phone this button
-              // is an icon and a number — nothing a screen reader can read. The
-              // label is unconditional rather than conditional on the breakpoint,
-              // because an accessible name that only exists at some widths is
-              // the harder bug to notice.
-              aria-label={
-                activeFilterCount > 0
-                  ? `Filter appointments (${activeFilterCount} active)`
-                  : "Filter appointments"
-              }
-              className="flex h-10 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-outline-variant bg-surface px-4 font-small text-small text-primary transition-colors hover:bg-surface-container-low"
-            >
-              <Icon name="filter_list" size={18} />
-              <span className="hidden md:inline">Filter</span>
-              {activeFilterCount > 0 && (
-                <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 font-caption text-[10px] font-bold text-on-primary">
-                  {activeFilterCount}
-                </span>
-              )}
-            </button>
-          )}
+          {/* Clients get this too now. It was `isProvider &&`, which left them
+              with a search box and nothing else: they could find an appointment
+              by typing a name, but could not ask "what did I have with Priya",
+              "what got cancelled" or "what happened in August" at all. */}
+          <button
+            type="button"
+            onClick={() => setFiltersOpen((open) => !open)}
+            aria-expanded={filtersOpen}
+            // The word "Filter" is hidden below md, so on a phone this button
+            // is an icon and a number — nothing a screen reader can read. The
+            // label is unconditional rather than conditional on the breakpoint,
+            // because an accessible name that only exists at some widths is
+            // the harder bug to notice.
+            aria-label={
+              activeFilterCount > 0
+                ? `Filter appointments (${activeFilterCount} active)`
+                : "Filter appointments"
+            }
+            className="flex h-10 shrink-0 cursor-pointer items-center justify-center gap-2 rounded-md border border-outline-variant bg-surface px-4 font-small text-small text-primary transition-colors hover:bg-surface-container-low"
+          >
+            <Icon name="filter_list" size={18} />
+            <span className="hidden md:inline">Filter</span>
+            {activeFilterCount > 0 && (
+              <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 font-caption text-[10px] font-bold text-on-primary">
+                {activeFilterCount}
+              </span>
+            )}
+          </button>
         </div>
       </div>
 
-      {/* Filter panel — the design's Filter button, opened. Holds the service and
-          date-range parameters `GET /bookings` accepts. */}
-      {isProvider && filtersOpen && (
-        <div className="mb-6 grid gap-4 rounded-lg border border-outline-variant bg-surface p-4 sm:grid-cols-3">
-          <div>
-            <label
-              htmlFor="filter-service"
-              className="mb-2 block font-caption text-caption font-bold uppercase tracking-wider text-on-surface-variant"
-            >
-              Service
-            </label>
-            <Select
-              id="filter-service"
-              value={filters.serviceId}
-              onChange={(event) =>
-                setFilters((current) => ({ ...current, serviceId: event.target.value }))
-              }
-            >
-              <option value="">All services</option>
-              {(services ?? []).map((service) => (
-                <option key={service.id} value={service.id}>
-                  {service.name}
-                  {service.isActive === false ? " (retired)" : ""}
-                </option>
-              ))}
-            </Select>
-          </div>
+      {/* Filter panel — the design's Filter button, opened.
+
+          The fields split by what each role actually has to filter on. A
+          provider narrows by their own service; a client narrows by provider,
+          which is the same question asked from the other side of the booking —
+          they have no service catalogue of their own, and `serviceId` would mean
+          nothing to them. Both get a status and a date range.
+
+          The provider and status dropdowns are hidden when they hold fewer than
+          two choices, because a filter with one option cannot change what is on
+          screen — that is what keeps a Status control off the Cancelled tab,
+          where every appointment is cancelled by definition. */}
+      {filtersOpen && (
+        <div className="mb-6 grid gap-4 rounded-lg border border-outline-variant bg-surface p-4 sm:grid-cols-2 lg:grid-cols-4">
+          {isProvider ? (
+            <div>
+              <label htmlFor="filter-service" className={filterLabel}>
+                Service
+              </label>
+              <Select
+                id="filter-service"
+                value={filters.serviceId}
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, serviceId: event.target.value }))
+                }
+              >
+                <option value="">All services</option>
+                {(services ?? []).map((service) => (
+                  <option key={service.id} value={service.id}>
+                    {service.name}
+                    {service.isActive === false ? " (retired)" : ""}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          ) : (
+            filterOptions.providers.length > 1 && (
+              <div>
+                <label htmlFor="filter-provider" className={filterLabel}>
+                  Provider
+                </label>
+                <Select
+                  id="filter-provider"
+                  value={filters.providerId}
+                  onChange={(event) =>
+                    setFilters((current) => ({ ...current, providerId: event.target.value }))
+                  }
+                >
+                  <option value="">All providers</option>
+                  {filterOptions.providers.map(({ id, label }) => (
+                    <option key={id} value={id}>
+                      {label}
+                    </option>
+                  ))}
+                </Select>
+              </div>
+            )
+          )}
+
+          {filterOptions.statuses.length > 1 && (
+            <div>
+              <label htmlFor="filter-status" className={filterLabel}>
+                Status
+              </label>
+              <Select
+                id="filter-status"
+                value={filters.status}
+                onChange={(event) =>
+                  setFilters((current) => ({ ...current, status: event.target.value }))
+                }
+              >
+                <option value="">Any status</option>
+                {filterOptions.statuses.map(({ id, label }) => (
+                  <option key={id} value={id}>
+                    {label}
+                  </option>
+                ))}
+              </Select>
+            </div>
+          )}
 
           <div>
-            <label
-              htmlFor="filter-from"
-              className="mb-2 block font-caption text-caption font-bold uppercase tracking-wider text-on-surface-variant"
-            >
+            <label htmlFor="filter-from" className={filterLabel}>
               From
             </label>
             <input
               id="filter-from"
               type="date"
               value={filters.from}
+              // Bounded by each other, so the two dates cannot be put in an
+              // order that describes no range at all.
+              max={filters.to || undefined}
               onChange={(event) =>
                 setFilters((current) => ({ ...current, from: event.target.value }))
               }
@@ -288,26 +413,24 @@ export default function AppointmentsPage() {
           </div>
 
           <div>
-            <label
-              htmlFor="filter-to"
-              className="mb-2 block font-caption text-caption font-bold uppercase tracking-wider text-on-surface-variant"
-            >
+            <label htmlFor="filter-to" className={filterLabel}>
               To
             </label>
             <input
               id="filter-to"
               type="date"
               value={filters.to}
+              min={filters.from || undefined}
               onChange={(event) => setFilters((current) => ({ ...current, to: event.target.value }))}
               className={inputClasses}
             />
           </div>
 
           {activeFilterCount > 0 && (
-            <div className="sm:col-span-3">
+            <div className="sm:col-span-2 lg:col-span-4">
               <button
                 type="button"
-                onClick={() => setFilters({ serviceId: "", from: "", to: "" })}
+                onClick={() => setFilters(EMPTY_FILTERS)}
                 className="cursor-pointer font-small text-small font-semibold text-primary underline underline-offset-2"
               >
                 Clear filters
@@ -360,7 +483,7 @@ export default function AppointmentsPage() {
           <NoAppointments
             tab={tab}
             isProvider={isProvider}
-            searching={Boolean(search)}
+            narrowed={narrowed}
             hasHistory={hasHistory}
           />
         )
@@ -576,7 +699,29 @@ function ClientCard({ booking, viewerZone }) {
   const canReschedule = booking.status === "booked" || booking.status === "rescheduled";
 
   return (
-    <div className="group flex flex-col items-start justify-between gap-5 rounded-md border border-outline-variant bg-surface p-5 transition-shadow hover:shadow-raise md:flex-row md:items-center">
+    <div className="group relative flex flex-col items-start justify-between gap-5 rounded-md border border-outline-variant bg-surface p-5 transition-shadow hover:shadow-raise md:flex-row md:items-center">
+      {/* The whole card opens the appointment, not just the button in its
+          corner. Everything on the card — who, what, when, what it cost — is a
+          summary of one page, so it already behaved like a link while only a
+          120px button acted like one; anywhere else on it, a click did nothing.
+
+          An overlay rather than wrapping the card in the `Link`, because the
+          card holds links of its own and an `<a>` inside an `<a>` is not
+          something HTML allows.
+
+          Out of the tab order and hidden from assistive tech deliberately.
+          "View Details" below goes to the same place and is already reachable,
+          so exposing this as well would put every appointment in the tab order
+          and the screen-reader's link list twice over, for no destination that
+          was not already there. This is the mouse's shortcut to a link that
+          exists either way. */}
+      <Link
+        to={`/bookings/${booking.id}`}
+        aria-hidden="true"
+        tabIndex={-1}
+        className="absolute inset-0 z-0 rounded-md"
+      />
+
       <div className="flex flex-1 items-start gap-4">
         <Avatar
           src={provider.avatarUrl}
@@ -612,7 +757,10 @@ function ClientCard({ booking, viewerZone }) {
         </div>
       </div>
 
-      <div className="mt-4 flex w-full items-center gap-2 border-t border-outline-variant pt-4 md:mt-0 md:w-auto md:border-none md:pt-0">
+      {/* `relative z-10` lifts these clear of the overlay above — without it,
+          the card-wide link sits on top of them and Message and View Details
+          both become another way of opening the details page. */}
+      <div className="relative z-10 mt-4 flex w-full items-center gap-2 border-t border-outline-variant pt-4 md:mt-0 md:w-auto md:border-none md:pt-0">
         {/* Rescheduling a booking is the provider's action in Slotly — a client
             asks for it. This is where that ask starts, which is why it opens the
             thread rather than a slot picker. */}
@@ -633,6 +781,59 @@ function ClientCard({ booking, viewerZone }) {
       </div>
     </div>
   );
+}
+
+/**
+ * The provider and status dropdowns' options, read off the appointments
+ * themselves.
+ *
+ * Derived rather than hardcoded for the reason the Past tab exists: a list of
+ * statuses written out here would have to be edited every time the status set
+ * changes, and the last time this file guessed at that it hid every no-show
+ * appointment. The same goes for providers — offering one this client has never
+ * booked is offering a filter that can only return an empty screen.
+ *
+ * Accumulated across the tab rather than rebuilt from the current list, because
+ * the status and date filters are applied by the server: setting one shrinks the
+ * very list these options are read from. Rebuilt each time, choosing a status
+ * would leave that status as the only one on offer — and an option list that
+ * drops the value it is currently showing leaves a `<select>` rendering blank,
+ * so the control would lose the setting the reader had just made. Options
+ * therefore only ever grow, until the tab changes and a different set of
+ * appointments makes a different set of answers.
+ */
+function useFilterOptions(bookings, tab) {
+  const seen = useRef({ providers: new Map(), statuses: new Set() });
+
+  // Reset during render, not in an effect: the memo below runs before effects
+  // do, and would otherwise hand back the previous tab's options once.
+  const lastTab = useRef(tab);
+  if (lastTab.current !== tab) {
+    lastTab.current = tab;
+    seen.current = { providers: new Map(), statuses: new Set() };
+  }
+
+  return useMemo(() => {
+    for (const booking of bookings) {
+      const provider = booking.provider;
+      if (provider?.id) {
+        seen.current.providers.set(String(provider.id), provider.businessName || provider.name);
+      }
+      if (booking.status) seen.current.statuses.add(booking.status);
+    }
+
+    const byLabel = (a, b) => a.label.localeCompare(b.label);
+
+    return {
+      providers: [...seen.current.providers].map(([id, label]) => ({ id, label })).sort(byLabel),
+      // Labelled through `statusStyle` so the dropdown and the badge on every
+      // card read the same word for the same status.
+      statuses: [...seen.current.statuses]
+        .map((id) => ({ id, label: statusStyle(id).label }))
+        .sort(byLabel),
+    };
+    // `tab` is a dependency of the reset above, so it is one of this too.
+  }, [bookings, tab]);
 }
 
 /* ==========================================================================
@@ -672,13 +873,18 @@ function ListFooter({ total, firstRow, lastRow, page, pageCount, onPage }) {
 }
 
 /** The `no_appointments` screen. */
-function NoAppointments({ tab, isProvider, searching, hasHistory }) {
-  if (searching) {
+function NoAppointments({ tab, isProvider, narrowed, hasHistory }) {
+  // A filtered-empty list is not an empty tab. This used to test the search
+  // term alone, so narrowing by provider, status or date down to nothing
+  // answered with "No cancelled appointments" on a tab that plainly had some —
+  // the app reporting that the data was gone when the reader had merely hidden
+  // it.
+  if (narrowed) {
     return (
       <EmptyState
         icon="search"
-        title="No appointments match that search"
-        description="Try a different name or service."
+        title="No appointments match"
+        description="Nothing in this tab fits the current search and filters. Try widening them."
       />
     );
   }
