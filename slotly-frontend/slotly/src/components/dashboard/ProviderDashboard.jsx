@@ -14,6 +14,17 @@
  *
  * The calendar and the bookings table that used to live here now have routes of
  * their own — `/calendar` and `/appointments` — matching the reference's sidebar.
+ *
+ * ## Today's Schedule carries more than the reference draws
+ *
+ * The reference gives this panel eight of the twelve columns and puts a start
+ * time and a name in each row, which left most of the widest thing on the page
+ * blank. Everything added to it is derived from the appointments already
+ * fetched, so none of it costs a request: a four-figure summary of the day above
+ * the rows (`DayOverview`), and per row the end time, the client's photo, the
+ * fee, and the note the client wrote when booking. The note in particular was
+ * being collected on the booking form and then shown nowhere except inside the
+ * appointment itself.
  */
 
 import { useMemo, useState } from "react";
@@ -121,6 +132,11 @@ export default function ProviderDashboard({ user }) {
 
   const firstName = user.name?.split(" ")[0];
   const activeServiceCount = services.filter((service) => service.isActive !== false).length;
+
+  // The next appointment still to come, found once. This was `nextOf(...)`
+  // called inside the render loop, so a day with n appointments scanned the list
+  // n times to answer one question about it.
+  const nextBookingId = nextOf(todayBookings)?.id ?? null;
 
   // Which row is mid-request, so only that row's buttons go quiet rather than
   // the whole panel freezing while one appointment is settled.
@@ -352,28 +368,63 @@ export default function ProviderDashboard({ user }) {
               <p className="mt-3 font-small text-small font-semibold text-on-surface">
                 Nothing booked today
               </p>
-              <p className="mt-1 font-caption text-caption text-on-surface-variant">
-                Clients can only book times inside your published hours.
-              </p>
-              <Link
-                to="/availability"
-                className="mt-4 inline-flex rounded-md border border-outline-variant px-4 py-2 font-small text-small text-primary transition-colors hover:bg-surface-container-low"
-              >
-                Check availability
-              </Link>
+              {/* An empty day is not the same thing as an empty diary, and the
+                  panel used to say the same sentence about published hours
+                  either way — sending a provider off to check availability that
+                  is, in fact, working fine. The upcoming count is already loaded
+                  for the tile above, so saying which of the two situations this
+                  is costs nothing. */}
+              {summary?.upcomingBookings > 0 ? (
+                <>
+                  <p className="mt-1 font-caption text-caption text-on-surface-variant">
+                    You have {summary.upcomingBookings} appointment
+                    {summary.upcomingBookings === 1 ? "" : "s"} booked on later days.
+                  </p>
+                  <Link
+                    to="/appointments"
+                    className="mt-4 inline-flex rounded-md border border-outline-variant px-4 py-2 font-small text-small text-primary transition-colors hover:bg-surface-container-low"
+                  >
+                    See what&apos;s coming up
+                  </Link>
+                </>
+              ) : (
+                <>
+                  <p className="mt-1 font-caption text-caption text-on-surface-variant">
+                    Clients can only book times inside your published hours.
+                  </p>
+                  <Link
+                    to="/availability"
+                    className="mt-4 inline-flex rounded-md border border-outline-variant px-4 py-2 font-small text-small text-primary transition-colors hover:bg-surface-container-low"
+                  >
+                    Check availability
+                  </Link>
+                </>
+              )}
             </div>
           ) : (
-            <div className="space-y-4">
-              {todayBookings.map((booking, index) => (
-                <ScheduleRow
-                  key={booking.id}
-                  booking={booking}
-                  timezone={timezone}
-                  isNext={booking.id === nextOf(todayBookings)?.id}
-                  gapBefore={gapBetween(todayBookings[index - 1], booking)}
-                />
-              ))}
-            </div>
+            <>
+              {/* The shape of the day, above the day itself.
+
+                  This panel is two-thirds of the page's width and its rows are
+                  a time and two lines of text, so it carried a lot of blank
+                  space — most of it in exactly the place a reader looks first.
+                  These four figures are all derived from the appointments
+                  already on screen, so the panel answers "what does today look
+                  like" before the reader has to add it up from the rows. */}
+              <DayOverview bookings={todayBookings} timezone={timezone} currency={user.currency} />
+
+              <div className="space-y-4">
+                {todayBookings.map((booking, index) => (
+                  <ScheduleRow
+                    key={booking.id}
+                    booking={booking}
+                    timezone={timezone}
+                    isNext={booking.id === nextBookingId}
+                    gapBefore={gapBetween(todayBookings[index - 1], booking)}
+                  />
+                ))}
+              </div>
+            </>
           )}
         </div>
 
@@ -503,6 +554,78 @@ function MetricTile({ label, icon, value, loading = false, className = "" }) {
   );
 }
 
+/**
+ * The four figures that describe a provider's day, read off the appointments the
+ * panel is already showing.
+ *
+ * Derived rather than fetched: every one of these is a reduction over the list
+ * beside it, so the panel costs no extra request and can never disagree with the
+ * rows underneath it.
+ *
+ * The two that need a stated rule:
+ *
+ *   - **Booked** counts every appointment's duration, including a no-show. The
+ *     slot was held and nothing else could be booked into it, so the time was
+ *     spent whether or not the client turned up.
+ *   - **Value** excludes no-shows, because a no-show earns nothing — the same
+ *     rule the earnings tiles and `recordOutcome`'s own toast apply. Counting it
+ *     here and not there would put two different answers to one question on one
+ *     screen.
+ *
+ * Currency is the provider's own on every row, so the sum needs no conversion.
+ */
+function DayOverview({ bookings, timezone, currency }) {
+  const now = Date.now();
+
+  const minutes = bookings.reduce(
+    (total, booking) => total + (Number(booking.service.duration) || 0),
+    0
+  );
+
+  const value = bookings.reduce(
+    (total, booking) =>
+      booking.status === "no_show" ? total : total + (Number(booking.service.price) || 0),
+    0
+  );
+
+  const ahead = bookings.filter((booking) => Date.parse(booking.startsAt) > now).length;
+
+  // The list is sorted by start, so the first start is the day's start. The last
+  // *end* is found rather than taken from the last row: it is the same booking
+  // in practice, but reducing says so instead of relying on it.
+  const lastEnd = bookings.reduce(
+    (latest, booking) => (Date.parse(booking.endsAt) > Date.parse(latest) ? booking.endsAt : latest),
+    bookings[0].endsAt
+  );
+
+  return (
+    <dl className="mb-6 grid grid-cols-2 gap-4 rounded-md border border-outline-variant bg-surface-container-lowest p-4 sm:grid-cols-4">
+      <DayStat term="First to last">
+        {formatTime(bookings[0].startsAt, timezone)} – {formatTime(lastEnd, timezone)}
+      </DayStat>
+      <DayStat term="Booked">{formatDuration(minutes)}</DayStat>
+      <DayStat term="Value">{formatPrice(value, currency)}</DayStat>
+      <DayStat term="Still ahead">
+        {ahead === 0 ? "Day is done" : `${ahead} of ${bookings.length}`}
+      </DayStat>
+    </dl>
+  );
+}
+
+/** One figure in the day overview. */
+function DayStat({ term, children }) {
+  return (
+    <div className="min-w-0">
+      <dt className="font-caption text-caption uppercase tracking-wider text-on-surface-variant">
+        {term}
+      </dt>
+      <dd className="mt-0.5 truncate font-small text-small font-semibold tabular-nums text-on-surface">
+        {children}
+      </dd>
+    </div>
+  );
+}
+
 function ScheduleRow({ booking, timezone, isNext, gapBefore }) {
   const status = statusStyle(booking.status);
   const done = booking.status === "completed" || booking.status === "no_show";
@@ -511,7 +634,9 @@ function ScheduleRow({ booking, timezone, isNext, gapBefore }) {
     <>
       {gapBefore && (
         <div className="flex items-center gap-4 px-4 py-2">
-          <div className="w-16 shrink-0 text-right" />
+          {/* Matches the time column's width below, so the break note lines up
+              with the appointments either side of it. */}
+          <div className="w-20 shrink-0 text-right" />
           <div className="mx-2 hidden h-4 w-px border-l border-dashed border-outline-variant sm:block" />
           <p className="font-caption text-caption italic text-on-surface-variant">
             {gapBefore} break
@@ -530,13 +655,21 @@ function ScheduleRow({ booking, timezone, isNext, gapBefore }) {
       >
         {isNext && <span aria-hidden="true" className="absolute inset-y-0 left-0 w-1 bg-primary" />}
 
-        <div className="w-16 shrink-0 pt-1 text-right">
+        <div className="w-20 shrink-0 pt-1 text-right">
           <p
             className={`font-small text-small ${
               isNext ? "font-semibold text-primary" : "text-on-surface-variant"
             }`}
           >
             {formatTime(booking.startsAt, timezone)}
+          </p>
+          {/* When it ends, which the row never said. "9:00 AM" alone leaves the
+              one question a provider looking at their day actually has — how
+              long am I in this for — answerable only by adding the duration
+              printed three columns to the right. The panel already knew: every
+              booking carries `endsAt`. */}
+          <p className="mt-0.5 font-caption text-caption text-on-surface-variant">
+            to {formatTime(booking.endsAt, timezone)}
           </p>
           {/* Only on the next one, and only while it is still ahead. Repeating
               a countdown beside every row of a day's schedule is noise, and
@@ -552,28 +685,74 @@ function ScheduleRow({ booking, timezone, isNext, gapBefore }) {
         <div className="mx-2 hidden h-12 w-px bg-outline-variant/50 sm:block" />
 
         <div className="flex flex-1 flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-          <div className="min-w-0">
-            <p
-              className={`truncate font-body-lg text-body-lg font-semibold text-on-surface ${
-                done ? "line-through" : ""
-              }`}
-            >
-              {booking.client.name}
-            </p>
-            <p className="truncate font-caption text-caption text-on-surface-variant">
-              {booking.service.name} · {formatDuration(booking.service.duration)}
-            </p>
+          <div className="flex min-w-0 items-start gap-3">
+            {/* The client's face. This column was two lines of text across
+                two-thirds of the page's width, so there was room for it, and a
+                provider recognises a regular by their photo faster than by
+                reading a name off a list. */}
+            <Avatar
+              src={booking.client.avatarUrl}
+              name={booking.client.name}
+              size="sm"
+              className="mt-0.5 border border-outline-variant"
+            />
+
+            <div className="min-w-0">
+              <p
+                className={`truncate font-body-lg text-body-lg font-semibold text-on-surface ${
+                  done ? "line-through" : ""
+                }`}
+              >
+                {booking.client.name}
+              </p>
+              <p className="truncate font-caption text-caption text-on-surface-variant">
+                {booking.service.name} · {formatDuration(booking.service.duration)}
+              </p>
+
+              {/* What the client asked to be told, on the screen the provider
+                  reads before they walk into the room. It was written on the
+                  booking form and then only visible by opening the appointment,
+                  which is one click too many for something this short and this
+                  useful. Clamped to two lines, because the field allows 500
+                  characters and a long one would push the rest of the day off
+                  the screen. */}
+              {booking.clientNote && (
+                <p className="mt-1 line-clamp-2 font-caption text-caption italic text-on-surface-variant">
+                  &ldquo;{booking.clientNote}&rdquo;
+                </p>
+              )}
+            </div>
           </div>
 
           <div className="flex shrink-0 items-center gap-3">
+            {/* What the appointment is worth. A provider's own currency, so
+                these never need converting — and it is the figure the earnings
+                tiles above are made of, shown per appointment. */}
+            <span className="font-small text-small font-semibold tabular-nums text-on-surface">
+              {formatPrice(booking.service.price, booking.service.currency)}
+            </span>
             <span className={status.className}>{status.label}</span>
+
+            {/* A visible label, not just a `title`.
+
+                This was a bare speech-bubble glyph. It did carry `title` and
+                `aria-label`, so a screen reader always read it correctly — the
+                gap was for everyone else. A `title` tooltip needs a mouse held
+                still for about a second, cannot be styled, and never appears on
+                a touch screen at all, which is where a provider checking their
+                day is most likely to be. So the word is on the button.
+
+                `aria-label` stays, and stays more specific than the visible
+                text: "Message Priya Sharma" is the useful announcement in a
+                list of several rows. It still begins with the visible label, so
+                voice control ("click Message") continues to match it. */}
             <Link
               to={`/messages/${booking.id}`}
-              title="Message client"
               aria-label={`Message ${booking.client.name}`}
-              className="rounded-md border border-outline-variant p-2 text-on-surface-variant transition-colors hover:bg-surface"
+              className="inline-flex items-center gap-1.5 rounded-md border border-outline-variant px-3 py-2 font-caption text-caption font-semibold text-on-surface-variant transition-colors hover:bg-surface hover:text-primary"
             >
-              <Icon name="chat" size={18} />
+              <Icon name="chat" size={16} />
+              Message
             </Link>
           </div>
         </div>
