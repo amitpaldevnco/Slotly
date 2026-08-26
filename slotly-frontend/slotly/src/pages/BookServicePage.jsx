@@ -1,12 +1,29 @@
 /**
- * The booking flow: pick a day on a month calendar, pick a time, confirm.
+ * The booking flow: pick a day on a month calendar, pick a time, review, confirm.
  *
  * ## The layout
  *
  * Transcribed from the reference: a "Booking Details" column on the left holding
  * the provider and the service being bought, and beside it "Select Date & Time" —
- * a month calendar with the day's free times in a column next to it, and Confirm
- * Booking under them.
+ * a month calendar with the day's free times in a column next to it, and the
+ * commit under them.
+ *
+ * ## Why there is a dialog in the way
+ *
+ * The reference goes straight from a chosen time to a booked appointment, and so
+ * did this: one click on Confirm Booking and the client owned an appointment.
+ * That made the most consequential button in the app — money, an hour of someone
+ * else's week, a cancellation policy that may already have closed — the only one
+ * with nothing between the click and the consequence.
+ *
+ * Everything the dialog shows was already on this screen. The service and its
+ * price were in the left column, the two clocks were in a paragraph under the
+ * calendar, the cancellation warning appeared in the one case where the window
+ * had already shut, and the note field was at the bottom of a column the client
+ * had scrolled past before they picked a day. Spread over three regions, none of
+ * it was in front of them at the moment it mattered. The dialog does not add
+ * information; it puts what there was in one place, at the point of decision, and
+ * makes the last click deliberate.
  *
  * ## Why a month grid is affordable here
  *
@@ -49,7 +66,7 @@
  * and the server is still the only thing that decides what is bookable. Removing
  * it is strictly kinder than leaving a button that cannot work.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { DateTime } from "luxon";
 import { parseApiError } from "../api/client";
@@ -59,6 +76,7 @@ import { useApiResource } from "../hooks/useApiResource";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
 import Page from "../components/ui/Page";
+import Modal from "../components/ui/Modal";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import Field, { Textarea, CharCount } from "../components/ui/Field";
@@ -67,6 +85,7 @@ import Pagination, { usePagination } from "../components/ui/Pagination";
 import { browserTimezone, formatTime, todayIn, zoneLabel } from "../lib/time";
 import {
   primaryButton,
+  secondaryButton,
   buttonSm,
   iconButton,
   formatPrice,
@@ -85,7 +104,7 @@ const WEEKDAY_INITIALS = ["S", "M", "T", "W", "T", "F", "S"];
  * Times shown per page in the slot column.
  *
  * The grid is two columns, so twelve is six rows — tall enough to feel like a
- * real choice, short enough that Confirm Booking stays on screen beneath it.
+ * real choice, short enough that Review booking stays on screen beneath it.
  *
  * A short service on a fine-grained interval is what makes this necessary. A
  * 2-minute service on a 10-minute grid across a working day yields well over
@@ -150,6 +169,14 @@ export default function BookServicePage() {
   const [selectedSlot, setSelectedSlot] = useState(null);
   const [note, setNote] = useState("");
   const [booking, setBooking] = useState(false);
+
+  // Whether the confirmation dialog is open. Booking used to happen on the first
+  // click of Confirm Booking, with no step between choosing a time and being
+  // committed to it — so the one screen where a client is spending money and
+  // giving up an hour of their week was also the only one in the app that acted
+  // on a single click. Everything the dialog shows was already on this page or
+  // one request away; what was missing was a moment to read it in.
+  const [reviewing, setReviewing] = useState(false);
 
   const monthEnd = useMemo(
     () => DateTime.fromISO(monthStart).endOf("month").toFormat("yyyy-MM-dd"),
@@ -288,11 +315,21 @@ export default function BookServicePage() {
   }, [selectedDate]);
 
   // Nor does a time that has since gone by, even if it is still selected. Letting
-  // it stay selected would leave Confirm Booking enabled over a slot the list no
+  // it stay selected would leave the confirm step enabled over a slot the list no
   // longer shows, and the only possible outcome would be a refusal.
   useEffect(() => {
     setSelectedSlot((current) => (current && Date.parse(current.startsAt) <= now ? null : current));
   }, [now]);
+
+  // Losing the slot closes the dialog that was confirming it, whichever way it
+  // went: the minute tick above, a change of day, or a lost race clearing it in
+  // `handleConfirm`. One rule rather than a `setReviewing(false)` at each of
+  // those sites — which is also why a *generic* failure leaves the dialog open,
+  // since the slot is still there and pressing Confirm again is a reasonable
+  // thing to want to do.
+  useEffect(() => {
+    if (!selectedSlot) setReviewing(false);
+  }, [selectedSlot]);
 
   const daySlots = selectedDate ? (slotsByDate.get(selectedDate) ?? []) : [];
 
@@ -365,6 +402,7 @@ export default function BookServicePage() {
         ...(note.trim() ? { note: note.trim() } : {}),
       });
 
+      setReviewing(false);
       setSelectedSlot(null);
       setNote("");
       toast.success("Booking confirmed.", { title: "You're booked in" });
@@ -464,24 +502,22 @@ export default function BookServicePage() {
               <DetailRow icon="description" term="Service">
                 <span className="font-medium text-on-surface">{service?.name}</span>
                 {serviceDetail?.description && (
-                  // Clamped rather than printed in full. A provider can write
-                  // several hundred words here, and this panel's job is to
-                  // confirm *which* service is being booked — a description long
-                  // enough to push the price and duration off the screen defeats
-                  // that. `title` keeps the whole text one hover away, and the
-                  // service's own page has it in full.
-                  // No `block` alongside the clamp: `line-clamp-3` sets its own
-                  // `display: -webkit-box`, and `block` overrides it — leaving
-                  // `-webkit-line-clamp` set on an element that ignores it, so
-                  // the full text renders and the clamp silently does nothing.
-                  // The clamped box is still block-level, so the line break
-                  // under the service name is unaffected.
-                  <span
-                    title={serviceDetail.description}
-                    className="mt-0.5 line-clamp-3 font-caption text-caption text-on-surface-variant"
-                  >
-                    {serviceDetail.description}
-                  </span>
+                  // Clamped, but no longer only clamped. A provider can write
+                  // several hundred words here and this panel's job is to confirm
+                  // *which* service is being booked, so a description long enough
+                  // to push the price and duration off the screen defeats it —
+                  // the clamp stays.
+                  //
+                  // What it used to do about the hidden text was hang it off a
+                  // `title` attribute, which is not a way to read anything: it
+                  // needs a mouse, it needs a hover held still, it never appears
+                  // on a phone, and several hundred words in an OS tooltip is not
+                  // reading them. So the text that was cut off with "…" now has a
+                  // control that shows it.
+                  <ExpandableText
+                    text={serviceDetail.description}
+                    className="mt-0.5 font-caption text-caption text-on-surface-variant"
+                  />
                 )}
               </DetailRow>
 
@@ -506,28 +542,13 @@ export default function BookServicePage() {
             </dl>
           </div>
 
-          {/* The reference has no field for this, but `POST /bookings` accepts a
-              note and dropping the control would quietly remove the only way a
-              client can say why they are coming. It sits here rather than beside
-              the times, where it would compete with the decision being made. */}
-          <div className="mt-4">
-            <Field
-              id="booking-note"
-              label="Anything they should know?"
-              optional
-              hint="Shared with the provider only."
-              action={<CharCount value={note} max={MAX_NOTE} />}
-            >
-              <Textarea
-                id="booking-note"
-                rows={3}
-                maxLength={MAX_NOTE}
-                value={note}
-                onChange={(event) => setNote(event.target.value)}
-                placeholder="e.g. First session, back pain on the left side"
-              />
-            </Field>
-          </div>
+          {/* The note used to sit here, at the bottom of this column — as far
+              from the button that submits it as the layout allowed, and on a
+              phone a whole screen above the calendar the client had yet to
+              use. It asked a question about an appointment that had not been
+              chosen yet, and by the time one had been, the field was out of
+              sight. It now lives in the confirmation dialog, next to the
+              button that sends it. */}
         </aside>
 
         {/* ---- Select Date & Time ----------------------------------------- */}
@@ -689,15 +710,19 @@ export default function BookServicePage() {
               )}
 
               <div className="mt-6 border-t border-outline-variant pt-4">
-                {/* Both timezones at the moment of committing — the one place the
-                    client is deciding, and the last chance to notice that 1:00 PM
-                    for them is 8:30 PM for whoever they are booking. */}
-                {/* What is actually being confirmed, restated next to the
-                    button that confirms it.
+                {/* What has been chosen, restated next to the button that acts
+                    on it.
+
                     Load-bearing once the times are paginated: the chosen slot
                     can be two pages back and entirely off screen, so without
-                    this the client would be pressing Confirm Booking with no
-                    reminder of which time it commits them to. */}
+                    this the client would be opening the review step with no
+                    reminder of which time it is about to summarise.
+
+                    The dialog now repeats both of these lines in full, which is
+                    not duplication for its own sake — this is the selection as
+                    it stands, changeable by clicking another time, and that is
+                    the same selection as a thing about to be committed. Two
+                    different questions, so both get an answer. */}
                 {selectedSlot && (
                   <p className="mb-3 flex items-start gap-1.5 font-caption text-caption leading-relaxed text-on-surface-variant">
                     <Icon name="check" size={14} className="mt-0.5 shrink-0 text-primary" />
@@ -728,35 +753,26 @@ export default function BookServicePage() {
                   </p>
                 )}
 
-                {/* Slotly books in real time — there is no minimum notice — so a
-                    slot can legitimately be closer than the provider's own
-                    cancellation window. Booking it is allowed, but it is locked
-                    the moment it is made: the detail page will show Cancel and
-                    Reschedule already disabled. Saying so here is the whole
-                    point; discovering it one second after confirming is what
-                    this warning exists to prevent. */}
-                {locksImmediately && (
-                  <p className="mb-3 flex items-start gap-1.5 rounded-md border border-warn-line bg-warn-soft p-3 font-caption text-caption leading-relaxed text-warn-ink">
-                    <Icon name="warning" size={14} className="mt-0.5 shrink-0" />
-                    <span>
-                      This time is inside {provider?.name ?? "the provider"}&apos;s{" "}
-                      <span className="font-semibold">
-                        {cancellationCutoffHours}-hour
-                      </span>{" "}
-                      cancellation window, so you will not be able to cancel or
-                      reschedule it online. Message them directly if your plans
-                      change.
-                    </span>
-                  </p>
-                )}
+                {/* Opens the confirmation dialog rather than booking. The
+                    label says so: a button that reads "Confirm Booking" and
+                    then asks for confirmation has told the reader the wrong
+                    thing about what their click does, and one that books
+                    outright — which is what this did — gives them nowhere to
+                    check the price, the provider's clock or the cancellation
+                    terms before they are committed.
 
+                    The cancellation warning that used to sit above this button
+                    moved into that dialog, alongside the rest of the terms.
+                    Repeating it in both places would be the same sentence twice
+                    in two consecutive steps, and the dialog is now the only way
+                    past this point, so it cannot be missed there. */}
                 <button
                   type="button"
-                  onClick={handleConfirm}
-                  disabled={!selectedSlot || booking}
+                  onClick={() => setReviewing(true)}
+                  disabled={!selectedSlot}
                   className={`${primaryButton} w-full`}
                 >
-                  {booking ? "Booking…" : "Confirm Booking"}
+                  Review booking
                 </button>
 
                 {fetchedAt && (
@@ -782,6 +798,150 @@ export default function BookServicePage() {
           </div>
         </div>
       </div>
+
+      {/* ---- The confirmation step ------------------------------------- */}
+      {/*
+        Everything a client is agreeing to, on one screen, immediately before
+        they agree to it: which service, what it costs, when it happens on their
+        clock *and* on the provider's, and what happens if they need to get out
+        of it. All of it was already on the page — spread across a panel on the
+        left, a paragraph under the calendar and a warning that only appeared in
+        one case — and none of it was in front of them at the moment of the click.
+
+        `open` is gated on the slot as well as the flag, so the dialog cannot
+        render a summary of a slot that has lapsed out from under it. The effect
+        above clears the flag in the same pass; this is the belt to its braces,
+        because a dialog reading "undefined" is a worse failure than one that
+        closes.
+      */}
+      <Modal
+        open={reviewing && Boolean(selectedSlot)}
+        // Not while the request is in flight. Escape or a backdrop click would
+        // otherwise hide a booking that is still being made, and the client
+        // would be looking at the slot list wondering whether it went through.
+        onClose={() => {
+          if (!booking) setReviewing(false);
+        }}
+        title="Confirm your booking"
+        description="Nothing is booked until you press Confirm."
+        size="lg"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setReviewing(false)}
+              disabled={booking}
+              className={`${secondaryButton} disabled:opacity-50`}
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={handleConfirm}
+              disabled={booking}
+              className={primaryButton}
+            >
+              {booking ? "Booking…" : "Confirm booking"}
+            </button>
+          </>
+        }
+      >
+        {selectedSlot && (
+          <div className="space-y-5">
+            <dl className="space-y-3.5">
+              <ReviewRow term="Service">
+                <span className="font-semibold text-on-surface">{service?.name}</span>
+                <span className="mt-0.5 block text-on-surface-variant">
+                  {formatDuration(service?.duration)}
+                </span>
+              </ReviewRow>
+
+              <ReviewRow term="Price">
+                <span className="font-semibold text-on-surface">
+                  {formatPrice(service?.price, service?.currency)}
+                </span>
+                {(service?.bufferBefore > 0 || service?.bufferAfter > 0) && (
+                  <span className="mt-0.5 block text-on-surface-variant">
+                    {[
+                      service.bufferBefore > 0 ? `${service.bufferBefore}m before` : null,
+                      service.bufferAfter > 0 ? `${service.bufferAfter}m after` : null,
+                    ]
+                      .filter(Boolean)
+                      .join(" · ")}{" "}
+                    held either side
+                  </span>
+                )}
+              </ReviewRow>
+
+              {/* Both clocks, named for whose they are.
+
+                  The provider's date is derived from the instant rather than
+                  reusing the client's, because the two can genuinely differ: a
+                  late-evening London slot is already tomorrow in Kolkata, and a
+                  confirmation screen that showed the client's Tuesday next to
+                  the provider's time would be quietly telling them the wrong
+                  day for the person they are meeting. */}
+              <ReviewRow term="Your time">
+                <span className="font-semibold text-on-surface">
+                  {DateTime.fromISO(selectedSlot.localDate).toFormat("cccc, d LLLL")} at{" "}
+                  {selectedSlot.clientTime}
+                </span>
+                <span className="mt-0.5 block text-on-surface-variant">
+                  {zoneName(data?.clientTimezone)}
+                </span>
+              </ReviewRow>
+
+              {differentZones && (
+                <ReviewRow term="Their time">
+                  <span className="font-semibold text-on-surface">
+                    {DateTime.fromISO(selectedSlot.startsAt)
+                      .setZone(data.providerTimezone)
+                      .toFormat("cccc, d LLLL")}{" "}
+                    at {selectedSlot.providerTime}
+                  </span>
+                  <span className="mt-0.5 block text-on-surface-variant">
+                    {zoneName(data.providerTimezone)} — the same moment, their clock
+                  </span>
+                </ReviewRow>
+              )}
+            </dl>
+
+            {/* The cancellation terms, as a fact about this booking rather than
+                a policy in the abstract: the deadline is computed from the slot
+                the client is actually confirming, so it is a date and a time
+                they can act on rather than a number of hours to do arithmetic
+                with. */}
+            <CancellationTerms
+              cutoffHours={cancellationCutoffHours}
+              startsAt={selectedSlot.startsAt}
+              locked={locksImmediately}
+              providerName={provider?.name}
+              viewerTimezone={viewerTimezone}
+            />
+
+            {/* `POST /bookings` accepts a note, and this is the last moment it
+                can be written — so it is asked for here, beside the button that
+                sends it, rather than in a column the client scrolled past before
+                they had chosen a time. */}
+            <Field
+              id="booking-note"
+              label="Anything they should know?"
+              optional
+              hint="Shared with the provider only."
+              action={<CharCount value={note} max={MAX_NOTE} />}
+            >
+              <Textarea
+                id="booking-note"
+                rows={3}
+                maxLength={MAX_NOTE}
+                value={note}
+                onChange={(event) => setNote(event.target.value)}
+                placeholder="e.g. First session, back pain on the left side"
+              />
+            </Field>
+          </div>
+        )}
+      </Modal>
     </Page>
   );
 }
@@ -829,6 +989,141 @@ function CalendarCell({ day, outsideMonth, free, isToday, selected, onSelect }) 
         />
       )}
     </button>
+  );
+}
+
+/**
+ * Text clamped to three lines, with a control to show the rest.
+ *
+ * Whether the clamp is actually biting is *measured* rather than guessed from the
+ * string's length: three lines is a function of the container's width and the
+ * font, so a character-count heuristic shows "More" over text that fits and
+ * hides it over text that does not. The observer catches the same question being
+ * re-answered when the column is resized.
+ *
+ * Nothing is measured while expanded — the element is unclamped then, so
+ * `scrollHeight` and `clientHeight` agree and a fresh measurement would decide
+ * the text was short and take the "Less" control away mid-read. Skipping the
+ * measurement leaves the previous answer standing, which is the true one.
+ */
+function ExpandableText({ text, className = "" }) {
+  const bodyId = useId();
+  const bodyRef = useRef(null);
+  const [expanded, setExpanded] = useState(false);
+  const [overflows, setOverflows] = useState(false);
+
+  useEffect(() => {
+    const element = bodyRef.current;
+    if (!element || expanded) return undefined;
+
+    // +1 absorbs the sub-pixel difference a fractional line-height leaves
+    // between the two heights on an element that is not really overflowing.
+    const measure = () => setOverflows(element.scrollHeight > element.clientHeight + 1);
+
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [text, expanded]);
+
+  return (
+    <span className={`block ${className}`}>
+      {/* No `block` alongside the clamp: `line-clamp-3` sets its own
+          `display: -webkit-box`, and `block` overrides it — leaving
+          `-webkit-line-clamp` set on an element that ignores it, so the full
+          text renders and the clamp silently does nothing. The wrapper above
+          carries the block-level layout instead. */}
+      <span ref={bodyRef} id={bodyId} className={expanded ? "" : "line-clamp-3"}>
+        {text}
+      </span>
+
+      {overflows && (
+        <button
+          type="button"
+          onClick={() => setExpanded((open) => !open)}
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          // `py-1` with `-mb-1` widens the tap target downwards without
+          // pushing what follows; at caption size the label alone is well under
+          // the 24px minimum. Not `-my-1`, which would set margin-top twice
+          // over alongside `mt-0.5` and leave the winner to stylesheet order.
+          className="-mb-1 mt-0.5 cursor-pointer rounded py-1 font-semibold text-primary underline underline-offset-2"
+        >
+          {expanded ? "Less" : "More"}
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** A term-and-value line in the confirmation dialog. */
+function ReviewRow({ term, children }) {
+  return (
+    <div className="flex flex-wrap items-baseline justify-between gap-x-6 gap-y-1 border-b border-outline-variant pb-3.5 last:border-b-0 last:pb-0">
+      <dt className="font-caption text-caption font-bold uppercase tracking-wider text-on-surface-variant">
+        {term}
+      </dt>
+      <dd className="min-w-0 text-right font-small text-small">{children}</dd>
+    </div>
+  );
+}
+
+/**
+ * What happens if this booking has to be called off.
+ *
+ * Three cases, and the difference between them matters enough to say in words.
+ *
+ * Slotly books in real time — there is no minimum notice — so a slot can
+ * legitimately be nearer than the provider's own cancellation window. Booking it
+ * is allowed, but it is locked from the instant it is made: the detail page opens
+ * with Cancel and Reschedule already disabled. That is the case worth a warning
+ * box, and discovering it one second *after* confirming is what the box exists to
+ * prevent.
+ *
+ * Otherwise the deadline is stated as a moment rather than a duration. "You can
+ * cancel until 24 hours before" asks the reader to do date arithmetic against a
+ * time they may only have half-read; "until Monday, 1 September at 2:00 PM" is
+ * the answer they were going to work out anyway, in their own timezone.
+ */
+function CancellationTerms({ cutoffHours, startsAt, locked, providerName, viewerTimezone }) {
+  if (!cutoffHours) {
+    return (
+      <p className="rounded-md border border-outline-variant bg-surface-container-low p-3 font-caption text-caption leading-relaxed text-on-surface-variant">
+        <span className="font-semibold text-on-surface">Cancellation</span> — this provider has not
+        published a notice period, so cancelling or rescheduling online stays open until the
+        appointment starts.
+      </p>
+    );
+  }
+
+  if (locked) {
+    return (
+      <p className="flex items-start gap-1.5 rounded-md border border-warn-line bg-warn-soft p-3 font-caption text-caption leading-relaxed text-warn-ink">
+        <Icon name="warning" size={14} className="mt-0.5 shrink-0" />
+        <span>
+          This time is already inside {providerName || "the provider"}&apos;s{" "}
+          <span className="font-semibold">{cutoffHours}-hour</span> cancellation window, so once you
+          confirm you will not be able to cancel or reschedule it online at all. Message them
+          directly if your plans change.
+        </span>
+      </p>
+    );
+  }
+
+  const deadline = DateTime.fromISO(startsAt)
+    .minus({ hours: cutoffHours })
+    .setZone(viewerTimezone);
+
+  return (
+    <p className="rounded-md border border-outline-variant bg-surface-container-low p-3 font-caption text-caption leading-relaxed text-on-surface-variant">
+      <span className="font-semibold text-on-surface">Cancellation</span> — free to cancel or
+      reschedule online until{" "}
+      <span className="font-semibold text-on-surface">
+        {deadline.toFormat("cccc, d LLLL")} at {deadline.toFormat("h:mm a")}
+      </span>{" "}
+      ({cutoffHours} hours before it starts). After that, message {providerName || "the provider"}{" "}
+      directly.
+    </p>
   );
 }
 
