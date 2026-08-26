@@ -149,7 +149,10 @@ export function CompleteProfileRoute() {
 export function GuestOnlyRoute() {
   const { user, loading } = useAuth();
 
-  if (loading) return <PageLoader label="Loading…" />;
+  // The same label as the three guards above it. All four are waiting on the
+    // same `/auth/me` call, and this one alone said "Loading…" — so which of two
+    // sentences a reader saw depended on which route they happened to open.
+  if (loading) return <PageLoader label="Checking your session…" />;
   if (user) return <Navigate to={user.role ? "/dashboard" : "/complete-profile"} replace />;
 
   return <Outlet />;

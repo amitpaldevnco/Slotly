@@ -80,7 +80,12 @@ import Modal from "../components/ui/Modal";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import Field, { Textarea, CharCount } from "../components/ui/Field";
-import EmptyState, { ErrorState, PageLoader, SkeletonRows } from "../components/ui/Feedback";
+import EmptyState, {
+  ErrorState,
+  PageLoader,
+  Refreshing,
+  SkeletonRows,
+} from "../components/ui/Feedback";
 import Pagination, { usePagination } from "../components/ui/Pagination";
 import { browserTimezone, formatTime, todayIn, zoneLabel } from "../lib/time";
 import {
@@ -191,7 +196,7 @@ export default function BookServicePage() {
    * requests therefore swallow their own errors and the panel degrades to what it
    * does have.
    */
-  const { data: profile } = useApiResource(
+  const { data: profile, loading: profileLoading } = useApiResource(
     async ({ signal }) => {
       const [provider, services] = await Promise.all([
         providersApi.get(providerId, { signal }).catch(() => null),
@@ -479,6 +484,12 @@ export default function BookServicePage() {
           <h1 className="mb-4 font-h1-mobile text-h1-mobile text-primary">Booking Details</h1>
 
           <div className="rounded-lg border border-outline-variant bg-surface p-5">
+            {/* This panel is fed by its own request, separate from the slots
+                the rest of the page waits on — so it used to draw an avatar
+                with no photo above the word "Provider", then rewrite both a
+                moment later when the real names arrived. A placeholder for the
+                one line that is genuinely unknown is quieter than a wrong
+                answer that corrects itself. */}
             <div className="flex items-center gap-3">
               <Avatar
                 src={provider?.avatar_url}
@@ -486,14 +497,22 @@ export default function BookServicePage() {
                 size="lg"
                 className="border border-outline-variant"
               />
-              <div className="min-w-0">
-                <p className="truncate font-small text-base font-semibold text-primary">
-                  {provider?.business_name || provider?.name || "Provider"}
-                </p>
-                {(provider?.business_name ? provider?.name : provider?.business_type) && (
-                  <p className="truncate font-caption text-caption text-on-surface-variant">
-                    {provider.business_name ? provider.name : provider.business_type}
-                  </p>
+              <div className="min-w-0 flex-1">
+                {profileLoading ? (
+                  <SkeletonRows count={1} variant="line" label="Loading provider…" />
+                ) : (
+                  <>
+                    <p className="truncate font-small text-base font-semibold text-primary">
+                      {provider?.business_name || provider?.name || "Provider"}
+                    </p>
+                    {(provider?.business_name
+                      ? provider?.name
+                      : provider?.business_type) && (
+                      <p className="truncate font-caption text-caption text-on-surface-variant">
+                        {provider.business_name ? provider.name : provider.business_type}
+                      </p>
+                    )}
+                  </>
                 )}
               </div>
             </div>
@@ -601,12 +620,9 @@ export default function BookServicePage() {
                 ))}
               </div>
 
-              <div
-                aria-busy={busy}
-                className={`mt-2 grid grid-cols-7 gap-1 transition-opacity ${
-                  busy ? "opacity-50" : "opacity-100"
-                }`}
-              >
+              {/* Was its own copy of this, dimming to 50% where the other
+                  two screens that did the same thing used 55%. */}
+              <Refreshing active={busy} className="mt-2 grid grid-cols-7 gap-1">
                 {monthCells.map((cell) => {
                   const iso = cell.toFormat("yyyy-MM-dd");
                   const outsideMonth = cell.toFormat("yyyy-MM") !== monthStart.slice(0, 7);
@@ -624,13 +640,13 @@ export default function BookServicePage() {
                     />
                   );
                 })}
-              </div>
+              </Refreshing>
             </div>
 
             {/* Times for the chosen day, and the commit */}
             <div className="flex min-w-0 flex-col">
               {busy && !selectedDate ? (
-                <SkeletonRows count={3} variant="line" />
+                <SkeletonRows count={3} variant="line" label="Loading available times…" />
               ) : !selectedDate ? (
                 <EmptyState
                   compact

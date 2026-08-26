@@ -83,7 +83,7 @@ export default function CalendarPage() {
     };
   }, [date, view, timezone]);
 
-  const { data, loading, error, reload } = useApiResource(
+  const { data, loading, refreshing, error, reload } = useApiResource(
     ({ signal }) => bookingsApi.list({ from: range.from, to: range.to }, { signal }),
     { deps: [range], fallback: "Could not load your calendar.", keepPreviousData: true }
   );
@@ -203,9 +203,13 @@ export default function CalendarPage() {
         </Alert>
       )}
 
+      {/* `role="status"` rather than `aria-hidden`: this is the whole of the
+          page's content while it loads, and hiding it left a screen reader with
+          nothing at all to hear between arriving and the grid appearing. */}
       {loading && bookings.length === 0 ? (
         <div
-          aria-hidden="true"
+          role="status"
+          aria-label="Loading your calendar…"
           className="overflow-hidden rounded-lg border border-outline-variant bg-surface p-4"
         >
           <SkeletonBlock className="h-[720px] w-full rounded-md" />
@@ -216,7 +220,11 @@ export default function CalendarPage() {
           timezone={timezone}
           date={date}
           view={view}
-          loading={loading}
+          // `refreshing`, not `loading`. This resource keeps its previous data,
+          // so `loading` is true for the first fetch only — passing it meant the
+          // calendar's own dim was wired to a flag that could never be true
+          // again, and every month change swapped the appointments silently.
+          refreshing={refreshing}
           onNavigate={setDate}
           onView={setView}
           onSelectBooking={(booking) => navigate(`/bookings/${booking.id}`)}

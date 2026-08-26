@@ -13,7 +13,10 @@ export default function DashboardPage() {
 
   // ProtectedRoute has already guaranteed a user with a role by this point;
   // this is a defensive render for the brief moment during a refetch.
-  if (loading || !user) return <PageLoader />;
+  // Labelled, like every other PageLoader in the app. This was the one bare
+  // spinner left, so the app's most-visited route was also the only one that
+  // did not say what it was waiting for.
+  if (loading || !user) return <PageLoader label="Loading your dashboard…" />;
 
   return user.role === "provider" ? <ProviderDashboard user={user} /> : <ClientDashboard user={user} />;
 }

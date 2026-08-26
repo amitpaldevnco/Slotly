@@ -74,7 +74,7 @@ import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import Page, { PageHeader, SectionNav } from "../components/ui/Page";
 import Icon from "../components/ui/Icon";
 import Field, { Input } from "../components/ui/Field";
-import { Alert, PageLoader } from "../components/ui/Feedback";
+import { Alert, PageLoader, SkeletonBlock } from "../components/ui/Feedback";
 import {
   primaryButton,
   secondaryButton,
@@ -701,17 +701,24 @@ function BookingPolicySection() {
       >
         {(wiring) => (
         <div className="flex flex-wrap items-center gap-3">
-          <Input
-            {...wiring}
-            type="number"
-            min="0"
-            max="720"
-            step="1"
-            value={hours}
-            disabled={loading}
-            onChange={(event) => setHours(event.target.value)}
-            className="w-28"
-          />
+          {/* A placeholder while the saved value is fetched. An empty, merely
+              `disabled` number input is indistinguishable from a policy of zero
+              hours — so this field spent its first moment stating the opposite
+              of what it was about to say. */}
+          {loading ? (
+            <SkeletonBlock className="h-10 w-28 rounded-md" />
+          ) : (
+            <Input
+              {...wiring}
+              type="number"
+              min="0"
+              max="720"
+              step="1"
+              value={hours}
+              onChange={(event) => setHours(event.target.value)}
+              className="w-28"
+            />
+          )}
           <span className="text-sm text-ink-2">hours before the appointment</span>
 
           {/* Only offered once the value has actually changed. A permanently

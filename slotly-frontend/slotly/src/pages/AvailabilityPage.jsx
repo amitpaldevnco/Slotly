@@ -34,7 +34,7 @@ import ExceptionsEditor from "../components/availability/ExceptionsEditor";
 import Icon from "../components/ui/Icon";
 import Modal from "../components/ui/Modal";
 import Field, { Input } from "../components/ui/Field";
-import { Alert, ErrorState, PageLoader } from "../components/ui/Feedback";
+import { Alert, ErrorState, PageLoader, SkeletonRows } from "../components/ui/Feedback";
 import { container, primaryButton, secondaryButton, buttonSm, zoneName } from "../lib/ui";
 import usePageTitle from "../hooks/usePageTitle";
 
@@ -253,7 +253,18 @@ export default function AvailabilityPage() {
           )}
 
           {/* Held back until the fetched scope matches the selected tab, so the
-              grid is never populated from the scope the provider just left. */}
+              grid is never populated from the scope the provider just left.
+
+              Which is right, but for the length of the request it left the page
+              as a heading, some tabs and a void — the two editors simply were
+              not there, and then they were. A placeholder the shape of the week
+              grid says the same thing honestly. */}
+          {!availabilityInSync && (
+            <div className="rounded-lg border border-outline-variant bg-surface-container-lowest p-6">
+              <SkeletonRows count={7} variant="line" label="Loading these hours…" />
+            </div>
+          )}
+
           {availabilityInSync && (
             <WeeklyHoursEditor
               key={`rules-${selectedServiceId ?? "default"}`}

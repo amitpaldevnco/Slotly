@@ -45,6 +45,7 @@ import { useCallback, useMemo, useState } from "react";
 import { Calendar, luxonLocalizer, Views } from "react-big-calendar";
 import { DateTime, Settings } from "luxon";
 import Icon from "../ui/Icon";
+import { Refreshing } from "../ui/Feedback";
 import { TIME_FORMAT, toDisplayDate } from "../../lib/time";
 import { zoneName, STATUS_STYLES } from "../../lib/ui";
 import "react-big-calendar/lib/css/react-big-calendar.css";
@@ -192,7 +193,17 @@ export default function ProviderCalendar({
   onNavigate,
   onView,
   onSelectBooking,
-  loading = false,
+  // Named `refreshing`, not `loading`, because that is the only state it can
+  // describe: the grid is on screen holding the previous range's appointments
+  // while a new range is fetched. A first load never reaches this component —
+  // the page draws a placeholder rather than mounting an empty calendar.
+  //
+  // The old name is why the dim never appeared. `CalendarPage` creates its
+  // resource with `keepPreviousData`, which means `loading` goes true once and
+  // never again; every month change after the first set `refreshing` instead.
+  // The page passed `loading`, so paging the calendar swapped one month's
+  // appointments for another's with no indication a request had happened.
+  refreshing = false,
   height = 720,
 }) {
   // Every status on, so the grid opens on the whole picture. See the note above.
@@ -406,13 +417,10 @@ export default function ProviderCalendar({
         )}
       </div>
 
-      <div
-        id="provider-calendar-grid"
-        aria-busy={loading}
-        className={`transition-opacity duration-150 motion-reduce:transition-none ${
-          loading ? "opacity-55" : "opacity-100"
-        }`}
-      >
+      {/* Was a hand-written copy of what `Refreshing` does. Three screens had
+          each grown their own, and they did not agree — two dimmed to 55% and
+          one to 50%. */}
+      <Refreshing active={refreshing} id="provider-calendar-grid">
         <Calendar
           localizer={localizer}
           events={events}
@@ -438,7 +446,7 @@ export default function ProviderCalendar({
             return `${booking.service.name} with ${booking.client.name} — ${booking.status}`;
           }}
         />
-      </div>
+      </Refreshing>
 
       <p className="flex items-center gap-2 border-t border-outline-variant bg-surface-container-lowest px-4 py-3 font-caption text-caption text-on-surface-variant">
         <Icon name="public" size={14} />

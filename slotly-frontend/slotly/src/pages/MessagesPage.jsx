@@ -223,7 +223,7 @@ export default function MessagesPage() {
         <div className="min-h-0 flex-1 overflow-y-auto">
           {loading ? (
             <div className="p-4">
-              <SkeletonRows count={5} />
+              <SkeletonRows count={5} label="Loading conversations…" />
             </div>
           ) : error ? (
             <div className="p-4">
@@ -267,7 +267,20 @@ export default function MessagesPage() {
       <section
         className={`min-w-0 flex-1 flex-col bg-canvas ${selected ? "flex" : "hidden md:flex"}`}
       >
-        {selected ? (
+        {/* `selected` is derived from the conversation list, so on a deep link
+            to /messages/:bookingId it is null until that list arrives — and this
+            pane used to spend the wait telling the reader to choose a
+            conversation they had already chosen. */}
+        {loading && bookingId ? (
+          <div className="flex flex-1 items-center justify-center p-10">
+            <SkeletonRows
+              count={3}
+              variant="line"
+              className="w-full max-w-md"
+              label="Opening this conversation…"
+            />
+          </div>
+        ) : selected ? (
           <>
             <header className="flex h-topbar shrink-0 items-center gap-3 border-b border-line bg-surface px-4 sm:px-6">
               <button

@@ -135,7 +135,7 @@ export default function MessageThread({
         }
       >
         {loading ? (
-          <SkeletonRows count={3} variant="line" />
+          <SkeletonRows count={3} variant="line" label="Loading messages…" />
         ) : error ? (
           <ErrorState message={error} onRetry={load} bare />
         ) : messages.length === 0 ? (

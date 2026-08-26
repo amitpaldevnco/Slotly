@@ -137,13 +137,66 @@ export function ErrorState({
   );
 }
 
-// Loading
+/* ==========================================================================
+ * Loading
+ *
+ * Three situations, one answer each. Screens across the app had been picking
+ * differently for the same situation — some drew a skeleton, some a spinner, and
+ * nine fetches drew nothing at all and let the content appear from nowhere. Three
+ * of those nine rendered an *empty state* while the request was in flight, so the
+ * screen actively said there was nothing there and then contradicted itself.
+ *
+ *   1. **A whole page, first load** → `PageLoader`, with a label naming what is
+ *      being fetched. One centred spinner for the whole route.
+ *
+ *   2. **A panel or list inside a page that is already drawn** → `SkeletonRows`,
+ *      with the `variant` that matches the shape of what will land there. The
+ *      page frame, its heading and its navigation stay put; only the part that is
+ *      still unknown is a placeholder.
+ *
+ *   3. **Content already on screen, being re-fetched** → `Refreshing`. The
+ *      content stays and dims. Never a skeleton: replacing a list the reader is
+ *      looking at with grey bars loses their place and reads as though the data
+ *      was thrown away. This needs `keepPreviousData: true` on the resource, or
+ *      `loading` fires again and situation 2 wins by accident.
+ *
+ * And one prohibition: **never render an empty state while a request is in
+ * flight.** "No providers listed yet" and "You are all caught up" are answers,
+ * and a screen that gives the wrong answer confidently is worse than one that
+ * admits it does not know yet.
+ * ========================================================================== */
 
 export function PageLoader({ label = "Loading…" }) {
   return (
     <div role="status" className="flex min-h-[40vh] flex-col items-center justify-center gap-2.5">
       <Spinner size={22} />
       <p className="text-sm text-ink-3">{label}</p>
+    </div>
+  );
+}
+
+/**
+ * Content that is on screen and being replaced by a newer version of itself.
+ *
+ * Situation 3 above. Dims what is there and marks the region `aria-busy`, so a
+ * reader keeps their place and a screen reader is told the region is in flux
+ * rather than being read a list that is about to change underneath it.
+ *
+ * Extracted because three screens had each written their own version of this and
+ * no two agreed — two different opacities, and one of them wired to a flag that
+ * could never become true. A fourth, fifth and sixth screen wanted it and reset
+ * to a skeleton instead.
+ */
+export function Refreshing({ active, children, className = "", ...rest }) {
+  return (
+    <div
+      {...rest}
+      aria-busy={active || undefined}
+      className={`transition-opacity duration-150 motion-reduce:transition-none ${
+        active ? "opacity-55" : "opacity-100"
+      } ${className}`}
+    >
+      {children}
     </div>
   );
 }
@@ -170,9 +223,22 @@ export function SkeletonBlock({ className = "h-5 w-20" }) {
 }
 
 
-export function SkeletonRows({ count = 3, variant = "row", className = "" }) {
+/**
+ * A placeholder shaped like the content that is coming.
+ *
+ * `role="status"` on the container, with the individual bars left
+ * `aria-hidden`. The whole thing used to be `aria-hidden`, which made every
+ * skeleton in the app completely silent — a screen reader was told nothing at
+ * all between navigating to a page and its content arriving, and `PageLoader`
+ * was the only loading state in the codebase that announced itself.
+ *
+ * @param {string} label What is loading. Worth setting whenever a screen has
+ *   more than one of these, so the announcement says which panel rather than
+ *   "Loading…" three times.
+ */
+export function SkeletonRows({ count = 3, variant = "row", className = "", label = "Loading…" }) {
   return (
-    <div aria-hidden="true" className={`space-y-2 ${className}`}>
+    <div role="status" aria-label={label} className={`space-y-2 ${className}`}>
       {Array.from({ length: count }, (_, i) => (
         <SkeletonItem key={i} variant={variant} />
       ))}

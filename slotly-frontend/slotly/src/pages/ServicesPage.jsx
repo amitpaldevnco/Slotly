@@ -247,7 +247,7 @@ export default function ServicesPage() {
         {loading ? (
           <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 3 }, (_, i) => (
-              <SkeletonRows key={i} count={1} variant="card" />
+              <SkeletonRows key={i} count={1} variant="card" label="Loading your services…" />
             ))}
           </div>
         ) : error ? (
@@ -415,7 +415,7 @@ export default function ServicesPage() {
         {bookingsError ? (
           <ErrorState message={bookingsError} onRetry={reloadServiceBookings} />
         ) : bookingsLoading ? (
-          <SkeletonRows count={3} />
+          <SkeletonRows count={3} label="Loading bookings for this service…" />
         ) : serviceBookings.length === 0 ? (
           <EmptyState
             compact

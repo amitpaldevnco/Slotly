@@ -35,7 +35,7 @@ export default function ProviderReviews({ providerId, providerName, isOwner, vie
     >
       {loading ? (
         <div className="px-4 py-4">
-          <SkeletonRows count={2} variant="line" />
+          <SkeletonRows count={2} variant="line" label="Loading reviews…" />
         </div>
       ) : error ? (
         <div className="px-4 py-4">

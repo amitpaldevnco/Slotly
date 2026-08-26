@@ -109,7 +109,7 @@ export default function BookingReview({
   if (loading) {
     return (
       <Section title="Review">
-        <SkeletonRows count={2} variant="line" />
+        <SkeletonRows count={2} variant="line" label="Loading review…" />
       </Section>
     );
   }

@@ -114,7 +114,7 @@ export default function ClientDashboard({ user }) {
         </div>
 
         {loading || awaitingHistory ? (
-          <SkeletonRows count={4} />
+          <SkeletonRows count={4} label="Loading your bookings…" />
         ) : error ? (
           <ErrorState message={error} onRetry={reload} />
         ) : (
@@ -399,7 +399,7 @@ function categoryIcon(category) {
  * summary because a nice-to-have panel could not load.
  */
 function PopularCategories() {
-  const { data: providers } = useApiResource(
+  const { data: providers, loading } = useApiResource(
     ({ signal }) => providersApi.list({}, { signal }).catch(() => ({ providers: [] })),
     { deps: [], initialData: { providers: [] } }
   );
@@ -446,7 +446,14 @@ function PopularCategories() {
           booking telemetry to rank by. */}
       <h3 className="mb-4 font-small text-small font-bold text-primary">Popular categories</h3>
 
-      {categories.length === 0 ? (
+      {/* The skeleton has to come before the empty state, not after it.
+          `initialData` is an empty provider list, so until the request landed
+          `categories` was empty and this card told the reader "No providers
+          listed yet" — an answer, stated confidently, that was usually wrong and
+          then replaced by two rows a moment later. */}
+      {loading ? (
+        <SkeletonRows count={2} variant="line" label="Loading categories…" />
+      ) : categories.length === 0 ? (
         <p className="py-2 font-caption text-caption text-on-surface-variant">
           No providers listed yet.
         </p>

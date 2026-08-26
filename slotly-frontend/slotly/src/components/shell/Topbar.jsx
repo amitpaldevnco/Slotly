@@ -21,6 +21,7 @@ import { useAuth } from "../../context/AuthContext";
 import { useNotifications } from "../../context/NotificationsContext";
 import Avatar from "../ui/Avatar";
 import Icon from "../ui/Icon";
+import { SkeletonRows } from "../ui/Feedback";
 import { zoneName } from "../../lib/ui";
 import { DISCOVERY_ROUTE } from "../../lib/discovery";
 
@@ -103,7 +104,10 @@ function DiscoverySearch() {
  * describes is fixed, which is the only honest behaviour available.
  */
 function NotificationsMenu() {
-  const { notices } = useNotifications();
+  // `loading` was available on the context all along and never read here, so
+  // opening the menu before the first fetch resolved reported "You are all
+  // caught up" over warnings that were on their way.
+  const { notices, loading } = useNotifications();
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
 
@@ -158,7 +162,11 @@ function NotificationsMenu() {
             )}
           </div>
 
-          {notices.length === 0 ? (
+          {loading ? (
+            <div className="px-4 py-4">
+              <SkeletonRows count={2} variant="line" label="Loading notifications…" />
+            </div>
+          ) : notices.length === 0 ? (
             <div className="px-4 py-8 text-center">
               <Icon name="check_circle" size={24} className="mx-auto text-on-surface-variant" />
               <p className="mt-2 font-small text-small font-semibold text-on-surface">

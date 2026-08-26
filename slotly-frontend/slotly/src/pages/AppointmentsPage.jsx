@@ -38,7 +38,7 @@ import RescheduleDialog from "../components/bookings/RescheduleDialog";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import { Select } from "../components/ui/Field";
-import EmptyState, { ErrorState, SkeletonRows } from "../components/ui/Feedback";
+import EmptyState, { ErrorState, Refreshing, SkeletonRows } from "../components/ui/Feedback";
 import { usePagination } from "../components/ui/Pagination";
 import { formatDateTime, formatTime } from "../lib/time";
 import {
@@ -138,7 +138,7 @@ export default function AppointmentsPage() {
     [filters.status, filters.serviceId, filters.from, filters.to]
   );
 
-  const { data, loading, error, reload } = useApiResource(
+  const { data, loading, refreshing, error, reload } = useApiResource(
     ({ signal }) => {
       const params = { ...TABS.find((option) => option.id === tab).params };
 
@@ -161,7 +161,17 @@ export default function AppointmentsPage() {
 
       return bookingsApi.list(params, { signal });
     },
-    { deps: [tab, serverFilters, viewerZone], fallback: "Could not load your appointments." }
+    {
+      deps: [tab, serverFilters, viewerZone],
+      fallback: "Could not load your appointments.",
+      // Rescheduling calls `reload()`, and without this the list the provider
+      // was just working in was replaced by five skeleton rows — their place in
+      // it lost, and the appointment they had acted on gone from the screen at
+      // the moment they wanted to see the result. Tab and filter changes keep
+      // the old list too, which is the honest reading: it is still the answer
+      // to a question, just not the current one.
+      keepPreviousData: true,
+    }
   );
 
   // Memoised because it feeds a `useMemo` below; a fresh `[]` on every render
@@ -471,14 +481,14 @@ export default function AppointmentsPage() {
 
       {/* List */}
       {loading ? (
-        <SkeletonRows count={5} />
+        <SkeletonRows count={5} label="Loading appointments…" />
       ) : error ? (
         <ErrorState message={error} onRetry={reload} />
       ) : visible.length === 0 ? (
         // Held back until the history lands, so a returning client does not
         // watch "your first appointment" turn into "your next one".
         needsHistory && historyLoading ? (
-          <SkeletonRows count={2} />
+          <SkeletonRows count={2} label="Checking your booking history…" />
         ) : (
           <NoAppointments
             tab={tab}
@@ -488,28 +498,32 @@ export default function AppointmentsPage() {
           />
         )
       ) : isProvider ? (
-        <ProviderTable
-          bookings={pageItems}
-          viewerZone={viewerZone}
-          total={total}
-          firstRow={firstRow}
-          lastRow={lastRow}
-          page={page}
-          pageCount={pageCount}
-          onPage={setPage}
-          onReschedule={setRescheduling}
-        />
+        <Refreshing active={refreshing}>
+          <ProviderTable
+            bookings={pageItems}
+            viewerZone={viewerZone}
+            total={total}
+            firstRow={firstRow}
+            lastRow={lastRow}
+            page={page}
+            pageCount={pageCount}
+            onPage={setPage}
+            onReschedule={setRescheduling}
+          />
+        </Refreshing>
       ) : (
-        <ClientCards
-          bookings={pageItems}
-          viewerZone={viewerZone}
-          total={total}
-          firstRow={firstRow}
-          lastRow={lastRow}
-          page={page}
-          pageCount={pageCount}
-          onPage={setPage}
-        />
+        <Refreshing active={refreshing}>
+          <ClientCards
+            bookings={pageItems}
+            viewerZone={viewerZone}
+            total={total}
+            firstRow={firstRow}
+            lastRow={lastRow}
+            page={page}
+            pageCount={pageCount}
+            onPage={setPage}
+          />
+        </Refreshing>
       )}
 
       {/* The provider's reschedule flow, unchanged — the same dialog the booking

@@ -40,7 +40,12 @@ import { useApiResource } from "../hooks/useApiResource";
 import { useDebouncedValue } from "../hooks/useDebouncedValue";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
-import EmptyState, { ErrorState, SkeletonRows } from "../components/ui/Feedback";
+import EmptyState, {
+  ErrorState,
+  Refreshing,
+  SkeletonBlock,
+  SkeletonRows,
+} from "../components/ui/Feedback";
 import { StarRatingDisplay } from "../components/reviews/StarRating";
 import { usePagination, pageWindow } from "../components/ui/Pagination";
 import { container, formatPrice, formatDuration, zoneName } from "../lib/ui";
@@ -545,9 +550,15 @@ export default function ProvidersPage() {
         <div className="flex w-full flex-1 flex-col gap-6">
           <div className="border-b border-outline-variant pb-4">
             <div className="flex items-center justify-between">
+              {/* The count line goes quiet while loading rather than saying
+                  "Loading providers…" — the skeleton grid immediately below is
+                  already answering that, for the same request, and two
+                  announcements of one fetch is one too many. This was also the
+                  only place in the app that used a text string as a loading
+                  state for a fetch. */}
               <span className="font-small text-small text-on-surface-variant">
                 {initialLoading ? (
-                  "Loading providers…"
+                  <SkeletonBlock className="h-4 w-40" />
                 ) : (
                   <>
                     {/* The range as well as the total. "Showing 13 professionals"
@@ -599,16 +610,16 @@ export default function ProvidersPage() {
             </p>
           </div>
 
-          <div
-            aria-busy={searching}
-            className={`transition-opacity duration-150 motion-reduce:transition-none ${
-              searching ? "opacity-55" : "opacity-100"
-            }`}
-          >
+          <Refreshing active={searching}>
             {initialLoading ? (
               <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                 {Array.from({ length: 4 }, (_, i) => (
-                  <SkeletonRows key={i} count={1} />
+                  // `variant="card"` — this grid holds provider *cards*, and
+                  // the default "row" variant draws an avatar-and-two-lines
+                  // strip, so the placeholder was the wrong shape for what
+                  // replaced it and the grid jumped when the real cards landed.
+                  // `ServicesPage` already used "card" for the same job.
+                  <SkeletonRows key={i} count={1} variant="card" label="Loading providers…" />
                 ))}
               </div>
             ) : error ? (
@@ -710,7 +721,7 @@ export default function ProvidersPage() {
                 )}
               </>
             )}
-          </div>
+          </Refreshing>
         </div>
       </div>
     </div>

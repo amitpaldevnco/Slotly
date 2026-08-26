@@ -39,7 +39,7 @@ import { useToast } from "../../context/ToastContext";
 import { parseApiError } from "../../api/client";
 import Avatar from "../ui/Avatar";
 import Icon from "../ui/Icon";
-import { SkeletonBlock, SkeletonRows } from "../ui/Feedback";
+import { Refreshing, SkeletonBlock, SkeletonRows } from "../ui/Feedback";
 import Modal from "../ui/Modal";
 import { countdownTo, formatTime, greeting, relativeTime } from "../../lib/time";
 import {
@@ -69,7 +69,11 @@ export default function ProviderDashboard({ user }) {
       ]);
       return { services, summary };
     },
-    { deps: [user.id] }
+    // `recordOutcome` reloads this, the outcome queue, today's list and the
+    // notices together. Without this the metric tiles emptied to skeletons at
+    // the same moment the queue and the schedule did, so settling one
+    // appointment blanked the entire dashboard for the length of a round trip.
+    { deps: [user.id], keepPreviousData: true }
   );
 
   const services = overview?.services ?? [];
@@ -89,13 +93,18 @@ export default function ProviderDashboard({ user }) {
         .list({ scope: "awaiting_outcome" }, { signal })
         // A failure here must not take the whole dashboard down with it.
         .catch(() => ({ bookings: [] })),
-    { deps: [user.id], initialData: { bookings: [] } }
+    { deps: [user.id], initialData: { bookings: [] }, keepPreviousData: true }
   );
 
   const awaitingOutcome = outcomeData?.bookings ?? [];
 
   // Today's appointments, fetched independently of anything else on the screen.
-  const { data: todayData, loading: todayLoading, reload: reloadToday } = useApiResource(
+  const {
+    data: todayData,
+    loading: todayLoading,
+    refreshing: todayRefreshing,
+    reload: reloadToday,
+  } = useApiResource(
     ({ signal }) => {
       const dayStart = DateTime.now().setZone(timezone).startOf("day");
       return (
@@ -109,7 +118,7 @@ export default function ProviderDashboard({ user }) {
           .catch(() => ({ bookings: [] }))
       );
     },
-    { deps: [timezone] }
+    { deps: [timezone], keepPreviousData: true }
   );
 
   // Genuinely the most recently active conversations, from
@@ -198,6 +207,17 @@ export default function ProviderDashboard({ user }) {
           configuration that could be better, this one is unfinished work with
           money attached, and it is the only thing on the page that will not
           resolve itself if ignored. */}
+      {/* A placeholder while the queue loads, so the tiles and the schedule
+          below do not start at the top of the page and then get pushed down by
+          a section arriving above them. Only drawn on the very first load —
+          `keepPreviousData` means a reload after settling an appointment keeps
+          the list on screen instead. */}
+      {outcomeLoading && (
+        <div className="mb-8 rounded-lg border border-outline-variant bg-surface p-6">
+          <SkeletonRows count={2} variant="line" label="Checking for appointments to settle…" />
+        </div>
+      )}
+
       {!outcomeLoading && awaitingOutcome.length > 0 && (
         <section
           aria-labelledby="awaiting-outcome-heading"
@@ -361,7 +381,7 @@ export default function ProviderDashboard({ user }) {
           </div>
 
           {todayLoading ? (
-            <SkeletonRows count={3} variant="line" />
+            <SkeletonRows count={3} variant="line" label="Loading today's schedule…" />
           ) : todayBookings.length === 0 ? (
             <div className="rounded-md border border-dashed border-outline-variant px-6 py-12 text-center">
               <Icon name="event_available" size={28} className="mx-auto text-on-surface-variant" />
@@ -413,7 +433,7 @@ export default function ProviderDashboard({ user }) {
                   like" before the reader has to add it up from the rows. */}
               <DayOverview bookings={todayBookings} timezone={timezone} currency={user.currency} />
 
-              <div className="space-y-4">
+              <Refreshing active={todayRefreshing} className="space-y-4">
                 {todayBookings.map((booking, index) => (
                   <ScheduleRow
                     key={booking.id}
@@ -423,7 +443,7 @@ export default function ProviderDashboard({ user }) {
                     gapBefore={gapBetween(todayBookings[index - 1], booking)}
                   />
                 ))}
-              </div>
+              </Refreshing>
             </>
           )}
         </div>
@@ -804,7 +824,7 @@ function QuickAction({ to, icon, label, trailingIcon = "chevron_right", external
  * the list, so it is clear *which* conversation is waiting.
  */
 function RecentConversations({ conversations, loading, unread }) {
-  if (loading) return <SkeletonRows count={3} />;
+  if (loading) return <SkeletonRows count={3} label="Loading recent messages…" />;
 
   if (conversations.length === 0) {
     return (

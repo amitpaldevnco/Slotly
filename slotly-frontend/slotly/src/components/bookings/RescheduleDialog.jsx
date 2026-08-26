@@ -36,7 +36,7 @@ import { useToast } from "../../context/ToastContext";
 import Modal from "../ui/Modal";
 import Icon from "../ui/Icon";
 import Field, { Textarea, CharCount } from "../ui/Field";
-import { SkeletonRows } from "../ui/Feedback";
+import { Refreshing, SkeletonRows } from "../ui/Feedback";
 import { addDaysToDate, friendlyDateHeading, todayIn } from "../../lib/time";
 import {
   primaryButton,
@@ -162,6 +162,7 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
   const {
     data,
     loading,
+    refreshing,
     error,
     reload: loadSlots,
   } = useApiResource(
@@ -189,6 +190,10 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
       enabled: open && Boolean(booking),
       deps: [open, booking?.id, rangeStart, viewerZone],
       fallback: "Could not load your free times.",
+      // Paging to another week used to swap the slot list for two grey bars, so
+      // the arrow the provider had just pressed emptied the pane beneath it.
+      // The previous week's times stay and dim instead.
+      keepPreviousData: true,
     }
   );
 
@@ -395,7 +400,7 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
 
           {loading ? (
             <div className="p-3">
-              <SkeletonRows count={2} variant="line" />
+              <SkeletonRows count={2} variant="line" label="Loading free times…" />
             </div>
           ) : days.length === 0 ? (
             <p className="px-3 py-5 text-center text-[0.8125rem] text-ink-3">
@@ -410,7 +415,9 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
               .
             </p>
           ) : (
-            <>
+            // Dims while the next week is fetched, rather than reverting to the
+            // skeleton above. See `keepPreviousData` on the resource.
+            <Refreshing active={refreshing}>
               <div
                 role="tablist"
                 aria-label="Choose a day"
@@ -481,7 +488,7 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
                   </div>
                 )}
               </div>
-            </>
+            </Refreshing>
           )}
         </div>
 

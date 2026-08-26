@@ -13,6 +13,7 @@ import { Link, NavLink, useLocation } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 import Logo from "../ui/Logo";
 import Icon from "../ui/Icon";
+import { SkeletonBlock } from "../ui/Feedback";
 import { container, primaryButton, secondaryButton, buttonSm, iconButtonTouch } from "../../lib/ui";
 import { DISCOVERY_ROUTE, DISCOVERY_LABEL } from "../../lib/discovery";
 
@@ -59,7 +60,12 @@ export default function PublicHeader() {
             // A placeholder rather than "Sign in": showing the signed-out state
             // while /auth/me is still in flight makes the header flicker on every
             // refresh for users who are, in fact, signed in.
-            <div className="h-9 w-24 animate-pulse rounded-md bg-subtle motion-reduce:animate-none" />
+            //
+            // `SkeletonBlock` rather than the hand-written pulse that used to be
+            // here, which reimplemented it class for class — so a change to the
+            // app's skeleton colour or its reduced-motion behaviour would have
+            // updated every placeholder except this one.
+            <SkeletonBlock className="h-9 w-24 rounded-md" />
           ) : user ? (
             <Link to="/dashboard" className={`${primaryButton} ${buttonSm}`}>
               <Icon name="dashboard" size={15} />
