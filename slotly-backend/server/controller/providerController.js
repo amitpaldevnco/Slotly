@@ -143,7 +143,8 @@ export const listProviders = async (req, res) => {
     const result = await query(
       `SELECT u.id, u.name, u.avatar_url, u.bio, u.timezone,
               u.business_name, u.business_type, u.currency,
-              stats.service_count, stats.min_price, stats.min_duration${matchedServices}
+              stats.service_count, stats.min_price, stats.min_duration,
+              ratings.average AS rating_average, ratings.count AS rating_count${matchedServices}
        FROM users u
        LEFT JOIN LATERAL (
          SELECT COUNT(*)::int AS service_count,
@@ -152,6 +153,22 @@ export const listProviders = async (req, res) => {
          FROM services s
          WHERE s.provider_id = u.id AND s.is_active
        ) stats ON TRUE
+       -- The headline rating, for the same reason the service count is here: the
+       -- directory sorts and filters on it, and a card that offers a "4 stars and
+       -- up" filter has to be able to show what it filtered on. A second lateral
+       -- keeps that free -- the directory is still one round trip however many
+       -- providers it returns, where a follow-up request per card would be N.
+       --
+       -- Rounded to one decimal place because GET /providers/:id and
+       -- GET /providers/:id/reviews both round the same way. A card reading 4.3
+       -- above a profile reading 4.25 is one dataset contradicting itself
+       -- depending on which screen you are looking at.
+       LEFT JOIN LATERAL (
+         SELECT ROUND(AVG(rating)::numeric, 1) AS average,
+                COUNT(*)::int                  AS count
+         FROM reviews r
+         WHERE r.provider_id = u.id
+       ) ratings ON TRUE
        WHERE ${conditions.join(" AND ")}
        ORDER BY stats.service_count DESC NULLS LAST, u.name ASC
        LIMIT $${params.length}`,
@@ -175,6 +192,14 @@ export const listProviders = async (req, res) => {
         currency: row.currency,
         fromPrice: row.min_price,
         shortestDuration: row.min_duration,
+        // Named as GET /providers/:id names them, so a caller moving between the
+        // directory and a profile reads the same two fields.
+        //
+        // `null` rather than 0 when nobody has reviewed yet, which is how the
+        // reviews endpoint reports it too: "no reviews" and "rated zero" are
+        // different facts, and an empty star row renders the second.
+        ratingAverage: row.rating_average === null ? null : Number(row.rating_average),
+        ratingCount: row.rating_count ?? 0,
         // Present only on a search, and only for providers matched through a
         // service name. `[]` rather than null when a provider matched on their
         // own name instead, so a caller can render it without a type check.
