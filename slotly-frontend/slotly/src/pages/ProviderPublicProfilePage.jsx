@@ -8,8 +8,18 @@
  * The reference's booking panel picks a date and a time inline. Slotly's slot
  * picker is its own screen (`/providers/:id/book/:serviceId`) because it needs
  * the provider's real free/busy for a chosen service and a chosen week — so the
- * panel keeps its position, its heading and its summary of the selected service,
- * and hands off to that screen rather than reimplementing it here.
+ * panel keeps its position and its heading, chooses the *service* itself, and
+ * hands off to that screen for the date and the time rather than reimplementing
+ * them here.
+ *
+ * Choosing the service in the panel matters more than it looks. The panel is
+ * `sticky` and the services list is most of a screen below it in the left
+ * column, so a read-only summary that said "pick a different one from the
+ * Services list" was asking the reader to scroll away from the panel, act on a
+ * row, and scroll back to a panel that had not moved — and on a phone, where the
+ * panel sits *after* the whole list, it pointed backwards past everything they
+ * had just scrolled through. The rows keep their Select buttons and drive the
+ * same selection, so either route works and the two always agree.
  *
  * "Top Rated" and a street address are not reproduced: `GET /providers/:id`
  * returns rating aggregates only where reviews exist, and there is no address
@@ -17,7 +27,7 @@
  * whether anything is currently bookable.
  */
 
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import * as providersApi from "../api/providers";
 import { useApiResource } from "../hooks/useApiResource";
@@ -30,6 +40,7 @@ import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import BackLink from "../components/ui/BackLink";
 import EmptyState, { PageLoader } from "../components/ui/Feedback";
+import { Select } from "../components/ui/Field";
 import { container, formatPrice, formatDuration, zoneName } from "../lib/ui";
 import usePageTitle from "../hooks/usePageTitle";
 
@@ -74,13 +85,16 @@ export default function ProviderPublicProfilePage() {
 
   // The booking panel opens on the first bookable service, so it is never empty
   // while there is something to book.
-  useEffect(() => {
-    if (selectedServiceId == null && bookable.length > 0)
-      setSelectedServiceId(bookable[0].id);
-  }, [bookable, selectedServiceId]);
-
+  //
+  // Derived during render rather than pushed into state by an effect. The effect
+  // that used to do this ran after the first paint, so for one frame there was
+  // no selection at all — which the read-only box hid behind the words "Choose a
+  // service", but the dropdown that replaced it would have rendered blank, its
+  // value matching none of its own options. Falling back here means the panel is
+  // right on the frame it first appears, and `selectedServiceId` holds only what
+  // the reader actually picked.
   const selectedService =
-    bookable.find((s) => s.id === selectedServiceId) || null;
+    bookable.find((s) => s.id === selectedServiceId) || bookable[0] || null;
 
   if (loading) return <PageLoader label="Loading provider…" />;
 
@@ -244,8 +258,21 @@ export default function ProviderPublicProfilePage() {
             </section>
           )}
 
-          {/* Services */}
-          <section className="overflow-hidden rounded-lg border border-outline-variant bg-surface">
+          {/* Services.
+
+              `id` because the booking panel links here: the panel's dropdown
+              carries each service's name and price, but the description, the
+              cover photo and the full details live in these rows, so someone
+              deciding between two services still needs a way down to them.
+
+              `scroll-mt-24` matches the offset the panel uses to clear the
+              sticky top bar. Without it the browser aligns the heading with the
+              very top of the viewport and the bar covers it, so the jump lands
+              on a section whose title you cannot see. */}
+          <section
+            id="services"
+            className="scroll-mt-24 overflow-hidden rounded-lg border border-outline-variant bg-surface"
+          >
             <div className="border-b border-outline-variant bg-surface-bright p-6">
               <h2 className="font-h2 text-h2 text-primary">Services</h2>
             </div>
@@ -277,7 +304,7 @@ export default function ProviderPublicProfilePage() {
               <div className="divide-y divide-outline-variant">
                 {visibleServices.map((service) => {
                   const retired = service.isActive === false;
-                  const selected = service.id === selectedServiceId;
+                  const selected = service.id === selectedService?.id;
 
                   return (
                     <div
@@ -420,23 +447,75 @@ export default function ProviderPublicProfilePage() {
                 </p>
               ) : (
                 <div className="space-y-5">
+                  {/* The service is chosen here, in the panel that books it.
+
+                      This was a read-only box under the words "Pick a different
+                      one from the Services list" — an instruction the panel gave
+                      and then could not help with. The list is most of a screen
+                      further down the left column, and the panel is `sticky`, so
+                      on a desktop the reader had to scroll away from the thing
+                      they were being told to change, click Select on a row, then
+                      scroll back to a panel that had never moved. On a phone the
+                      panel sits below the whole list, so the instruction pointed
+                      backwards past everything they had already scrolled through.
+
+                      A dropdown is the smaller of the two changes the panel
+                      needed: the rows below keep their Select buttons and still
+                      drive the same state, so choosing from either place works
+                      and the two always agree. */}
                   <div>
-                    <p className="mb-1 block font-small text-small font-medium text-on-surface">
-                      Selected Service
-                    </p>
-                    <div className="flex items-center justify-between gap-3 rounded-md border border-outline-variant bg-surface-container-low p-3 font-body text-body text-on-surface">
-                      <span className="min-w-0 truncate">
-                        {selectedService?.name ?? "Choose a service"}
-                      </span>
-                      {selectedService && (
-                        <span className="shrink-0 font-bold">
-                          {formatPrice(selectedService.price, selectedService.currency)}
-                        </span>
-                      )}
-                    </div>
-                    <p className="mt-2 font-caption text-caption text-on-surface-variant">
-                      Pick a different one from the Services list.
-                    </p>
+                    {bookable.length > 1 ? (
+                      <>
+                        <label
+                          htmlFor="booking-service"
+                          className="mb-1 block font-small text-small font-medium text-on-surface"
+                        >
+                          Selected Service
+                        </label>
+                        {/* Name and price in the option text, because a native
+                            option cannot be laid out — and the price is the
+                            other half of what someone is choosing between. */}
+                        <Select
+                          id="booking-service"
+                          value={selectedService?.id ?? ""}
+                          onChange={(event) => setSelectedServiceId(Number(event.target.value))}
+                        >
+                          {bookable.map((service) => (
+                            <option key={service.id} value={service.id}>
+                              {service.name} — {formatPrice(service.price, service.currency)}
+                            </option>
+                          ))}
+                        </Select>
+
+                        <a
+                          href="#services"
+                          className="mt-2 inline-flex items-center gap-1 font-caption text-caption text-primary underline-offset-2 hover:underline"
+                        >
+                          Compare all {bookable.length} services
+                          <Icon name="chevronDown" size={14} />
+                        </a>
+                      </>
+                    ) : (
+                      <>
+                        <p className="mb-1 block font-small text-small font-medium text-on-surface">
+                          Selected Service
+                        </p>
+                        {/* One service, so there is nothing to choose between and
+                            no control to offer. The old hint was wrong here in
+                            its own right: it told the reader to pick a different
+                            one when there was no different one to pick. */}
+                        <div className="flex items-center justify-between gap-3 rounded-md border border-outline-variant bg-surface-container-low p-3 font-body text-body text-on-surface">
+                          <span className="min-w-0 truncate">
+                            {selectedService?.name ?? "Choose a service"}
+                          </span>
+                          {selectedService && (
+                            <span className="shrink-0 font-bold">
+                              {formatPrice(selectedService.price, selectedService.currency)}
+                            </span>
+                          )}
+                        </div>
+                      </>
+                    )}
                   </div>
 
                   {selectedService && (
