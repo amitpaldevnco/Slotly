@@ -60,6 +60,7 @@ them:
 - [Who can change a booking](#who-can-change-a-booking)
 - [File uploads](#file-uploads)
 - [Rate limiting](#rate-limiting)
+- [Frontend conventions](#frontend-conventions)
 - [Tests](#tests)
 - [API documentation](#api-documentation)
 - [Decisions, and why](#decisions-and-why)
@@ -792,6 +793,135 @@ can turn them off in a deployed process.
 
 ---
 
+## Frontend conventions
+
+Two things the UI is consistent about on purpose, because both were inconsistent
+by accident first and the inconsistency was the bug.
+
+### Loading states
+
+Everything that reads data goes through `useApiResource`, which returns
+`{ data, loading, refreshing, error, reload }`. The distinction between the two
+flags is the whole rule: `loading` means *there is nothing on screen yet*, and
+`refreshing` means *what is on screen is being replaced*. Passing `keepPreviousData: true`
+is what makes `refreshing` fire at all — without it, every re-fetch reports itself
+as `loading` and the screen empties.
+
+Three situations, one answer each. The primitives are in
+`components/ui/Feedback.jsx`, which carries this same list:
+
+| Situation | What to draw |
+|---|---|
+| A whole route, first load | `PageLoader`, with a `label` naming what is being fetched |
+| A panel inside a page that is already drawn | `SkeletonRows`, with the `variant` matching the shape of what will land there, and a `label` |
+| Content on screen, being re-fetched | `Refreshing` — the content stays and dims, and the region is marked `aria-busy` |
+
+And one prohibition: **never render an empty state while a request is in flight.**
+"No providers listed yet" and "You are all caught up" are answers; a screen that
+gives the wrong answer confidently is worse than one that admits it does not know
+yet. Three panels used to do this and then contradict themselves a moment later.
+
+`SkeletonRows` puts `role="status"` on its container and leaves the bars
+`aria-hidden`, so a skeleton announces itself once. It was wholly `aria-hidden`
+before, which made every skeleton in the app silent — a screen reader heard
+nothing at all between navigating to a page and its content arriving.
+
+Never hand-roll any of this. Three screens had each written their own dim-on-refetch
+and they did not agree on the opacity; one of them was wired to a flag that could
+never become true, so a control that looked like it reported activity reported
+nothing for the life of the feature. One screen had reimplemented `SkeletonBlock`
+class for class, which would have silently escaped any change to the skeleton
+colour or its reduced-motion behaviour.
+
+### Cards in a grid
+
+A grid of cards should be one grid: same width, same height, and the same rows at
+the same heights across every card. Getting there needs both halves.
+
+**On the grid**, `md:auto-rows-fr`. CSS grid rows size to their own content, so two
+rows of cards end up as tall as their own tallest member and nothing lines up
+between them — one long description is enough to leave a page visibly ragged. Not
+below `md`, where a single column would only mean padding every short card out to
+match the tallest on the page.
+
+**On the card, `w-full`** — and this one is easy to miss, because the grid looks
+like it has already handled width. It has not. Tailwind's `grid-cols-3` emits
+`repeat(3, minmax(0, 1fr))`, so the *columns* are equal, but the card is a flex
+item inside its grid cell and a flex item's `flex-grow` defaults to `0`. Without
+`w-full` the card never grows into its column: `flex-basis: auto` sizes it to its
+own content, so a service with a one-line description renders a visibly narrower
+card with the leftover column width showing as a gap beside it.
+
+Reserving the inner zones cannot fix that, and neither can anything on the grid.
+**Equal columns are not equal cards unless something tells the card to fill its
+column.** Check the rendered card width, not just `grid-template-columns`.
+
+**On the card**, reserve every zone whose height depends on its content, instead
+of letting one of them float. `ServiceCard` is the worked example — top to bottom
+it is:
+
+| Zone | How its height is fixed |
+|---|---|
+| Cover + status chip + icons | `h-12` on the cover; one row, so the tallest child sets it |
+| Name | `line-clamp-2` and a floor of two lines |
+| Description | `line-clamp-3` and a floor of three lines |
+| Duration, price, buffer | Always two rows — the buffer row is drawn either way |
+| Stats (owner only) | One line of caption text |
+| Actions | `mt-auto`, so they sit on the bottom edge |
+
+The failure mode this fixes was visible on the services page: with `flex-1` on the
+description, a service with no description absorbed every spare pixel in the card
+into one gap under "No description yet.", pushing its duration, price and stats
+tens of pixels below the same rows on the card beside it. Reserving the zones
+moves that slack to `mt-auto` at the bottom, where it reads as padding.
+
+Fixing the description alone is not enough, and this is the part worth
+remembering: **anything above the description can reintroduce the same
+misalignment.** An unclamped name did — a three-line service name shifted
+everything under it — and so did the buffer row, which used to appear only when a
+service had buffer time. That row is now always drawn and says "No buffer time"
+when there is none, because a true statement fills the space better than a blank
+spacer, which looks like something failed to load.
+
+The reservations are written as `calc()` over the theme's own type-scale
+variables, e.g.
+
+```
+min-h-[calc(3*var(--text-small)*var(--text-small--line-height))]
+```
+
+so three lines stays three lines if `--text-small` or its line-height moves. This
+was briefly `min-h-[3lh]`, which reads far better — but `lh` needs Chrome 109 /
+Safari 16.4 / Firefox 120, and on anything older the declaration is dropped in
+silence and the card goes back to being sized by its text, which is the one
+failure this exists to prevent. A `calc()` over a custom property has no such
+floor.
+
+Two differences `auto-rows-fr` is left to absorb rather than reserve: a retired
+service carries an extra `Reactivate` button, and the stats line can wrap at very
+narrow widths. Reserving a whole button row on every active card to pre-empt the
+first would waste more space than it saves.
+
+### Retired services offer one action
+
+A retired service's header shows `Reactivate` and nothing else. `Edit` is out
+because the API refuses it with `SERVICE_RETIRED` — a live booking renders its own
+snapshotted name and price, so editing the row would rewrite only history.
+
+`Remove` is out for a subtler reason worth knowing before anyone adds it back.
+`DELETE /services/:id` does one of two entirely different things depending on a
+number that is not on the card: with **no** bookings it deletes the row, and with
+**any** bookings it sets `is_active = FALSE`. On a service that is already
+inactive, the second branch is a no-op that still reports success — and since a
+service is usually retired *because* it has history, that was the common case. One
+icon, two outcomes, no way to tell which you were about to get.
+
+Permanently removing a retired service with genuinely no history is still
+reachable: reactivate it, then remove it. That path says what it is doing at each
+step.
+
+---
+
 ## Tests
 
 ```bash
@@ -835,7 +965,7 @@ failing in six months.
 **Live: <https://slotly-backend-p2r5.onrender.com/api/docs>** — or with the
 server running locally, <http://localhost:5000/api/docs>.
 
-Every one of the 41 paths the app serves is documented with its method, auth
+Every one of the 43 paths the app serves is documented with its method, auth
 requirement, request body, response shape and error cases.
 
 The raw OpenAPI 3.1 document is at `/api/docs/openapi.json`, and its source is
@@ -992,7 +1122,7 @@ link straight to the booking is the shortest path to fixing it.
   no "archive" view separating retired services from active ones beyond a badge.
 - **Single provider per account.** Multi-provider businesses and staff assignment
   are explicitly out of scope.
-- **The frontend bundle is not code-split** (~890 KB, ~284 KB gzipped), largely
+- **The frontend bundle is not code-split** (~1,081 KB, ~335 KB gzipped), largely
   the calendar library. Route-level lazy loading would be the first fix.
 - **No end-to-end browser tests.** The suite covers the logic that is hard to get
   right; the UI was verified manually.

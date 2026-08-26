@@ -33,7 +33,18 @@ export default function ServiceCard({
   const buffer = (service.bufferBefore || 0) + (service.bufferAfter || 0);
 
   return (
-    <div className="group relative flex flex-col rounded-lg border border-outline-variant bg-surface p-6 transition-all duration-200 hover:border-primary/30 hover:shadow-raise">
+    // `w-full` is what makes every card the same width, and its absence is
+    // why they were not. The grid's columns were always equal — Tailwind's
+    // `grid-cols-3` emits `minmax(0, 1fr)` — but this card is a *flex item* of
+    // the grid cell, and a flex item's `flex-grow` defaults to 0. So the card
+    // never grew to fill its column: `flex-basis: auto` sized it to its own
+    // content, and a service whose description ran to one line came out visibly
+    // narrower than the card beside it, with the leftover column width showing
+    // as a gap after it.
+    //
+    // Reserving the inner zones could not have fixed this. Equal columns are not
+    // equal cards unless something tells the card to occupy its column.
+    <div className="group relative flex w-full flex-col rounded-lg border border-outline-variant bg-surface p-6 transition-all duration-200 hover:border-primary/30 hover:shadow-raise">
       <div className="mb-4 flex items-start justify-between gap-3">
         {/* The management grid keeps its 48px square tile from the reference —
             this card is not the public list and is not what the services design
@@ -65,8 +76,22 @@ export default function ServiceCard({
               SERVICE_RETIRED, because live bookings show their own snapshotted
               name and price and changing the row would alter only history. So
               Edit is replaced by Reactivate rather than being offered and then
-              failing. Remove stays: a retired service with no history can still
-              be deleted outright. */}
+              failing.
+
+              Remove goes with it. `DELETE /services/:id` does one of two
+              entirely different things depending on a number that is not on this
+              card: with no bookings it deletes the row outright, and with any
+              bookings it sets `is_active = FALSE` — which, on a service that is
+              *already* inactive, is a no-op that still reports success. One
+              icon, two outcomes, no way for the provider to tell which they were
+              about to get, and on the common case (a retired service has history,
+              which is usually why it was retired) a button that does nothing at
+              all.
+
+              A retired card therefore offers one action: put it back. Deleting a
+              retired service that genuinely has no history is still reachable —
+              reactivate it, then remove it — and that path at least says what it
+              is doing at each step. */}
           {isOwner && (
             <>
               {retired ? (
@@ -89,34 +114,65 @@ export default function ServiceCard({
                   <Icon name="edit" size={20} />
                 </button>
               )}
-              <button
-                type="button"
-                onClick={() => onDelete(service)}
-                aria-label={`Remove ${service.name}`}
-                className="cursor-pointer p-1 text-on-surface-variant transition-colors hover:text-error"
-              >
-                <Icon name="delete" size={20} />
-              </button>
+              {!retired && (
+                <button
+                  type="button"
+                  onClick={() => onDelete(service)}
+                  aria-label={`Remove ${service.name}`}
+                  className="cursor-pointer p-1 text-on-surface-variant transition-colors hover:text-error"
+                >
+                  <Icon name="delete" size={20} />
+                </button>
+              )}
             </>
           )}
         </div>
       </div>
 
-      <h3 className="mb-2 font-h3 text-h3 text-primary">{service.name}</h3>
+      {/* Two lines, always — the same reservation the description gets below,
+          and for the same reason. This was unclamped, so "Initial consultation
+          and treatment plan" took three lines where "Follow-up session" took
+          one, and everything under it on that card sat two lines lower than on
+          its neighbour. Fixing the description alone would have left the name
+          free to reintroduce the misalignment.
 
-      {/* Clamped to three lines, which is what the form's own live preview of
-          this card has always shown. Unclamped, one service with a long
-          description stretched its card far past its neighbours and broke the
-          grid — and a provider writing that description was shown a tidy
-          three-line preview, saved it, and got something else.
+          Reserved through the theme's own type scale rather than a measured
+          pixel value, so it stays exactly two lines if `--text-h3` or its
+          line-height is ever changed. */}
+      <h3 className="mb-2 line-clamp-2 min-h-[calc(2*var(--text-h3)*var(--text-h3--line-height))] font-h3 text-h3 text-primary">
+        {service.name}
+      </h3>
 
-          Three lines rather than a character count: the cut lands on a line
-          boundary at whatever width the card happens to be, instead of at a
-          fixed number of characters that is too long on a phone and too short
-          on a wide screen. The full text stays in the DOM, so it is still
-          selectable and searchable, and `Details` below opens all of it. */}
+      {/* Always exactly three lines tall, whether the description fills them
+          or the service has none.
+
+          Clamped at three because that is what the form's own live preview
+          shows: unclamped, one long description stretched its card past its
+          neighbours, and a provider who wrote it was shown a tidy three-line
+          preview, saved, and got something else. Three lines rather than a
+          character count, so the cut lands on a line boundary at whatever width
+          the card happens to be. The full text stays in the DOM — still
+          selectable and searchable — and `Details` opens all of it.
+
+          The reserved height, in place of `flex-1`, is the part that makes a
+          row of cards line up. `flex-1` let this paragraph absorb every pixel of
+          leftover height in the card, so a service with no description got one
+          enormous gap between "No description yet." and its duration — and its
+          duration, price and stats sat tens of pixels lower than the same rows
+          on the card beside it. Reserving three lines instead means the block
+          under the description starts at the same height on every card, and the
+          slack moves to `mt-auto` on the actions, where it reads as padding
+          rather than as a hole.
+
+          Computed from the theme's own `--text-small` and its line-height, so
+          three lines stays three lines if the type scale moves. This was `3lh`,
+          which reads better but needs Chrome 109 / Safari 16.4 / Firefox 120 —
+          and on anything older the declaration is dropped in silence and the
+          card goes back to being sized by its text, which is the one failure
+          mode this is here to prevent. `calc()` over a custom property has no
+          such floor. */}
       <p
-        className={`mb-6 line-clamp-3 flex-1 font-small text-small text-on-surface-variant ${
+        className={`mb-6 line-clamp-3 min-h-[calc(3*var(--text-small)*var(--text-small--line-height))] font-small text-small text-on-surface-variant ${
           retired ? "opacity-70" : ""
         }`}
       >
@@ -138,10 +194,24 @@ export default function ServiceCard({
             {formatPrice(service.price, service.currency)}
           </span>
         </div>
-        {buffer > 0 && (
+        {/* Always drawn, so the stats and the buttons below it sit at the same
+            height on every card. This row used to appear only when there was a
+            buffer, which made it the last thing that could still shift a card's
+            insides — a service with buffer time pushed its own stats a line
+            lower than an identical service without.
+
+            Filled with the true statement rather than an empty spacer: "no
+            buffer time" is a fact a provider scanning this grid wants, and a
+            blank reserved line would look like something failed to load. */}
+        {buffer > 0 ? (
           <div className="flex w-full items-center gap-1.5 text-on-surface-variant">
             <Icon name="hourglass_empty" size={16} />
             <span className="font-caption text-caption">{buffer} min buffer</span>
+          </div>
+        ) : (
+          <div className="flex w-full items-center gap-1.5 text-outline">
+            <Icon name="hourglass_empty" size={16} />
+            <span className="font-caption text-caption">No buffer time</span>
           </div>
         )}
       </div>
@@ -175,7 +245,11 @@ export default function ServiceCard({
             )}
           </div>
 
-          <div className="mt-4 flex gap-2">
+          {/* `mt-auto` so the buttons sit on the card's bottom edge whatever
+              the card's height. With the description no longer stretching, this
+              is what takes up the difference between a card that has a buffer
+              row and one that does not. */}
+          <div className="mt-auto flex gap-2 pt-4">
             <button
               type="button"
               onClick={() => onViewDetails(service)}
@@ -210,7 +284,7 @@ export default function ServiceCard({
           )}
         </>
       ) : (
-        <div className="mt-4 flex gap-2">
+        <div className="mt-auto flex gap-2 pt-4">
           <button
             type="button"
             onClick={() => onViewDetails(service)}

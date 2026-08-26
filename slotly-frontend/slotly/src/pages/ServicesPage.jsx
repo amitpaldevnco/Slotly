@@ -245,7 +245,7 @@ export default function ServicesPage() {
 
       <div id="services-grid">
         {loading ? (
-          <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 md:auto-rows-fr md:grid-cols-2 lg:grid-cols-3">
             {Array.from({ length: 3 }, (_, i) => (
               <SkeletonRows key={i} count={1} variant="card" label="Loading your services…" />
             ))}
@@ -270,23 +270,35 @@ export default function ServicesPage() {
               : { actionLabel: "Show all", onAction: () => setFilter("all") })}
           />
         ) : (
-          <ul className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-3">
+          /* `md:auto-rows-fr` is what makes every card the same height.
+           *
+           * Grid rows size to their own content, so with four services the
+           * second row was as tall as its own tallest card and the first row as
+           * tall as its — one long description was enough to leave the page
+           * visibly ragged. Equal rows, plus `ServiceCard`'s fixed three-line
+           * description and its `mt-auto` actions, means every card in the grid
+           * is the same size and its rows line up across the whole page.
+           *
+           * Not below `md`, where a single column would only mean padding every
+           * short card out to match the tallest one on the page. */
+          <ul className="grid grid-cols-1 gap-6 md:auto-rows-fr md:grid-cols-2 lg:grid-cols-3">
             {visible.map((service) => (
+              // `flex` on the row so the card stretches to the height the
+              // grid gives it. The `<div className="flex w-full">` that used to
+              // sit in between did nothing the card does not now do itself.
               <li key={service.id} className="flex">
-                <div className="flex w-full">
-                  <ServiceCard
-                    service={service}
-                    isOwner
-                    providerId={user?.id}
-                    canBook={false}
-                    onEdit={openEditor}
-                    onReactivate={handleReactivate}
-                    reactivating={reactivatingId === service.id}
-                    onDelete={setPendingDelete}
-                    onViewBookings={setBookingsService}
-                    onViewDetails={setDetailsService}
-                  />
-                </div>
+                <ServiceCard
+                  service={service}
+                  isOwner
+                  providerId={user?.id}
+                  canBook={false}
+                  onEdit={openEditor}
+                  onReactivate={handleReactivate}
+                  reactivating={reactivatingId === service.id}
+                  onDelete={setPendingDelete}
+                  onViewBookings={setBookingsService}
+                  onViewDetails={setDetailsService}
+                />
               </li>
             ))}
           </ul>

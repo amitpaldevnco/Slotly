@@ -234,6 +234,67 @@ export const openApiDocument = {
         },
       },
 
+      DirectoryProvider: {
+        type: "object",
+        description:
+          "One row of `GET /providers`. A summary, not a profile: enough to rank, filter " +
+          "and draw a card, with the full record behind `GET /providers/{id}`.",
+        properties: {
+          id: { type: "integer" },
+          name: { type: "string" },
+          businessName: { type: "string", nullable: true },
+          businessType: {
+            type: "string",
+            nullable: true,
+            description:
+              "Free text, predating the category list. Clients group it through the " +
+              "frontend's `normaliseCategory`, so several stored spellings can fold into " +
+              "one displayed category.",
+          },
+          avatarUrl: { type: "string", nullable: true },
+          bio: { type: "string", nullable: true },
+          timezone: { type: "string", example: "Europe/London" },
+          currency: {
+            type: "string",
+            description:
+              "The provider's own ISO 4217 code, and the one `fromPrice` is denominated in. " +
+              "The directory is multi-currency and nothing here is converted.",
+          },
+          serviceCount: { type: "integer", description: "Active services only" },
+          fromPrice: {
+            type: "string",
+            nullable: true,
+            description: "Cheapest active service, NUMERIC as a string. Null when nothing is priced.",
+          },
+          shortestDuration: {
+            type: "integer",
+            nullable: true,
+            description: "Shortest active service, in minutes",
+          },
+          ratingAverage: {
+            type: "number",
+            nullable: true,
+            format: "float",
+            example: 4.3,
+            description:
+              "Mean review score, rounded to one decimal place — the same rounding " +
+              "`GET /providers/{id}` and `GET /providers/{id}/reviews` apply, so the three " +
+              "never disagree. **Null, not 0, when nobody has reviewed yet:** \"no reviews\" " +
+              "and \"rated zero\" are different facts and a client filtering on a minimum " +
+              "rating must not match the first.",
+          },
+          ratingCount: { type: "integer", description: "Reviews behind `ratingAverage`. 0 when none." },
+          matchedServices: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Which of this provider's services matched `search`, so a card can say why it " +
+              "is in the results. Empty when the provider matched on their own name, or when " +
+              "no `search` was given.",
+          },
+        },
+      },
+
       AvailabilityRule: {
         type: "object",
         properties: {
@@ -590,12 +651,34 @@ export const openApiDocument = {
         tags: ["Providers"],
         summary: "Browse providers",
         security: [],
+        description:
+          "Ordered by active service count descending, then name — which is what the " +
+          "frontend labels \"Recommended\". Rating, price and duration are all returned so " +
+          "the directory can sort and filter on them without a second request per card.",
         parameters: [
           { name: "search", in: "query", schema: { type: "string" }, description: "Name, business or category" },
           { name: "businessType", in: "query", schema: { type: "string" } },
           { name: "limit", in: "query", schema: { type: "integer", default: 50, maximum: 100 } },
         ],
-        responses: { 200: { description: "Matching providers" } },
+        responses: {
+          200: {
+            description: "Matching providers",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    count: { type: "integer" },
+                    providers: {
+                      type: "array",
+                      items: { $ref: "#/components/schemas/DirectoryProvider" },
+                    },
+                  },
+                },
+              },
+            },
+          },
+        },
       },
     },
 
