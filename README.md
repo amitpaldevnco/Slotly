@@ -920,6 +920,82 @@ Permanently removing a retired service with genuinely no history is still
 reachable: reactivate it, then remove it. That path says what it is doing at each
 step.
 
+### The calendar's day layout is ours, not the library's
+
+`ProviderCalendar` passes `dayLayoutAlgorithm={dayEventLayout}` — a replacement
+for react-big-calendar's own `overlap` algorithm, in `src/lib/dayEventLayout.js`.
+Two reasons, and both matter more here than in most apps because a Slotly service
+can be **two minutes long**.
+
+**RBC groups events by proximity, not by overlap.** Its `overlap.js` places an
+event beside another if
+
+```js
+c.end > event.start || Math.abs(event.start - c.start) < minimumStartDifference
+```
+
+and `minimumStartDifference` is `ceil(step * timeslots / 2)` — 30 minutes at this
+calendar's `step={30} timeslots={2}`. So two appointments whose *starts* are
+within half an hour were drawn as half-width columns side by side even when their
+times did not intersect at all: 11:20–11:22 and 11:30–11:50, ten minutes apart and
+not touching, looked like a double booking. RBC then widens each column to
+`_width * 1.7` on purpose so overlapping events visibly bleed together, which
+turns a false positive into an alarming one.
+
+**And height had two owners.** The inline `height` RBC computes for a 2-minute
+appointment is 0.14% of the column, about 4px at the 128px-per-hour density
+`.rbc-timeslot-group`'s 64px minimum gives us — not one line of text. Its
+stylesheet papers over that with `.rbc-day-slot .rbc-event { min-height: 20px }`,
+which is worse than leaving it alone: the rule grows the box *downward*, past the
+end time the height was derived from, over whatever comes next, and it does so
+after layout has run. Any guarantee the algorithm makes about events not colliding
+is void the moment the browser overrides the height it returned. `index.css` zeroes
+that rule; the floor lives in the algorithm.
+
+### One footprint, used for everything
+
+Both fixes come out of a single idea. Every event gets a **layout footprint** — its
+real time range, widened at the end to at least `MIN_EVENT_MINUTES` — and that one
+figure drives all three decisions, which is what stops them contradicting each
+other:
+
+| Decision | Uses the footprint for |
+|---|---|
+| Height | the block's height, so every block clears one line of text |
+| Clustering | intersection, so events go side by side only when the drawn blocks need the room |
+| Columns | occupancy, so two events sharing a column can never collide |
+
+Both invariants therefore hold at once: **no block is shorter than one readable
+line, and no two blocks overlap by so much as a pixel.** Nothing is occluded and
+nothing is squashed, so no label is clipped by a neighbour.
+
+Positions and labels stay honest. `top` is the true start time and the label is the
+event's own start–end, untouched. Only the bottom edge of a very short block sits
+lower than its end time, which is the one concession a two-minute appointment on an
+hour-scale grid requires.
+
+A block of the minimum height also has to be *rendered* differently, and that is
+the one place the stylesheet has to know about the algorithm. At 21px there is
+room for exactly one line, while the default event body wants two — the time and
+the title stack in a `column wrap` flex box, and `.rbc-event-content` is a 3-line
+clamp asking for ~48px. Neither overflowed visibly, because the block is
+`overflow: hidden`; they were *clipped*, and what showed was the middle band of a
+line with its ascenders and descenders cut away. `eventStyleGetter` tags those
+blocks `rbc-event--compact` using `isCompactEvent`, exported from the layout so
+there is one definition of "short", and `index.css` lays them out as a single
+ellipsised row. Nothing shrinks: the type stays 12px like every other event, and
+the three pixels needed come out of padding and leading.
+
+**`MIN_EVENT_MINUTES` is 10**, which is ~21px at this density: one line of the time
+label plus its padding and border. It is not a free parameter. It is also the width
+of the window in which two *non*-overlapping short appointments get split into
+columns — 10:00–10:02 and 10:05–10:07 have intersecting footprints, so they are
+drawn side by side even though their times do not overlap. That is deliberate and
+unavoidable: stacked, the second block would begin 6px below the first and cover its
+text. Ten is the largest value that still leaves a pair ten minutes apart in a
+single full-width column, which is the case this file was written for. Raise it and
+the reported 11:20/11:30 pair splits into columns again.
+
 ---
 
 ## Tests

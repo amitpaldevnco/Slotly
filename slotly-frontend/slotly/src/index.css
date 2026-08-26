@@ -627,6 +627,27 @@
   border-radius: var(--radius-md);
 }
 
+/* The layout algorithm owns an event's height. Nothing else may.
+ *
+ * react-big-calendar ships `.rbc-day-slot .rbc-event { min-height: 20px }`, which
+ * is the other half of the short-event overlap bug. The inline `height` it
+ * computes for a 2-minute appointment is 0.14% of the column — about 4px at this
+ * calendar's 64px-per-half-hour density — and that CSS then silently grows the
+ * box to 20px. It grows *downward*, past the end time the height was calculated
+ * from, straight over whatever comes next. Worse, it does so invisibly: the
+ * layout algorithm has no way to know the browser ignored the height it returned,
+ * so any guarantee it makes about events not colliding is void.
+ *
+ * `dayEventLayout` floors short events itself, in minutes of grid space, and lays
+ * every event out against that floored footprint — so the floor is accounted for
+ * before anything is positioned, rather than applied afterwards behind the
+ * layout's back. Zeroing this rule leaves the algorithm as the single source of
+ * truth for how tall a block is. */
+.rbc-day-slot .rbc-event,
+.rbc-day-slot .rbc-background-event {
+  min-height: 0;
+}
+
 .rbc-event:focus-visible {
   outline: 2px solid var(--color-on-surface);
   outline-offset: 1px;
@@ -654,6 +675,50 @@
   -webkit-box-orient: vertical;
   -webkit-line-clamp: 3;
   overflow: hidden;
+}
+
+/* An appointment too short to fill its own block.
+ *
+ * `dayEventLayout` gives any appointment under `MIN_EVENT_MINUTES` a block of
+ * that minimum, which is about 21px. That is one line of text and no more, and
+ * the default event body wants considerably more than one line:
+ *
+ *   - `.rbc-day-slot .rbc-event` is `flex-flow: column wrap`, so the time and the
+ *     title stack. Two lines do not fit in one line's worth of height.
+ *   - `.rbc-event-content` above is a 3-line clamp, so the title element asks for
+ *     roughly 48px inside a 21px box.
+ *
+ * Neither overflowed visibly, because the block is `overflow: hidden` -- they
+ * were *clipped*, and what showed was the middle band of a line of text with its
+ * ascenders and descenders cut away. Legible enough to look like a rendering
+ * fault, not legible enough to read.
+ *
+ * So a compact block is one row: the time, then the title, both on a single line
+ * that is ellipsised rather than clipped. Nothing shrinks -- the type is the same
+ * 12px as every other event on the grid, and `eventStyleGetter` buys the three
+ * pixels this needs back from padding and leading instead. */
+.rbc-day-slot .rbc-event--compact {
+  flex-flow: row nowrap;
+  align-items: center;
+  gap: 0.375rem;
+}
+
+.rbc-day-slot .rbc-event--compact .rbc-event-label {
+  flex: none;
+  padding-right: 0;
+}
+
+/* `display: block` is what switches the clamp off: `-webkit-line-clamp` only
+ * applies to a `-webkit-box`, so restoring normal block layout retires it and
+ * leaves the usual one-line ellipsis to do the truncating. `min-width: 0` because
+ * a flex item will not shrink below its content otherwise, and the title has to
+ * be allowed to shrink for the ellipsis to appear at all. */
+.rbc-day-slot .rbc-event--compact .rbc-event-content {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The overlay shown when a day holds more events than fit. */

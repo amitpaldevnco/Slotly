@@ -482,7 +482,7 @@ function AppointmentPanel({ booking, isClient, otherParty }) {
         <p className="mb-3">
           <span className={highlightPill}>
             <Icon name="clock" size={12} />
-            Starts in {relativeTime(booking.startsAt)}
+            Starts {relativeTime(booking.startsAt)}
           </span>
         </p>
       )}

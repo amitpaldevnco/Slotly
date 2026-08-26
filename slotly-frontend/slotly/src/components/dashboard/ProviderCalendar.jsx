@@ -46,6 +46,7 @@ import { Calendar, luxonLocalizer, Views } from "react-big-calendar";
 import { DateTime, Settings } from "luxon";
 import Icon from "../ui/Icon";
 import { Refreshing } from "../ui/Feedback";
+import dayEventLayout, { isCompactEvent } from "../../lib/dayEventLayout";
 import { TIME_FORMAT, toDisplayDate } from "../../lib/time";
 import { zoneName, STATUS_STYLES } from "../../lib/ui";
 import "react-big-calendar/lib/css/react-big-calendar.css";
@@ -126,11 +127,25 @@ const CALENDAR_FORMATS = {
  * calendar so much as the ghost of one, and it should recede rather than compete
  * with the appointments that are actually happening.
  */
-function eventStyleGetter(event) {
+function eventStyleGetter(event, start, end) {
   const status = event.resource.booking.status;
   const known = STATUS_STYLES[status] ? status : "booked";
 
+  // An appointment shorter than the layout's minimum gets a block taller than
+  // itself, and that block is only just tall enough for one line: ~21px, against
+  // the 24.2px this card's usual 12px/1.35 type and 3px padding needs once the
+  // 1px border is counted. So the text did not fit, and what showed was the
+  // middle band of a line with its ascenders and descenders cut off — the
+  // "labels are no longer clearly visible" report.
+  //
+  // The compact variant buys back the 3px it needs from padding and leading
+  // rather than from the type size, so the text is the same size as every other
+  // event on the grid — just on one line. `rbc-event--compact` turns the block
+  // into a single row; see `index.css`.
+  const compact = isCompactEvent(start, end);
+
   return {
+    className: compact ? "rbc-event--compact" : undefined,
     style: {
       backgroundColor: `var(--color-status-${known}-soft)`,
       color: `var(--color-status-${known}-ink)`,
@@ -139,8 +154,11 @@ function eventStyleGetter(event) {
       borderRadius: "4px",
       fontSize: "12px",
       fontWeight: 500,
-      lineHeight: 1.35,
-      padding: "3px 6px",
+      // 12px x 1.25 = 15px, which clears the 17.3px a 21px block leaves once its
+      // border and padding are taken out. These are set here rather than in the
+      // stylesheet because the values they override are inline, and inline wins.
+      lineHeight: compact ? 1.25 : 1.35,
+      padding: compact ? "1px 6px" : "3px 6px",
       opacity: status === "cancelled" ? 0.6 : 1,
       textDecoration: status === "cancelled" ? "line-through" : "none",
     },
@@ -432,6 +450,12 @@ export default function ProviderCalendar({
           onView={onView}
           views={[Views.DAY, Views.WEEK, Views.MONTH]}
           components={components}
+          // Replaces react-big-calendar's own `overlap` layout, which grouped
+          // events by how close their *starts* were rather than by whether they
+          // actually intersected — so a 2-minute appointment ending at 11:22 was
+          // drawn in a half-width column beside one starting at 11:30, as though
+          // the two clashed. See `dayEventLayout` for the whole of it.
+          dayLayoutAlgorithm={dayEventLayout}
           step={30}
           timeslots={2}
           min={DAY_MIN}
