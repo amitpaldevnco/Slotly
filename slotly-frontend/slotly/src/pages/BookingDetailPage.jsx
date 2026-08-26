@@ -505,15 +505,33 @@ function AppointmentPanel({ booking, isClient, otherParty }) {
         </div>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2 sm:divide-x sm:divide-line-soft">
+          {/* Named from the reader's side, so one of the two is always "Your
+              time" and the other is the party they are dealing with.
+
+              These were fixed labels — "Client's time" and "Provider's time" —
+              with a "· yours" tacked onto whichever one belonged to the viewer.
+              A client therefore read "CLIENT'S TIME · YOURS", which says the
+              same thing twice in two different vocabularies and makes the reader
+              translate a role name into a person before they can tell which
+              column is theirs. A provider got "PROVIDER'S TIME · YOURS", the
+              same problem from the other side.
+
+              The columns stay in the same order for both roles: the client's
+              zone on the left, the provider's on the right. It happens to put
+              the reader's own column first for a client and second for a
+              provider, which is fine — the type scale below, not the position,
+              is what marks which one is theirs, and a layout that reshuffles
+              itself by role is harder to describe to someone than one that does
+              not. */}
           <ZoneReading
-            heading="Client's time"
+            heading={isClient ? "Your time" : "Client's time"}
             zone={booking.client.timezone}
             startsAt={booking.startsAt}
             endsAt={booking.endsAt}
             highlighted={isClient}
           />
           <ZoneReading
-            heading="Provider's time"
+            heading={isClient ? "Provider's time" : "Your time"}
             zone={booking.provider.timezone}
             startsAt={booking.startsAt}
             endsAt={booking.endsAt}
@@ -539,9 +557,11 @@ function AppointmentPanel({ booking, isClient, otherParty }) {
 function ZoneReading({ heading, zone, startsAt, endsAt, highlighted, className = "" }) {
   return (
     <div className={className}>
+      {/* No "· yours" any more: the heading says "Your time" when it is the
+          reader's, so the suffix was restating it. `highlighted` still drives
+          the type scale below, which is what actually distinguishes the two. */}
       <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-3">
         {heading}
-        {highlighted && <span className="ml-1.5 text-brand">· yours</span>}
       </p>
       <p
         // The viewer's own reading is the one they act on, so it is the larger and
