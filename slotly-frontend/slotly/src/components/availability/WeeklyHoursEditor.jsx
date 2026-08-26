@@ -1,9 +1,18 @@
 /**
  * The weekly recurring-hours grid.
  *
- * Edits the whole week as one form and saves it in one request,
+ * Edits the whole week as one form and saves it in one request.
+ *
+ * ## Validation happens as you type, not when you save
+ *
+ * `validateWeek` is derived from the draft rather than run once inside the
+ * submit handler, so a window that ends before it begins is flagged on the edit
+ * that breaks it and un-flagged on the edit that fixes it. The one exception is a
+ * time left empty: those messages wait for the first Save, because an empty field
+ * is already visibly empty and saying so on the keystroke that emptied it is
+ * noise. See `visibleErrors`.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { parseApiError } from "../../api/client";
 import * as availabilityApi from "../../api/availability";
 import { useToast } from "../../context/ToastContext";
@@ -158,8 +167,27 @@ function toRulePayload(windowsByDay) {
   );
 }
 
+/**
+ * Every problem with the week, keyed by `weekday-index`.
+ *
+ * Each entry is `{ message, incomplete }`. `incomplete` marks the ones caused by
+ * a time that is missing rather than wrong, which is what lets the editor show
+ * the rest of them *while the provider types* and hold these back until they
+ * press Save — see `visibleErrors`. A half-filled `<input type="time">` reports
+ * its value as `""`, so without that distinction clearing an hour to retype it
+ * flashes "Start time must be HH:MM" on every keystroke.
+ *
+ * First error per window wins. It used to be last: the overlap pass ran second
+ * and overwrote whatever the first had found, so a window running 5pm–9am was
+ * reported as overlapping its neighbour rather than as ending before it began —
+ * the wrong problem, and the one the provider could do nothing about until they
+ * had fixed the real one.
+ */
 function validateWeek(windowsByDay) {
   const errors = {};
+  const flag = (key, message, incomplete = false) => {
+    if (!errors[key]) errors[key] = { message, incomplete };
+  };
 
   for (const day of WEEKDAYS) {
     const windows = windowsByDay[day.value] || [];
@@ -169,9 +197,16 @@ function validateWeek(windowsByDay) {
       const end = timeToMinutes(window.endTime);
       const key = `${day.value}-${index}`;
 
-      if (start === null) errors[key] = "Start time must be HH:MM";
-      else if (end === null) errors[key] = "End time must be HH:MM";
-      else if (end <= start) errors[key] = "End must be after start";
+      if (start === null) flag(key, "Enter a start time", true);
+      else if (end === null) flag(key, "Enter an end time", true);
+      // Stated with both times in it. "End must be after start" describes the
+      // rule; naming the two values the provider actually typed is what shows
+      // them they have put an evening start against a morning end.
+      else if (end === start) {
+        flag(key, `Start and end are both ${window.startTime} — this window is zero minutes long`);
+      } else if (end < start) {
+        flag(key, `Ends before it starts: ${window.startTime} to ${window.endTime}`);
+      }
     });
 
     // Overlap check within the day, comparing each window against the ones
@@ -179,15 +214,18 @@ function validateWeek(windowsByDay) {
     windows.forEach((window, index) => {
       const start = timeToMinutes(window.startTime);
       const end = timeToMinutes(window.endTime);
-      if (start === null || end === null) return;
+      if (start === null || end === null || end <= start) return;
 
       for (let other = 0; other < index; other += 1) {
         const otherStart = timeToMinutes(windows[other].startTime);
         const otherEnd = timeToMinutes(windows[other].endTime);
-        if (otherStart === null || otherEnd === null) continue;
+        if (otherStart === null || otherEnd === null || otherEnd <= otherStart) continue;
 
         if (start < otherEnd && otherStart < end) {
-          errors[`${day.value}-${index}`] = "This overlaps another window on the same day";
+          flag(
+            `${day.value}-${index}`,
+            `Overlaps ${windows[other].startTime}–${windows[other].endTime} on the same day`
+          );
         }
       }
     });
@@ -277,13 +315,27 @@ function useSlotFeasibility(windowsByDay, serviceId, localErrors) {
  * The zone every time on this card is written in is stated once, by the
  * Timezone card at the top of the page, rather than repeated per editor.
  */
-export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSaved }) {
+export default function WeeklyHoursEditor({
+  rules,
+  serviceId,
+  scopeLabel,
+  onSaved,
+  // Present only when this scope is a service that currently overrides the
+  // default hours. The page owns the reset itself — it is the thing holding the
+  // service list and the confirmation — so this is only the trigger.
+  canResetToDefault = false,
+  onResetToDefault,
+  resetting = false,
+}) {
   const toast = useToast();
 
   const [windowsByDay, setWindowsByDay] = useState(() => groupByWeekday(rules));
-  const [errors, setErrors] = useState({});
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
+
+  // Whether Save has been pressed on the current draft. The only thing it
+  // changes is whether the "enter a time" errors are shown; see `visibleErrors`.
+  const [submitAttempted, setSubmitAttempted] = useState(false);
 
   // Re-seed the grid whenever the parent hands over a different rule set.
   //
@@ -305,9 +357,42 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
   if (rules !== syncedRules) {
     setSyncedRules(rules);
     setWindowsByDay(groupByWeekday(rules));
-    setErrors({});
     setDirty(false);
+    setSubmitAttempted(false);
   }
+
+  /**
+   * The whole week's problems, re-derived on every edit.
+   *
+   * This was state, written only inside `handleSubmit` — so the form validated
+   * once, when the provider pressed Save, and then kept showing that verdict.
+   * Two consequences, both of which the "no clear validation" report is about:
+   * an end time before its start looked perfectly acceptable until a save was
+   * refused, and once the message appeared, correcting the time did not remove
+   * it. Deriving instead means the error arrives on the edit that causes it and
+   * leaves on the edit that fixes it.
+   */
+  const errors = useMemo(() => validateWeek(windowsByDay), [windowsByDay]);
+
+  /**
+   * The subset worth showing right now, as plain strings.
+   *
+   * A missing time is held back until Save, because an empty field is already
+   * visibly empty — announcing it on the keystroke that emptied it tells the
+   * provider something they can see, at the moment it is least useful. An end
+   * before its start is the opposite: two filled-in, plausible-looking fields
+   * that together describe no time at all, and nothing but a message says so.
+   */
+  const visibleErrors = useMemo(() => {
+    const shown = {};
+    for (const [key, error] of Object.entries(errors)) {
+      if (!error.incomplete || submitAttempted) shown[key] = error.message;
+    }
+    return shown;
+  }, [errors, submitAttempted]);
+
+  const errorCount = Object.keys(errors).length;
+  const visibleErrorCount = Object.keys(visibleErrors).length;
 
   const feasibility = useSlotFeasibility(windowsByDay, serviceId, errors);
 
@@ -360,23 +445,14 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
     }));
   };
 
-  /** Copies Monday's windows to every other weekday — by far the most common shape. */
-  const applyMondayToWeekdays = () => {
-    const monday = windowsByDay[1] || [];
-    if (monday.length === 0) {
-      toast.info("Set Monday's hours first, then copy them across.");
-      return;
-    }
-
-    update((current) => ({
-      ...current,
-      2: monday.map((w) => ({ ...w })),
-      3: monday.map((w) => ({ ...w })),
-      4: monday.map((w) => ({ ...w })),
-      5: monday.map((w) => ({ ...w })),
-    }));
-    toast.info("Copied Monday's hours to Tuesday–Friday. Remember to save.");
-  };
+  // "Copy to all" used to sit in the header here. It copied *Monday's* windows
+  // to *Tuesday through Friday* — so of the three words in its label, "all" was
+  // wrong (the weekend was untouched) and neither the source nor the range was
+  // named anywhere on the control. A provider could only find out what it did by
+  // pressing it and reading the toast afterwards, on a control that had already
+  // overwritten four days of their schedule. Removed rather than relabelled:
+  // "Copy Monday to Tuesday–Friday" is an honest label for a button nobody would
+  // reach for twice, and setting four days by hand is a handful of clicks.
 
   const handleSubmit = async (event) => {
     event.preventDefault();
@@ -388,9 +464,10 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
     // is worth ruling out.
     if (saving) return;
 
-    const found = validateWeek(windowsByDay);
-    setErrors(found);
-    if (Object.keys(found).length > 0) {
+    // Reveals the "enter a time" errors that are held back until now, and the
+    // errors themselves are already derived — there is nothing to compute here.
+    setSubmitAttempted(true);
+    if (errorCount > 0) {
       toast.error("Please fix the highlighted times.");
       return;
     }
@@ -415,6 +492,7 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
 
     setSaving(false);
     setDirty(false);
+    setSubmitAttempted(false);
     setWindowsByDay(groupByWeekday(saved.rules));
     onSaved(saved.rules);
 
@@ -442,14 +520,31 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
         <h2 className="font-h3 text-[18px] font-semibold text-primary">
           {serviceId ? `Weekly Hours — ${scopeLabel}` : "Weekly Hours"}
         </h2>
-        <button
-          type="button"
-          onClick={applyMondayToWeekdays}
-          className="-mx-2 flex min-h-9 cursor-pointer items-center gap-1 rounded-md px-2 font-small text-small text-on-surface-variant transition-colors hover:text-primary"
-        >
-          <Icon name="content_copy" size={16} />
-          Copy to all
-        </button>
+
+        {/* The way back to the default hours, in the header of the card that
+            holds the custom ones.
+
+            A reset did already exist — as the action slot of the notice above
+            this card, which is not where anyone looks for it. A provider who has
+            just spent a minute editing this grid looks for the undo *in the
+            grid*, next to Save hours, and there was nothing there. Moving it
+            rather than adding a second one: two buttons doing the same
+            destructive thing on one screen is worse than one in the wrong place.
+
+            Only for a service that is actually overriding the default. On the
+            Default tab there is nothing to fall back to, and on a service that
+            already inherits there is nothing to undo. */}
+        {canResetToDefault && (
+          <button
+            type="button"
+            onClick={onResetToDefault}
+            disabled={resetting}
+            className="-mx-2 flex min-h-9 cursor-pointer items-center gap-1.5 rounded-md px-2 font-small text-small text-on-surface-variant transition-colors hover:text-primary disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Icon name="refresh" size={16} />
+            {resetting ? "Resetting…" : "Reset to default hours"}
+          </button>
+        )}
       </div>
 
       {/* `noValidate`: the editor reports "End must be after start" and
@@ -508,7 +603,7 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
                   // instead of fitting inside it.
                   <div className="w-full min-w-0 space-y-3">
                     {windows.map((window, index) => {
-                      const error = errors[`${day.value}-${index}`];
+                      const error = visibleErrors[`${day.value}-${index}`];
 
                       return (
                         <div key={index}>
@@ -600,8 +695,20 @@ export default function WeeklyHoursEditor({ rules, serviceId, scopeLabel, onSave
             dirty ? "border-primary/20 bg-primary/5" : "border-outline-variant bg-surface/90"
           }`}
         >
+          {/* A bad time is now reported here as well as on the row itself.
+              The row's message says what is wrong with that window; this says
+              how many windows are wrong, next to the button being pressed —
+              which is what a provider with a broken Thursday scrolled past
+              needs, and what "Unsaved changes" was saying instead. */}
           <p className="font-small text-small text-on-surface-variant">
-            {totalWindows === 0 ? (
+            {visibleErrorCount > 0 ? (
+              <span className="flex items-center gap-1.5 text-error">
+                <Icon name="warning" size={16} />
+                {visibleErrorCount === 1
+                  ? "1 time range needs fixing"
+                  : `${visibleErrorCount} time ranges need fixing`}
+              </span>
+            ) : totalWindows === 0 ? (
               <span className="flex items-center gap-1.5 text-error">
                 <Icon name="warning" size={16} />
                 No hours set — clients cannot book anything yet.

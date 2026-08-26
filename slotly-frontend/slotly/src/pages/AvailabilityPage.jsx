@@ -32,6 +32,7 @@ import { useToast } from "../context/ToastContext";
 import WeeklyHoursEditor from "../components/availability/WeeklyHoursEditor";
 import ExceptionsEditor from "../components/availability/ExceptionsEditor";
 import Icon from "../components/ui/Icon";
+import Modal from "../components/ui/Modal";
 import Field, { Input } from "../components/ui/Field";
 import { Alert, ErrorState, PageLoader } from "../components/ui/Feedback";
 import { container, primaryButton, secondaryButton, buttonSm, zoneName } from "../lib/ui";
@@ -45,6 +46,16 @@ export default function AvailabilityPage() {
 
   const [selectedServiceId, setSelectedServiceId] = useState(null);
   const [resetting, setResetting] = useState(false);
+
+  // Whether the reset confirmation is open.
+  //
+  // Reset is not a small action: `DELETE /availability/rules?serviceId=` drops
+  // this service's weekly rules *and* its own exceptions, and there is no undo —
+  // the previous schedule is not kept anywhere. It used to fire on a single
+  // click, which was survivable while the button was tucked into the corner of a
+  // notice; now that it sits in the editor's header where it can actually be
+  // found, a stray click is a real possibility.
+  const [confirmingReset, setConfirmingReset] = useState(false);
 
   // The service list is what tells the tabs which services already have a custom
   // schedule — loaded once, independently of which tab is selected. Non-fatal:
@@ -104,6 +115,7 @@ export default function AvailabilityPage() {
 
   const handleReset = async () => {
     if (!selectedServiceId) return;
+    setConfirmingReset(false);
     setResetting(true);
     try {
       await availabilityApi.resetServiceRules(selectedServiceId);
@@ -218,26 +230,18 @@ export default function AvailabilityPage() {
             </div>
           )}
 
+          {/* Explains which of the two states this service is in. The reset
+              button used to hang off this notice's action slot, which is why the
+              only way back to the default hours was easy to miss — it now lives
+              in the header of the editor it undoes. */}
           {selectedService && (
-            <Alert
-              tone={selectedService.hasCustomAvailability ? "info" : "warn"}
-              action={
-                selectedService.hasCustomAvailability && (
-                  <button
-                    type="button"
-                    onClick={handleReset}
-                    disabled={resetting}
-                    className={`${secondaryButton} ${buttonSm}`}
-                  >
-                    {resetting ? "Resetting…" : "Reset to default"}
-                  </button>
-                )
-              }
-            >
+            <Alert tone={selectedService.hasCustomAvailability ? "info" : "warn"}>
               {selectedService.hasCustomAvailability ? (
                 <>
                   <span className="font-semibold">{selectedService.name}</span> has its own
-                  hours, separate from your default schedule.
+                  hours, separate from your default schedule. Use{" "}
+                  <span className="font-semibold">Reset to default hours</span> below to hand it
+                  back.
                 </>
               ) : (
                 <>
@@ -256,6 +260,11 @@ export default function AvailabilityPage() {
               rules={availability.rules}
               serviceId={selectedServiceId}
               scopeLabel={selectedService?.name}
+              canResetToDefault={Boolean(
+                selectedServiceId && selectedService?.hasCustomAvailability
+              )}
+              onResetToDefault={() => setConfirmingReset(true)}
+              resetting={resetting}
               onSaved={(rules) => {
                 setAvailability((current) => ({
                   ...current,
@@ -352,6 +361,67 @@ export default function AvailabilityPage() {
           </div>
         </div>
       </div>
+
+      {/* Confirming the reset.
+
+          What it discards is spelled out rather than summarised, because the two
+          things it deletes are not the same thing and a provider is likely only
+          thinking of the first: this service's weekly hours, and any date
+          exceptions it holds of its own. Neither is recoverable — nothing keeps a
+          copy of the schedule that was replaced.
+
+          The service's *default*-inherited exceptions are untouched, since those
+          belong to the provider, not to this override. Saying so is what stops
+          the dialog reading as though a reset loses more than it does. */}
+      <Modal
+        open={confirmingReset && Boolean(selectedService)}
+        onClose={() => {
+          if (!resetting) setConfirmingReset(false);
+        }}
+        title="Reset to your default hours?"
+        size="md"
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setConfirmingReset(false)}
+              disabled={resetting}
+              className={`${secondaryButton} ${buttonSm}`}
+            >
+              Keep custom hours
+            </button>
+            <button
+              type="button"
+              onClick={handleReset}
+              disabled={resetting}
+              className={`${primaryButton} ${buttonSm}`}
+            >
+              {resetting ? "Resetting…" : "Reset to default"}
+            </button>
+          </>
+        }
+      >
+        <p className="font-body text-body text-on-surface-variant">
+          <span className="font-semibold text-on-surface">{selectedService?.name}</span> will go
+          back to following your default hours. This deletes:
+        </p>
+
+        <ul className="mt-3 space-y-2 font-small text-small text-on-surface-variant">
+          <li className="flex items-start gap-2">
+            <Icon name="close" size={16} className="mt-0.5 shrink-0 text-error" />
+            <span>the weekly hours you set for this service</span>
+          </li>
+          <li className="flex items-start gap-2">
+            <Icon name="close" size={16} className="mt-0.5 shrink-0 text-error" />
+            <span>any date exceptions belonging to this service</span>
+          </li>
+        </ul>
+
+        <p className="mt-4 font-caption text-caption text-on-surface-variant">
+          Your default hours and their exceptions are not affected, and existing bookings stay
+          where they are. There is no undo — you would need to set the custom hours up again.
+        </p>
+      </Modal>
     </div>
   );
 }
