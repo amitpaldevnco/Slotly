@@ -19,6 +19,17 @@ export function useApiResource(fetcher, options = {}) {
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
 
+  // The machine-readable half of the same failure, kept beside the message.
+  //
+  // A screen sometimes has to treat "the server said no" and "there was no
+  // server" differently, and only the message was being surfaced — so a page
+  // whose fetch failed could not tell a genuine 404 from an unreachable API and
+  // had to pick one story for both. `parseApiError` already separates them
+  // (`NETWORK_ERROR` when there is no response at all); this stops that
+  // distinction being thrown away here. Additive: every existing caller reads
+  // `error` and is unaffected.
+  const [errorCode, setErrorCode] = useState("");
+
   // The request in flight. A slower earlier request must not be able to land
   // after a faster later one and leave the screen showing superseded data.
   const inFlight = useRef(null);
@@ -43,6 +54,7 @@ export function useApiResource(fetcher, options = {}) {
     if (hasLoaded.current && keepPreviousData) setRefreshing(true);
     else setLoading(true);
     setError("");
+    setErrorCode("");
 
     try {
       const result = await fetcherRef.current({ signal: controller.signal });
@@ -57,7 +69,9 @@ export function useApiResource(fetcher, options = {}) {
       // Aborted, not failed. Showing an error for a request the app itself
       // cancelled would be a lie.
       if (isCanceled(err) || controller.signal.aborted) return;
-      setError(parseApiError(err, fallback).message);
+      const parsed = parseApiError(err, fallback);
+      setError(parsed.message);
+      setErrorCode(parsed.code);
     } finally {
       // Only the newest request may clear the flags. An aborted one reaches here
       // after its replacement has already claimed `inFlight`.
@@ -83,7 +97,7 @@ export function useApiResource(fetcher, options = {}) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [enabled, run, ...deps]);
 
-  return { data, setData, loading, refreshing, error, reload: run };
+  return { data, setData, loading, refreshing, error, errorCode, reload: run };
 }
 
 export default useApiResource;

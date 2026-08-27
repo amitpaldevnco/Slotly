@@ -56,7 +56,7 @@ import usePageTitle from "../hooks/usePageTitle";
 const SEARCH_DEBOUNCE_MS = 300;
 
 /** Providers per page. Four fills the two-column grid exactly, as the design draws it. */
-const PAGE_SIZE = 4;
+const PAGE_SIZE = 6;
 
 /**
  * How many matched service names a card lists before summarising the rest.

@@ -77,16 +77,28 @@
  */
 
 /**
- * The smallest vertical space an event may occupy, in minutes of grid space.
+ * How many pixels of grid one hour occupies.
  *
- * `index.css` gives `.rbc-timeslot-group` a 64px floor for a half hour, so the grid
- * runs at 128px an hour and ten minutes is **~21px** — one line of the time label,
- * its 2px of padding and its 1px border, with nothing to spare.
+ * `index.css` sets `.rbc-timeslot-group { min-height: 64px }`, and a timeslot
+ * *group* spans `step * timeslots` minutes — 30 × 2 = **60**, from the Calendar
+ * props in `ProviderCalendar`. So 64px buys an hour, not the half hour an earlier
+ * revision of this comment claimed. The difference matters: the density is half
+ * what the thresholds below were originally sized against, and every figure
+ * derived from it was consequently twice as generous as the grid really is.
+ */
+export const GRID_PX_PER_HOUR = 64;
+
+/**
+ * The smallest vertical space an event may occupy, in minutes of grid space.
  *
  * Raising it makes short events easier to read and widens the window in which two
  * near-but-not-overlapping appointments are split into columns. Ten is the largest
  * value that still leaves a pair ten minutes apart in one column, which is the case
- * this file was written for.
+ * this file was written for — so it stays ten, and the compact threshold below is
+ * what absorbs the corrected density instead. Ten minutes is ~11px at
+ * `GRID_PX_PER_HOUR`, which is why `isCompactEvent` can no longer share this
+ * number: a block that short holds no full line at all, and a great many blocks
+ * far longer than it hold only one.
  *
  * In minutes rather than pixels because minutes are the unit the layout thinks in,
  * and because the conversion below is against the column's own scale rather than an
@@ -96,7 +108,28 @@
 export const MIN_EVENT_MINUTES = 10;
 
 /**
- * Whether an appointment is shorter than the block it will be drawn in.
+ * The height an event block needs before the time and the title can be stacked,
+ * in pixels.
+ *
+ * Measured against the rendered block rather than guessed: the label is one
+ * nowrap line of ~13px, the title's line-height is 16.2px (12px × 1.35), and
+ * `eventStyleGetter` adds 3px of padding and a 1px border on each side. That is
+ * ~36.8px, rounded up to leave a pixel of slack.
+ */
+const TWO_LINE_BLOCK_PX = 38;
+
+/**
+ * Below this many minutes a block cannot stack the time above the title, so it
+ * has to be drawn as a single row instead.
+ *
+ * Derived rather than written down, because the two inputs are exactly the pair
+ * that drifted apart before: a hard-coded threshold sized for one grid density
+ * kept being applied to another.
+ */
+export const COMPACT_BELOW_MINUTES = Math.ceil((TWO_LINE_BLOCK_PX / GRID_PX_PER_HOUR) * 60);
+
+/**
+ * Whether an appointment's block is too short to stack the time above the title.
  *
  * Exported so the calendar can render those blocks differently, and exported
  * from *here* so there is one definition of "short". A renderer with its own
@@ -104,11 +137,24 @@ export const MIN_EVENT_MINUTES = 10;
  * inflated, and the disagreement would show as clipped text on exactly the
  * events that were hardest to notice.
  *
+ * ## Why this is no longer `< MIN_EVENT_MINUTES`
+ *
+ * It used to be, on the reasoning that the only blocks too short for two lines
+ * were the ones the layout had *inflated* to its minimum. At the real
+ * `GRID_PX_PER_HOUR` that is not true, and the gap was plainly visible: a
+ * **30-minute** appointment draws a 32px block, which holds the label and then
+ * has 11px left for a title that wants 16. `.rbc-day-slot .rbc-event` is
+ * `flex-flow: column wrap`, so the title did not simply clip at the bottom — it
+ * wrapped into a second *column*, outside the block's own right edge, and the
+ * block's `overflow: hidden` then removed it completely. Every half-hour
+ * appointment on the week grid rendered as a bare time with no client name at
+ * all, which is the one thing a provider glancing at their week needs to see.
+ *
  * @param {Date} start The appointment's start.
  * @param {Date} end Its end.
  */
 export function isCompactEvent(start, end) {
-  return (end - start) / 60000 < MIN_EVENT_MINUTES;
+  return (end - start) / 60000 < COMPACT_BELOW_MINUTES;
 }
 
 /** Minutes in a day, used only if the events cannot supply a scale themselves. */

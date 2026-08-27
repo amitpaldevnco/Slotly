@@ -30,6 +30,14 @@ const app = express();
 // the caller's. Only the first hop is trusted — Render's own load balancer.
 app.set("trust proxy", 1);
 
+// Express advertises itself in an `X-Powered-By` header on every response. It
+// serves no purpose here and names the framework and, by implication, its
+// version-specific advisories to anyone scanning. The rest of this file is
+// deliberate about what it publishes — the allow-listed CORS origin, the
+// non-browsable static mount, the narrow provider projection — so this belongs
+// with them rather than left at the framework default.
+app.disable("x-powered-by");
+
 // A JSON body limit keeps a hostile client from making the server buffer an
 // arbitrarily large payload. Uploads bypass this — multer handles them, with its
 // own file-size cap.

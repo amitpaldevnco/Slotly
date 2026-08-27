@@ -39,7 +39,7 @@ import ProviderReviews from "../components/reviews/ProviderReviews";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import BackLink from "../components/ui/BackLink";
-import EmptyState, { PageLoader } from "../components/ui/Feedback";
+import EmptyState, { ErrorState, PageLoader } from "../components/ui/Feedback";
 import { Select } from "../components/ui/Field";
 import { container, formatPrice, formatDuration, zoneName } from "../lib/ui";
 import usePageTitle from "../hooks/usePageTitle";
@@ -51,7 +51,7 @@ export default function ProviderPublicProfilePage() {
   const [detailsService, setDetailsService] = useState(null);
   const [selectedServiceId, setSelectedServiceId] = useState(null);
 
-  const { data, loading, error } = useApiResource(
+  const { data, loading, error, errorCode, reload } = useApiResource(
     async ({ signal }) => {
       const [provider, services, availability] = await Promise.all([
         providersApi.get(providerId, { signal }),
@@ -98,8 +98,27 @@ export default function ProviderPublicProfilePage() {
 
   if (loading) return <PageLoader label="Loading provider…" />;
 
-  // Any failure lands here, not only a 404. A provider page that cannot be
-  // fetched is, from the visitor's point of view, a page that is not there.
+  // An unreachable API is not a missing provider.
+  //
+  // Every failure used to land in the "not found" branch below, on the reasoning
+  // that a page which cannot be fetched is, to the visitor, a page that is not
+  // there. That holds for a 404 and for a 500, and it is plainly false when the
+  // request never arrived: the API host sleeps when idle and takes the best part
+  // of a minute to wake, and during that window a provider who exists was being
+  // reported as deleted — with "Browse providers" as the only way on, which was
+  // about to fail for exactly the same reason. So a network failure says so and
+  // offers a retry, which is the action that actually resolves it, and matches
+  // what the directory page already does.
+  if (errorCode === "NETWORK_ERROR") {
+    return (
+      <div className={`${container} py-8 md:py-12`}>
+        <ErrorState message={error} onRetry={reload} />
+      </div>
+    );
+  }
+
+  // Anything else — a real 404, or a server that answered with an error — reads
+  // as a page that is not there.
   if (error || !provider) {
     return (
       <div className={`${container} py-8 md:py-12`}>

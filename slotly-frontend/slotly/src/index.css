@@ -677,21 +677,24 @@
   overflow: hidden;
 }
 
-/* An appointment too short to fill its own block.
+/* An appointment whose block is too short to stack the time above the title.
  *
- * `dayEventLayout` gives any appointment under `MIN_EVENT_MINUTES` a block of
- * that minimum, which is about 21px. That is one line of text and no more, and
- * the default event body wants considerably more than one line:
+ * `isCompactEvent` decides which those are, against `COMPACT_BELOW_MINUTES` —
+ * derived from the grid's real 64px-per-hour density, so it covers every block
+ * under about 38px rather than only the ones `dayEventLayout` inflated to its
+ * `MIN_EVENT_MINUTES` floor. At this density a **half-hour** appointment is 32px,
+ * and the default event body wants considerably more than that:
  *
  *   - `.rbc-day-slot .rbc-event` is `flex-flow: column wrap`, so the time and the
  *     title stack. Two lines do not fit in one line's worth of height.
  *   - `.rbc-event-content` above is a 3-line clamp, so the title element asks for
- *     roughly 48px inside a 21px box.
+ *     roughly 48px inside a 32px box.
  *
- * Neither overflowed visibly, because the block is `overflow: hidden` -- they
- * were *clipped*, and what showed was the middle band of a line of text with its
- * ascenders and descenders cut away. Legible enough to look like a rendering
- * fault, not legible enough to read.
+ * Neither overflowed visibly, because the block is `overflow: hidden`. What the
+ * `wrap` did was worse than clipping the bottom of the text: it moved the title
+ * into a second *column*, past the block's own right edge, where `overflow:
+ * hidden` erased it outright. A half-hour appointment drew its time and no client
+ * name at all.
  *
  * So a compact block is one row: the time, then the title, both on a single line
  * that is ellipsised rather than clipped. Nothing shrinks -- the type is the same
@@ -701,11 +704,39 @@
   flex-flow: row nowrap;
   align-items: center;
   gap: 0.375rem;
+  /* Makes the block itself the query container for the rule further down. RBC
+   * sets this element's width inline, so containing its inline size takes nothing
+   * away — the width was never coming from its contents. */
+  container-type: inline-size;
 }
 
 .rbc-day-slot .rbc-event--compact .rbc-event-label {
   flex: none;
   padding-right: 0;
+}
+
+/* On a week column there is not room for both, and the time is the one to drop.
+ *
+ * A day column in week view is about 111px wide, 99px of it inside the padding,
+ * and "11:05 AM – 11:35 AM" needs 101px. The label is `flex: none`, so it took
+ * all of that and the title — `flex: 1 1 0` — was handed **zero** width and
+ * vanished. Which is the same disappearance the compact variant exists to fix,
+ * just arrived at one step later, and it applied to every half-hour appointment
+ * on the grid.
+ *
+ * So below the width where both fit, the time gives way to the title. That is the
+ * right way round: the block's vertical position against the time gutter already
+ * says when the appointment is, and RBC's `title` attribute — which is also the
+ * block's accessible name — still carries the full range for anyone hovering or
+ * using a screen reader. The client's name is the thing that appears nowhere else
+ * on the grid, so it is the thing that has to survive.
+ *
+ * 180px is comfortably above the ~111px week column and comfortably below the day
+ * view's single column, where both still fit and both are still shown. */
+@container (max-width: 180px) {
+  .rbc-day-slot .rbc-event--compact .rbc-event-label {
+    display: none;
+  }
 }
 
 /* `display: block` is what switches the clamp off: `-webkit-line-clamp` only

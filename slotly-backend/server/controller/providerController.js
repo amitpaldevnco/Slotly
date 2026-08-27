@@ -44,6 +44,22 @@ import { rawTypesForCategorySearch } from "../utils/categories.js";
  * findable before has become unfindable.
  */
 
+/**
+ * Neutralises the characters ILIKE treats as wildcards inside a search term.
+ *
+ * The pattern is always built as `%term%` here, which handles "contains" — but
+ * it does nothing about a `%` or `_` the user typed themselves. Left alone,
+ * searching for "%" produced `%%%` and returned the whole directory, and "100%"
+ * would have matched "1000 and anything". The backslash is ILIKE's default
+ * escape character; it is escaped first so an inserted one is never re-escaped.
+ *
+ * @param {string} term Raw user input, already trimmed.
+ * @returns {string} The same text with `\`, `%` and `_` escaped.
+ */
+function escapeLikeTerm(term) {
+  return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
+}
+
 export const listProviders = async (req, res) => {
   try {
     const { search, businessType } = req.query;
@@ -77,8 +93,13 @@ export const listProviders = async (req, res) => {
     if (term) {
       // The wildcards are added here rather than being taken from the query
       // string, so a search for "100%" is matched literally instead of the %
-      // becoming a wildcard.
-      params.push(`%${term}%`);
+      // becoming a wildcard. Adding the surrounding `%` is only half of that:
+      // ILIKE also reads `%` and `_` *inside* the term as wildcards, so a
+      // one-character search for "%" expanded to `%%%` and matched every
+      // provider in the directory — the opposite of literal. `escapeLikeTerm`
+      // closes that, and the backslash it inserts is ILIKE's default escape
+      // character, so no ESCAPE clause is needed.
+      params.push(`%${escapeLikeTerm(term)}%`);
       patternParam = params.length;
 
       const clauses = [
