@@ -91,9 +91,25 @@ export function testEmail(label = "user") {
  *   to match the default `Europe/London` zone — a fixture whose currency and
  *   timezone disagreed would be a confusing thing to read a price assertion out
  *   of.
+ * @param {string} [args.country] ISO 3166-1 alpha-2. Left out, `complete-profile`
+ *   infers it from the timezone, which is what the fixtures relied on before this
+ *   parameter existed — so the defaults are GB for a provider and US for a
+ *   client, and a `domestic` service between them is genuinely cross-border. Set
+ *   it explicitly when a test needs the two to match, or needs one to be unknown.
+ * @param {string} [args.businessAddress] Providers only. Required by the API only
+ *   at the point an `in_person` service is published, so it defaults to a real
+ *   address: most fixtures create in-person services without caring, and making
+ *   them all state one would be noise.
  * @returns {Promise<{agent: object, id: number, email: string, timezone: string}>}
  */
-export async function createUser({ role, timezone, label = role, currency = "GBP" }) {
+export async function createUser({
+  role,
+  timezone,
+  label = role,
+  currency = "GBP",
+  country,
+  businessAddress = "1 Test Street, Testville",
+}) {
   const zone = timezone || (role === "provider" ? "Europe/London" : "America/New_York");
   const agent = client();
   const email = testEmail(label);
@@ -110,8 +126,14 @@ export async function createUser({ role, timezone, label = role, currency = "GBP
     role,
     phoneNumber: "+441234567890",
     timezone: zone,
+    ...(country !== undefined ? { country } : {}),
     ...(role === "provider"
-      ? { businessName: `Test Biz ${runId}${counter}`, businessType: "Physio", currency }
+      ? {
+          businessName: `Test Biz ${runId}${counter}`,
+          businessType: "Physio",
+          currency,
+          businessAddress,
+        }
       : {}),
   });
 

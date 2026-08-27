@@ -13,8 +13,9 @@ import {
   timezoneSelectMenuProps,
 } from "../lib/timezones";
 import Page from "../components/ui/Page";
-import Field, { Input, Select, CardRadioGroup } from "../components/ui/Field";
+import Field, { Input, Select, Textarea, CardRadioGroup } from "../components/ui/Field";
 import { CURRENCIES, currencyLabel, currencyForTimezone } from "../lib/currencies";
+import { buildCountryOptions, countryFromTimezone } from "../lib/countries";
 import { CATEGORIES } from "../lib/categories";
 import { checkBusinessName, checkPhone, collectErrors } from "../lib/validation";
 import usePageTitle from "../hooks/usePageTitle";
@@ -45,6 +46,21 @@ export default function CompleteProfilePage() {
   );
   const [currencyTouched, setCurrencyTouched] = useState(false);
 
+  // Country follows the same pattern as currency, and for the same reason: it is
+  // inferred from the timezone the browser reported, re-inferred while the
+  // person is still changing the timezone, and left alone the moment they answer
+  // for themselves.
+  //
+  // It is asked of **both** roles. A client's country is not decoration — a
+  // service marked Domestic is bookable only when the two countries match, so a
+  // client without one cannot be told whether they are eligible.
+  const [country, setCountry] = useState(() =>
+    countryFromTimezone(normalizeTimezone(Intl.DateTimeFormat().resolvedOptions().timeZone))
+  );
+  const [countryTouched, setCountryTouched] = useState(false);
+  const [businessAddress, setBusinessAddress] = useState("");
+  const countryOptions = useMemo(() => buildCountryOptions(), []);
+
   const [errors, setErrors] = useState({});
   const [loading, setLoading] = useState(false);
   const [formError, setFormError] = useState("");
@@ -74,8 +90,19 @@ export default function CompleteProfilePage() {
         role,
         phoneNumber: phoneNumber.trim(),
         timezone: normalizeTimezone(typeof timezone === "string" ? timezone : timezone.value),
+        // "" rather than omitted when nothing could be inferred — UTC belongs to
+        // no country, and the server reads an empty value as "not stated" and
+        // leaves the column null, which the domestic rule treats as unknown and
+        // allows through. Sending nothing would make the server re-infer from the
+        // timezone and quietly disagree with the blank control on screen.
+        country: country || "",
         ...(role === "provider"
-          ? { businessName: businessName.trim(), businessType, currency }
+          ? {
+              businessName: businessName.trim(),
+              businessType,
+              currency,
+              businessAddress: businessAddress.trim(),
+            }
           : {}),
       });
 
@@ -166,9 +193,12 @@ export default function CompleteProfilePage() {
                   // Moving the timezone usually means moving the currency too, so
                   // the guess follows along — until the provider has answered for
                   // themselves, at which point their choice stands.
+                  const zone = typeof next === "string" ? next : next?.value;
                   if (!currencyTouched) {
-                    const zone = typeof next === "string" ? next : next?.value;
                     setCurrency(currencyForTimezone(normalizeTimezone(zone)));
+                  }
+                  if (!countryTouched) {
+                    setCountry(countryFromTimezone(normalizeTimezone(zone)));
                   }
                 }}
                 labelStyle="original"
@@ -177,6 +207,39 @@ export default function CompleteProfilePage() {
                 classNames={timezoneSelectClassNames}
                 {...timezoneSelectMenuProps}
               />
+            </Field>
+
+            {/* Directly under the timezone, because it is answering the same
+                question from the other side and is pre-filled from it. Asked of
+                clients as well as providers: a Domestic service compares the
+                two countries, so a client without one cannot be told whether
+                they may book. */}
+            <Field
+              id="country"
+              label="Your country"
+              optional
+              error={errors.country}
+              hint={
+                isProvider
+                  ? "Used for services you mark Domestic, and shown on your public page."
+                  : "Lets Slotly tell you which providers offer their services where you are."
+              }
+            >
+              <Select
+                id="country"
+                value={country ?? ""}
+                onChange={(e) => {
+                  setCountryTouched(true);
+                  setCountry(e.target.value);
+                }}
+              >
+                <option value="">Prefer not to say</option>
+                {countryOptions.map((option) => (
+                  <option key={option.code} value={option.code}>
+                    {option.name}
+                  </option>
+                ))}
+              </Select>
             </Field>
 
             {isProvider && (
@@ -231,6 +294,29 @@ export default function CompleteProfilePage() {
                       </option>
                     ))}
                   </Select>
+                </Field>
+
+                {/* Optional here, on purpose.
+                    A provider who will only ever offer online sessions has no
+                    premises, and this screen — reached before they have created a
+                    single service — is the wrong place to discover that. Slotly
+                    asks for it at the point it becomes load-bearing: publishing an
+                    In-Person service, where the service form says so and links
+                    back to the profile. */}
+                <Field
+                  id="businessAddress"
+                  label="Business address"
+                  optional
+                  error={errors.businessAddress}
+                  hint="Where in-person appointments happen. Leave it blank if you only work online — you can add it later."
+                >
+                  <Textarea
+                    id="businessAddress"
+                    rows={3}
+                    placeholder={"e.g. Unit 4, 118 Great Portland Street\nLondon W1W 6PP"}
+                    value={businessAddress}
+                    onChange={(e) => setBusinessAddress(e.target.value)}
+                  />
                 </Field>
               </fieldset>
             )}

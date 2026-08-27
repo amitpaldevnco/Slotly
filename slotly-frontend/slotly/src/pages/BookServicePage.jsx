@@ -98,6 +98,7 @@ import {
   zoneName,
 } from "../lib/ui";
 import usePageTitle from "../hooks/usePageTitle";
+import { countryLabel, deliveryIcon, deliveryLabel, isInPerson } from "../lib/serviceScope";
 
 /** Longest a note may be, matching the API's own validation. */
 const MAX_NOTE = 500;
@@ -465,6 +466,33 @@ export default function BookServicePage() {
   }
 
   const service = data?.service;
+  // The server's verdict on whether this client may book this service at all.
+  // `eligibility` is always on the payload — `allowed: true` in the ordinary
+  // case — so this reads one field rather than testing for its presence.
+  const ineligible = data?.eligibility?.allowed === false;
+
+  // The refusal, composed here rather than taken from the server's prose.
+  //
+  // The server names the countries by code — it has to, because it cannot know
+  // the reader's language and a localised country name is a rendering concern,
+  // the same argument that keeps currency *symbols* out of API responses. So the
+  // payload carries the two codes and this turns them into names, which is also
+  // what the provider's page does; without it the same refusal read "clients in
+  // GB" on one screen and "clients in United Kingdom" on the other.
+  //
+  // Falls back to the server's sentence, then to a generic one, so a payload
+  // from an older server still explains itself.
+  const ineligibleReason = (() => {
+    const providerCountry = countryLabel(data?.eligibility?.providerCountry);
+    const clientCountry = countryLabel(data?.eligibility?.clientCountry);
+    if (providerCountry && clientCountry) {
+      return `Only available to clients in ${providerCountry}. Your account is set to ${clientCountry}.`;
+    }
+    return (
+      data?.eligibility?.reason ??
+      "This service is only offered to clients in the provider's own country."
+    );
+  })();
   const differentZones =
     data?.clientTimezone && data?.providerTimezone && data.clientTimezone !== data.providerTimezone;
 
@@ -558,6 +586,24 @@ export default function BookServicePage() {
                     .join(" · ")}
                 </DetailRow>
               )}
+
+              <DetailRow icon={deliveryIcon(service?.deliveryType)} term="Delivery">
+                {deliveryLabel(service?.deliveryType)}
+              </DetailRow>
+
+              {/* The address, in the panel the client reads before choosing a
+                  time. An in-person appointment is a journey and this is the
+                  screen where it is being planned; leaving the address to the
+                  confirmation dialog would mean the client picks a time before
+                  finding out whether they can get there.
+
+                  whitespace-pre-line because the address is one free-text field
+                  and providers write it as they would on an envelope. */}
+              {isInPerson(service) && service?.location?.address && (
+                <DetailRow icon="place" term="Where">
+                  <span className="whitespace-pre-line">{service.location.address}</span>
+                </DetailRow>
+              )}
             </dl>
           </div>
 
@@ -578,6 +624,39 @@ export default function BookServicePage() {
             {differentZones && <> · the provider is in {zoneName(data.providerTimezone)}</>}
           </p>
 
+          {/* The service is not offered where this client is.
+              Shown *instead of* the picker rather than above it, because the
+              server has already emptied the slot list for exactly this case —
+              `getAvailableSlots` returns `days: []` when eligibility fails — so
+              leaving the calendar on screen would present a month of greyed-out
+              dates and let the client conclude the provider is simply busy.
+              Naming the reason and offering the way back is the honest version.
+
+              `eligibility` is always present on the payload with
+              `allowed: true` in the ordinary case, so this is one condition
+              rather than a test for the field's existence. */}
+          {ineligible ? (
+            <div className="mt-6 rounded-lg border border-outline-variant bg-surface p-6">
+              <EmptyState
+                icon="public_off"
+                title="Not available in your country"
+                description={ineligibleReason}
+                actionLabel="See their other services"
+                actionTo={`/providers/${providerId}`}
+              />
+              {/* The likeliest cause is a country inferred from a timezone
+                  rather than stated, so the fix is named next to the refusal
+                  instead of leaving the client to guess that a profile field
+                  decided this. */}
+              <p className="mt-4 text-center font-caption text-caption text-on-surface-variant">
+                If your country is wrong, you can change it under{" "}
+                <Link to="/profile" className="font-semibold text-primary underline">
+                  Profile
+                </Link>
+                .
+              </p>
+            </div>
+          ) : (
           <div className="mt-6 grid gap-6 md:grid-cols-[minmax(0,1fr)_240px]">
             {/* Calendar */}
             <div className="rounded-lg border border-outline-variant bg-surface-container-lowest p-5">
@@ -812,6 +891,7 @@ export default function BookServicePage() {
               </div>
             </div>
           </div>
+          )}
         </div>
       </div>
 

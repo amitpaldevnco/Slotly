@@ -512,6 +512,36 @@ describe("the public surface", () => {
     expect(Array.isArray(response.body.data.providers)).toBe(true);
   });
 
+  it("publishes the provider's own email and phone on their profile, to anyone", async () => {
+    // Asserted rather than assumed, because it reverses this controller's
+    // original position — it used to withhold both, and the file header said so.
+    // The reversal is deliberate: Slotly's messaging is per-booking, so a client
+    // with a question *before* booking has nowhere to ask it. Without a test the
+    // next reader of that header could reasonably "fix" it back and quietly
+    // remove the only pre-booking contact route.
+    //
+    // A signed-out `guest()` on purpose: the endpoint is unauthenticated, and
+    // that exposure is the part worth pinning. If this ever needs to become
+    // sign-in-only, this test is the thing that should fail first.
+    const response = await guest().get(`/api/providers/${provider.id}`);
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.email).toBe(provider.email);
+    expect(response.body.data.phoneNumber).toBeTruthy();
+  });
+
+  it("still keeps contact details off the directory listing", async () => {
+    // The profile publishes them; the directory has no room to show them and no
+    // reason to carry them. Kept apart so widening one surface does not widen
+    // the other by accident.
+    const response = await guest().get("/api/providers?limit=100");
+    const card = response.body.data.providers.find((p) => p.id === provider.id);
+
+    expect(card).toBeTruthy();
+    expect(card.email).toBeUndefined();
+    expect(card.phoneNumber).toBeUndefined();
+  });
+
   it("serves a provider page, their services and their slots without a session", async () => {
     const range = "from=2099-01-01&to=2099-01-07";
 

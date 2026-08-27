@@ -38,6 +38,7 @@ import { DateTime } from "luxon";
 import pgPool, { query } from "../config/dbConfig.js";
 import { initSchema } from "../config/schema.js";
 import { computeBookingSpan } from "../services/slotEngine.js";
+import { evaluateBookingScope } from "../services/bookingScope.js";
 
 /** The one password every demo account shares. Stated in the README. */
 const DEMO_PASSWORD = "SlotlyDemo123!";
@@ -59,6 +60,11 @@ const PROVIDERS = [
     name: "Priya Raman",
     timezone: "Europe/London",
     currency: "GBP",
+    // A clinic, so she has a country and a street address, and everything she
+    // offers happens at it. The counterpart to Arjun below, who has neither.
+    country: "GB",
+    businessAddress:
+      "Unit 4, 118 Great Portland Street\nLondon W1W 6PP\nUnited Kingdom",
     businessName: "Raman Physiotherapy",
     businessType: "Physiotherapy",
     qualifications: "BSc (Hons) Physiotherapy, MCSP — 11 years in practice",
@@ -108,6 +114,13 @@ const PROVIDERS = [
       },
       {
         name: "Sports Injury Rehab",
+        // The one **domestic** service on Priya's list, so the restriction is
+        // visible in the demo without standing in the way of it: the README's
+        // one-minute tour books Initial Assessment, which stays open to anyone.
+        // Casey is in the US, so this service refuses her with a reason naming
+        // both countries — which is the whole feature in one screen.
+        deliveryType: "in_person",
+        bookingScope: "domestic",
         description:
           "Extended rehabilitation for a specific injury, with loading work and " +
           "return-to-sport testing. Ninety minutes, generally fortnightly.",
@@ -125,6 +138,12 @@ const PROVIDERS = [
     name: "Arjun Mehta",
     timezone: "Asia/Kolkata",
     currency: "INR",
+    // A country but deliberately **no address**: he teaches online only, so
+    // there is no premises to name. That is the case the schema's nullable
+    // `business_address` exists for, and seeding it demonstrates that a provider
+    // can be fully set up without one — the requirement attaches to publishing
+    // an In-Person service, not to being a provider.
+    country: "IN",
     businessName: "Mehta Tutoring",
     businessType: "Tutoring",
     qualifications: "MSc Mathematics, IIT Bombay — 8 years teaching",
@@ -147,6 +166,10 @@ const PROVIDERS = [
     services: [
       {
         name: "Maths Tutoring (1 hour)",
+        // Online and open to anyone — the combination Arjun's bio describes, and
+        // the one that shows an address is genuinely not required.
+        deliveryType: "virtual",
+        bookingScope: "international",
         description:
           "One hour, one-to-one, online. Bring the problems you are stuck on and " +
           "we will work through them together.",
@@ -159,6 +182,13 @@ const PROVIDERS = [
       },
       {
         name: "Physics Problem Clinic",
+        // Virtual *and* domestic. The pair exists to show the two axes are
+        // independent: being online does not make a service international, and a
+        // tutor registered to teach in one country is a real reason for it not
+        // to be. Deriving one setting from the other would make this
+        // unrepresentable.
+        deliveryType: "virtual",
+        bookingScope: "domestic",
         description:
           "A focused 45-minute session on one topic — mechanics, waves, " +
           "electromagnetism — for anyone preparing for an exam.",
@@ -177,6 +207,11 @@ const CLIENT = {
   email: "casey.client@slotly.demo",
   name: "Casey Morgan",
   timezone: "America/New_York",
+  // A third country as well as a third timezone. Without it the domestic
+  // services above would be unrestricted for her — `evaluateBookingScope` allows
+  // an unknown country through — and the restriction would be invisible in the
+  // demo rather than merely unenforced.
+  country: "US",
   phoneNumber: "+1 555 0138",
   avatarUrl: "https://i.pravatar.cc/400?img=32",
 };
@@ -211,8 +246,8 @@ async function insertUser(person, passwordHash) {
     `INSERT INTO users
        (email, name, password_hash, role, timezone, phone_number,
         bio, business_name, business_type, qualifications, avatar_url,
-        cancellation_cutoff_hours, currency)
-     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+        cancellation_cutoff_hours, currency, country, business_address)
+     VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
      RETURNING id`,
     [
       person.email,
@@ -229,6 +264,12 @@ async function insertUser(person, passwordHash) {
       person.cancellationCutoffHours ?? 12,
       // Clients keep the column default; only a provider's currency is meaningful.
       person.currency ?? "INR",
+      // Set explicitly rather than left to the schema's timezone backfill, so the
+      // demo does not depend on that inference having run — and so Casey has a
+      // country at all, which is what makes the domestic services below visibly
+      // out of her reach.
+      person.country ?? null,
+      person.businessAddress ?? null,
     ]
   );
   return rows[0].id;
@@ -289,9 +330,11 @@ async function main() {
       const { rows } = await query(
         `INSERT INTO services
            (provider_id, service_name, description, price, duration,
-            buffer_before, buffer_after, slot_interval, cover_image)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-         RETURNING id, duration, buffer_before, buffer_after`,
+            buffer_before, buffer_after, slot_interval, cover_image,
+            delivery_type, booking_scope)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,
+                 COALESCE($10, 'in_person'), COALESCE($11, 'international'))
+         RETURNING id, duration, buffer_before, buffer_after, delivery_type, booking_scope`,
         [
           providerId,
           service.name,
@@ -302,6 +345,12 @@ async function main() {
           service.bufferAfter,
           service.slotInterval,
           service.coverImage,
+          // Left null where the fixture does not state one, so the row lands on
+          // the schema's default. That is deliberate coverage: most of the seeded
+          // services exercise the defaults, which is what every service created
+          // before this feature existed is now sitting on.
+          service.deliveryType ?? null,
+          service.bookingScope ?? null,
         ]
       );
       createdServices.push({ ...rows[0], providerId, provider, name: service.name, price: service.price });
@@ -344,7 +393,24 @@ async function main() {
   // so the exclusion constraint checks them exactly as it would a real booking.
   let bookingCount = 0;
 
-  for (const service of createdServices.slice(0, 4)) {
+  // Filtered through the app's own rule rather than taken in order.
+  //
+  // Two of the seeded services are domestic and Casey is in the US, so a naive
+  // `slice(0, 4)` would insert bookings the API itself would refuse — seed data
+  // that contradicts the running code, on the demo provider's own calendar. The
+  // rest of this loop is careful to go through `computeBookingSpan` so the
+  // exclusion constraint judges these exactly as it would a real booking; this
+  // is the same principle applied to the other gate a real booking must clear.
+  const bookableForClient = createdServices.filter(
+    (service) =>
+      evaluateBookingScope({
+        service,
+        clientCountry: CLIENT.country,
+        providerCountry: service.provider.country,
+      }).allowed
+  );
+
+  for (const service of bookableForClient.slice(0, 4)) {
     const { provider, providerId } = service;
     const zone = provider.timezone;
     const firstRule = provider.rules[0];

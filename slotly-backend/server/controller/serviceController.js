@@ -25,6 +25,12 @@ import {
 import { validateUploadedImage, discardUpload } from "../utils/fileValidation.js";
 import { storeImage, deleteImage } from "../services/imageStorage.js";
 import { ACTIVE_STATUSES } from "../services/bookingRules.js";
+import {
+  normaliseDeliveryType,
+  normaliseBookingScope,
+  checkProviderLocation,
+} from "../services/bookingScope.js";
+import { normaliseCountry } from "../utils/geography.js";
 
 /** Longest appointment the app accepts, in minutes. A day is plenty. */
 const MAX_DURATION_MINUTES = 1440;
@@ -70,6 +76,29 @@ export function serialiseService(row, { includeStats = false } = {}) {
     coverImage: row.cover_image,
     isActive: row.is_active,
     hasCustomAvailability: row.has_custom_availability,
+
+    // Where it happens and who may book it. Both columns are NOT NULL, so the
+    // fallbacks below cover only a row that reached here without them being
+    // selected — and they fall back to the column defaults rather than to null,
+    // so a component holding a service never has to render "unknown".
+    deliveryType: row.delivery_type ?? "in_person",
+    bookingScope: row.booking_scope ?? "international",
+
+    // The provider's location, carried on the service for the same reason
+    // `currency` is: it lives on the provider, arrives here by join, and is
+    // present so anything holding a service can show a client where to go
+    // without also having to hold the provider. Null for a virtual service even
+    // when the provider has an address — an online appointment does not happen
+    // at their clinic, and printing the clinic's address beside it would be
+    // telling the client to travel somewhere they should not go.
+    location:
+      (row.delivery_type ?? "in_person") === "in_person"
+        ? {
+            address: row.provider_address ?? null,
+            country: normaliseCountry(row.provider_country) ?? null,
+          }
+        : null,
+
     createdAt: row.created_at,
   };
 
@@ -203,7 +232,140 @@ function validateServiceFields(body, { partial }) {
     }
   }
 
+  // Delivery type and booking scope.
+  //
+  // Absent is not invalid, even on a create: both columns are NOT NULL with a
+  // default, so leaving them out means "the default", which is what every client
+  // written before this feature existed does. An empty string is treated the
+  // same way, because that is what an unselected `<select>` submits in a
+  // multipart form and refusing it would fail a form nobody filled in wrongly.
+  //
+  // A *present* value has to be one of the two, though. Accepting an unknown
+  // string would either be rejected by the CHECK constraint as a 500 or — worse,
+  // if the constraint were ever relaxed — leave a service in a state
+  // `evaluateBookingScope` reads as unrestricted.
+  const deliveryType = field(body, "deliveryType", "delivery_type");
+  if (deliveryType !== undefined && deliveryType !== "" && deliveryType !== null) {
+    const canonical = normaliseDeliveryType(deliveryType);
+    if (!canonical) {
+      errors.push({
+        field: "deliveryType",
+        message: "Delivery must be either In-Person or Virtual",
+      });
+    } else {
+      values.delivery_type = canonical;
+    }
+  }
+
+  const bookingScope = field(body, "bookingScope", "booking_scope");
+  if (bookingScope !== undefined && bookingScope !== "" && bookingScope !== null) {
+    const canonical = normaliseBookingScope(bookingScope);
+    if (!canonical) {
+      errors.push({
+        field: "bookingScope",
+        message: "Booking scope must be either Domestic or International",
+      });
+    } else {
+      values.booking_scope = canonical;
+    }
+  }
+
   return { errors, values };
+}
+
+/**
+ * The provider-derived columns `serialiseService` reads, as scalar subqueries.
+ *
+ * Three of the fields a serialised service carries — `currency` and the two
+ * halves of `location` — live on the *provider*, so every query feeding
+ * `serialiseService` has to fetch them. The write paths need them in a
+ * `RETURNING` clause, which cannot join, so subqueries are the only form
+ * available there; this extends the pattern the currency lookup already
+ * established rather than inventing a second one beside it.
+ *
+ * Written once so a new query cannot quietly omit one and hand back a service
+ * whose in-person address is silently null — which reads as a provider who never
+ * set one rather than as a query that forgot to ask. The multi-row list queries
+ * already join `users owner` and select these from the join instead; three
+ * correlated subqueries per row would be the wrong shape there.
+ *
+ * @param {string} ref How the `services` table is named in the surrounding
+ *   statement — `"services"` in a RETURNING, an alias otherwise.
+ */
+function providerColumnsFor(ref) {
+  return `
+    (SELECT u.currency FROM users u WHERE u.id = ${ref}.provider_id) AS currency,
+    (SELECT u.business_address FROM users u WHERE u.id = ${ref}.provider_id) AS provider_address,
+    (SELECT u.country FROM users u WHERE u.id = ${ref}.provider_id) AS provider_country
+  `;
+}
+
+/**
+ * Refuses a service whose location requirements the provider has not met yet.
+ *
+ * ## Why this is not a database constraint
+ *
+ * "`business_address` must not be null when some *other* table's row says
+ * `in_person`" is not expressible as a CHECK — a CHECK sees one row of one table
+ * — and it is not a foreign key. So it lives here, which the schema's own header
+ * anticipates: the database keeps the guarantees it can keep alone, and this is
+ * not one of them.
+ *
+ * ## Why it gates publishing rather than every edit
+ *
+ * Checked only when the request actually states a delivery type or scope, which
+ * on a create is always and on an update is only when the provider touched those
+ * controls. A provider correcting a typo in a description on a service that
+ * predates this feature is not asked for an address they have never been asked
+ * for before — that would be a new requirement retroactively blocking an edit
+ * that has nothing to do with it.
+ *
+ * The requirement still bites where it matters: the moment a provider chooses
+ * In-Person, or saves a form that carries that choice, they are told what is
+ * missing and where to fix it.
+ *
+ * @param {object} args
+ * @param {object} args.values Validated column values from `validateServiceFields`.
+ * @param {object} args.existing The current row on an update; `{}` on a create.
+ * @param {{country: string|null, business_address: string|null}} args.provider
+ * @returns {Array<{field: string, message: string}>} Field errors, or empty.
+ */
+function locationErrors({ values, existing = {}, provider }) {
+  const statedDelivery = values.delivery_type !== undefined;
+  const statedScope = values.booking_scope !== undefined;
+  if (!statedDelivery && !statedScope) return [];
+
+  // The value the row will *hold* after this write, not the one in the request:
+  // a provider switching scope to domestic on a service that is already
+  // in-person still needs the address the in-person setting requires.
+  const deliveryType = values.delivery_type ?? existing.delivery_type ?? "in_person";
+  const bookingScope = values.booking_scope ?? existing.booking_scope ?? "international";
+
+  const { ok, missing } = checkProviderLocation({ deliveryType, bookingScope, provider });
+  if (ok) return [];
+
+  const errors = [];
+  if (missing.includes("address")) {
+    errors.push({
+      field: "deliveryType",
+      // Names both ways out. Adding the address is the intended fix, but a
+      // provider who genuinely has no premises should not be stuck in a form
+      // demanding one — Virtual is a real answer, not a workaround.
+      message:
+        "An In-Person service needs your business address. Add it under Profile, " +
+        "or set this service to Virtual.",
+    });
+  }
+  if (missing.includes("country")) {
+    errors.push({
+      field: "bookingScope",
+      message:
+        "A Domestic service needs your country, so Slotly knows which clients " +
+        "are local. Set it under Profile, or make this service International.",
+    });
+  }
+
+  return errors;
 }
 
 /**
@@ -265,6 +427,14 @@ export const createService = async (req, res) => {
     const { errors, values } = validateServiceFields(req.body, { partial: false });
     errors.push(...rejectedCoverImageErrors(req));
 
+    // The provider's own location, read before anything is stored so a service
+    // that cannot legally be published never gets as far as writing an image.
+    const owner = await query(
+      "SELECT country, business_address FROM users WHERE id = $1",
+      [req.user.userId]
+    );
+    errors.push(...locationErrors({ values, provider: owner.rows[0] ?? {} }));
+
     if (errors.length > 0) {
       await discardUpload(req.file);
       return validationErrorResponse(res, "Please fix the errors below", errors);
@@ -284,9 +454,11 @@ export const createService = async (req, res) => {
     const inserted = await query(
       `INSERT INTO services
          (provider_id, service_name, description, price, duration,
-          buffer_before, buffer_after, slot_interval, cover_image)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
-       RETURNING *, (SELECT u.currency FROM users u WHERE u.id = services.provider_id) AS currency`,
+          buffer_before, buffer_after, slot_interval, cover_image,
+          delivery_type, booking_scope)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
+               COALESCE($10, 'in_person'), COALESCE($11, 'international'))
+       RETURNING *, ${providerColumnsFor("services")}`,
       [
         req.user.userId,
         values.service_name,
@@ -297,6 +469,11 @@ export const createService = async (req, res) => {
         values.buffer_after ?? 0,
         values.slot_interval ?? 30,
         coverImage,
+        // NULL rather than the literal default, so COALESCE leaves the column on
+        // whatever the schema says — one definition of the default instead of a
+        // copy here that can drift from it.
+        values.delivery_type ?? null,
+        values.booking_scope ?? null,
       ]
     );
 
@@ -346,6 +523,18 @@ export const updateService = async (req, res) => {
 
     const { errors, values } = validateServiceFields(req.body, { partial: true });
     errors.push(...rejectedCoverImageErrors(req));
+
+    // Judged against what the row will hold *after* this write, so switching an
+    // existing service to In-Person is caught even though the address is not a
+    // field on this form. `existing` is passed so an untouched delivery type
+    // still counts — see `locationErrors` for why an edit that states neither is
+    // exempt entirely.
+    const owner = await query(
+      "SELECT country, business_address FROM users WHERE id = $1",
+      [req.user.userId]
+    );
+    errors.push(...locationErrors({ values, existing: service, provider: owner.rows[0] ?? {} }));
+
     if (errors.length > 0) {
       await discardUpload(req.file);
       return validationErrorResponse(res, "Please fix the errors below", errors);
@@ -375,7 +564,7 @@ export const updateService = async (req, res) => {
     const updated = await query(
       `UPDATE services SET ${setClause}, updated_at = NOW()
        WHERE id = $${columns.length + 1}
-       RETURNING *, (SELECT u.currency FROM users u WHERE u.id = services.provider_id) AS currency`,
+       RETURNING *, ${providerColumnsFor("services")}`,
       [...Object.values(updateData), req.params.id]
     );
 
@@ -490,7 +679,7 @@ export const reactivateService = async (req, res) => {
     const updated = await query(
       `UPDATE services SET is_active = TRUE, updated_at = NOW()
        WHERE id = $1 AND NOT is_active
-       RETURNING *, (SELECT u.currency FROM users u WHERE u.id = services.provider_id) AS currency`,
+       RETURNING *, ${providerColumnsFor("services")}`,
       [service.id]
     );
 
@@ -528,6 +717,8 @@ export const getServicesByProvider = async (req, res) => {
     const result = isOwner
       ? await query(
           `SELECT s.*, owner.currency,
+                  owner.business_address AS provider_address,
+                  owner.country AS provider_country,
                   COALESCE(b.total_bookings, 0)::int AS total_bookings,
                   COALESCE(b.completed_bookings, 0)::int AS completed_bookings,
                   COALESCE(b.upcoming_bookings, 0)::int AS upcoming_bookings,
@@ -548,7 +739,9 @@ export const getServicesByProvider = async (req, res) => {
           [req.params.id, ACTIVE_STATUSES]
         )
       : await query(
-          `SELECT s.*, owner.currency
+          `SELECT s.*, owner.currency,
+                  owner.business_address AS provider_address,
+                  owner.country AS provider_country
            FROM services s
            JOIN users owner ON owner.id = s.provider_id
            WHERE s.provider_id = $1 AND s.is_active

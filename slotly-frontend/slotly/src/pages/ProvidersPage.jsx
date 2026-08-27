@@ -52,11 +52,12 @@ import { container, formatPrice, formatDuration, zoneName } from "../lib/ui";
 import { comparablePrice } from "../lib/currencies";
 import { normaliseCategory } from "../lib/categories";
 import usePageTitle from "../hooks/usePageTitle";
+import { DELIVERY_FILTER_OPTIONS, SCOPE_FILTER_OPTIONS } from "../lib/serviceScope";
 
 const SEARCH_DEBOUNCE_MS = 300;
 
 /** Providers per page. Four fills the two-column grid exactly, as the design draws it. */
-const PAGE_SIZE = 6;
+const PAGE_SIZE = 8;
 
 /**
  * How many matched service names a card lists before summarising the rest.
@@ -173,6 +174,11 @@ export default function ProvidersPage() {
   const minRating = pickOption(RATING_OPTIONS, searchParams.get("rating"));
   const maxDuration = pickOption(DURATION_OPTIONS, searchParams.get("duration"));
   const priceBand = pickOption(PRICE_BANDS, searchParams.get("price"));
+  // Delivery type and booking scope, read from the URL and validated against
+  // their own option lists like every other control here — so `?delivery=banana`
+  // is no filter rather than a filter matching nobody.
+  const deliveryType = pickOption(DELIVERY_FILTER_OPTIONS, searchParams.get("delivery"));
+  const bookingScope = pickOption(SCOPE_FILTER_OPTIONS, searchParams.get("scope"));
 
   const queryParam = searchParams.get("q") || "";
   useEffect(() => {
@@ -258,9 +264,18 @@ export default function ProvidersPage() {
       if (skip !== "price" && priceBand) {
         if (!inPriceBand(provider, priceBand, priceBounds)) return false;
       }
+      // Matched against the *set* a provider offers, not a single value: a clinic
+      // doing both in-person and online consultations has to appear under either
+      // filter, which is why the API sends arrays.
+      if (skip !== "delivery" && deliveryType) {
+        if (!(provider.deliveryTypes ?? []).includes(deliveryType)) return false;
+      }
+      if (skip !== "scope" && bookingScope) {
+        if (!(provider.bookingScopes ?? []).includes(bookingScope)) return false;
+      }
       return true;
     },
-    [category, minRating, maxDuration, priceBand, priceBounds]
+    [category, minRating, maxDuration, priceBand, priceBounds, deliveryType, bookingScope]
   );
 
   /**
@@ -302,6 +317,8 @@ export default function ProvidersPage() {
     const ratingPool = poolFor("rating");
     const durationPool = poolFor("duration");
     const pricePool = poolFor("price");
+    const deliveryPool = poolFor("delivery");
+    const scopePool = poolFor("scope");
 
     return {
       category: {
@@ -348,8 +365,38 @@ export default function ProvidersPage() {
           maxDuration
         ),
       },
+      delivery: {
+        allLabel: "In person or online",
+        allCount: deliveryPool.length,
+        options: withCounts(
+          DELIVERY_FILTER_OPTIONS,
+          deliveryPool,
+          (provider, value) => (provider.deliveryTypes ?? []).includes(value),
+          deliveryType
+        ),
+      },
+      scope: {
+        allLabel: "Anywhere",
+        allCount: scopePool.length,
+        options: withCounts(
+          SCOPE_FILTER_OPTIONS,
+          scopePool,
+          (provider, value) => (provider.bookingScopes ?? []).includes(value),
+          bookingScope
+        ),
+      },
     };
-  }, [providers, matchesFilters, priceBounds, category, minRating, priceBand, maxDuration]);
+  }, [
+    providers,
+    matchesFilters,
+    priceBounds,
+    category,
+    minRating,
+    priceBand,
+    maxDuration,
+    deliveryType,
+    bookingScope,
+  ]);
 
   const visible = useMemo(() => {
     const filtered = providers.filter((provider) => matchesFilters(provider));
@@ -406,6 +453,8 @@ export default function ProvidersPage() {
     Boolean(minRating) ||
     Boolean(priceBand) ||
     Boolean(maxDuration) ||
+    Boolean(deliveryType) ||
+    Boolean(bookingScope) ||
     sort !== "relevance" ||
     Boolean(search.trim());
 
@@ -427,8 +476,8 @@ export default function ProvidersPage() {
             Find a Provider
           </h1>
           <p className="font-body text-body text-on-surface-variant">
-            Narrow by category, rating, price or session length. All times are shown in your own
-            timezone.
+            Narrow by category, appointment type, rating, price or session length. All times are
+            shown in your own timezone.
           </p>
         </div>
 
@@ -510,6 +559,39 @@ export default function ProvidersPage() {
               active={minRating}
               onSelect={(value) => setParam("rating", value)}
             />
+
+            {/* High in the rail, above price and length, because it is the
+                filter most likely to rule a provider out entirely: someone who
+                cannot travel is not comparing prices between clinics they
+                cannot reach. */}
+            <FilterGroup
+              title="Appointment type"
+              group={filterGroups.delivery}
+              active={deliveryType}
+              onSelect={(value) => setParam("delivery", value)}
+            />
+
+            <div className="flex flex-col gap-2">
+              <FilterGroup
+                title="Who can book"
+                group={filterGroups.scope}
+                active={bookingScope}
+                onSelect={(value) => setParam("scope", value)}
+              />
+              {/* Filters on what the provider has decided, not on whether this
+                  reader is eligible — the two differ, and conflating them would
+                  be the more tempting mistake. "Same country only" means the
+                  service is restricted to the *provider's* country, which may or
+                  may not be the reader's; each service card and the booking page
+                  answer the eligibility question for them, because only those
+                  know both countries. */}
+              {filterGroups.scope.options.length > 1 && (
+                <p className="font-caption text-caption text-on-surface-variant">
+                  Whether a provider limits bookings to their own country. Each service
+                  says if it is open to you.
+                </p>
+              )}
+            </div>
 
             <div className="flex flex-col gap-2">
               <FilterGroup

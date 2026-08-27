@@ -5,16 +5,42 @@
  * and a client comparing three physiotherapists should not have to register
  * first. That is why everything here is deliberately narrow about what it
  * selects: the fields are listed one by one rather than returning the row, so no
- * amount of later schema growth can start publishing a provider's email address
- * or password hash to anonymous callers.
+ * amount of later schema growth can start publishing a column to anonymous
+ * callers by accident. Adding one to this response is a decision, taken here,
+ * every time.
  *
- * Neither endpoint reveals anything about a client. The counts on a profile
+ * ## The provider's contact details are published on purpose
+ *
+ * `getProviderProfile` returns `email` and `phoneNumber`. That is a reversal of
+ * this file's original position, which withheld them, and it is deliberate
+ * rather than drift: a shopfront that cannot be contacted is a worse product
+ * than one whose contact details are public, and a provider listing a business
+ * on a booking platform expects to be reachable. Slotly's per-booking messaging
+ * only exists *after* a booking, which is too late for "do you treat this
+ * injury?".
+ *
+ * What that costs is real and worth stating: the endpoint is unauthenticated, so
+ * these are readable by anything that can fetch a URL, scrapers included. Two
+ * consequences follow, and both are the provider's to manage rather than the
+ * app's to hide:
+ *
+ *   - The address published is `email` — the one the account signs in with. A
+ *     provider who wants a separate public address needs a `public_email` column
+ *     to opt into; there is no such column today.
+ *   - `phone_number` is equally the account's own. A provider using a personal
+ *     mobile is publishing a personal mobile.
+ *
+ * A client's details are still never exposed here. The counts on a profile
  * ("42 appointments delivered", "18 clients served") are aggregates over
- * bookings; no individual booking, name or time crosses this boundary.
+ * bookings; no individual booking, name, time or contact detail crosses this
+ * boundary, and `listProviders` does not select either column — the directory
+ * has no room to show them and no reason to carry them.
  */
 import { query } from "../config/dbConfig.js";
 import { successResponse, errorResponse, ERROR_CODES } from "../responseController/responseHandler.js";
 import { rawTypesForCategorySearch } from "../utils/categories.js";
+import { DELIVERY_TYPES, BOOKING_SCOPES } from "../services/bookingScope.js";
+import { normaliseCountry } from "../utils/geography.js";
 
 /**
  * GET /api/providers — public.
@@ -62,7 +88,7 @@ function escapeLikeTerm(term) {
 
 export const listProviders = async (req, res) => {
   try {
-    const { search, businessType } = req.query;
+    const { search, businessType, deliveryType, scope } = req.query;
     // Rejected rather than clamped. Clamping turned nonsense into a plausible
     // answer: `?limit=-5` became 1, so a caller with an off-by-one bug got a
     // single provider back and no hint that the API had silently disagreed with
@@ -139,6 +165,51 @@ export const listProviders = async (req, res) => {
       conditions.push(`u.business_type = $${params.length}`);
     }
 
+    // Delivery type and booking scope.
+    //
+    // Server-side as well as in the UI, and not because the directory needs it to
+    // be — the page filters the returned list client-side, the same way it does
+    // rating and price, so that its facet counts can be computed without a
+    // request per option. These exist because the API is a documented surface in
+    // its own right: "show me every provider offering something online" is a
+    // reasonable question to ask it directly, and answering it only inside a
+    // React component would mean the endpoint could not.
+    //
+    // EXISTS rather than a join, for the reason the service-name search below
+    // gives: a provider with three virtual services must be one row, not three.
+    // Gated on `is_active` for the reason the counts are — a retired service is
+    // not bookable, so finding a provider by one is an invitation to a dead end.
+    //
+    // An unrecognised value is rejected rather than ignored. Silently dropping
+    // `?deliveryType=online` would return the whole directory and look like a
+    // filter that had been applied, which is the failure mode the `limit`
+    // validation above is explicit about refusing to repeat.
+    for (const [value, column, apiField, allowed] of [
+      [deliveryType, "delivery_type", "deliveryType", DELIVERY_TYPES],
+      [scope, "booking_scope", "scope", BOOKING_SCOPES],
+    ]) {
+      if (value === undefined || String(value).trim() === "") continue;
+
+      const canonical = String(value).trim().toLowerCase().replace(/[\s-]+/g, "_");
+      if (!allowed.includes(canonical)) {
+        return errorResponse(
+          res,
+          `\`${apiField}\` must be one of: ${allowed.join(", ")}`,
+          400,
+          ERROR_CODES.VALIDATION_FAILED,
+          [{ field: apiField, message: `${apiField} must be one of: ${allowed.join(", ")}` }]
+        );
+      }
+
+      params.push(canonical);
+      conditions.push(
+        `EXISTS (
+           SELECT 1 FROM services sf
+           WHERE sf.provider_id = u.id AND sf.is_active AND sf.${column} = $${params.length}
+         )`
+      );
+    }
+
     params.push(limit);
 
     // Which of this provider's services matched the term, so a card can say why
@@ -164,13 +235,28 @@ export const listProviders = async (req, res) => {
     const result = await query(
       `SELECT u.id, u.name, u.avatar_url, u.bio, u.timezone,
               u.business_name, u.business_type, u.currency,
+              u.country, u.business_address,
               stats.service_count, stats.min_price, stats.min_duration,
+              stats.delivery_types, stats.booking_scopes,
               ratings.average AS rating_average, ratings.count AS rating_count${matchedServices}
        FROM users u
        LEFT JOIN LATERAL (
          SELECT COUNT(*)::int AS service_count,
                 MIN(price)    AS min_price,
-                MIN(duration) AS min_duration
+                MIN(duration) AS min_duration,
+                -- Which delivery types and scopes this provider offers *at all*,
+                -- as sorted distinct sets. The directory filters on "offers
+                -- something virtual", not "is a virtual provider" — a clinic that
+                -- does both in-person and online consultations has to appear
+                -- under either filter, so a single value per provider could not
+                -- express it. Aggregated in the lateral join that already
+                -- computes the counts, so the directory is still one round trip.
+                ARRAY(SELECT DISTINCT sd.delivery_type FROM services sd
+                       WHERE sd.provider_id = u.id AND sd.is_active
+                       ORDER BY sd.delivery_type) AS delivery_types,
+                ARRAY(SELECT DISTINCT sb.booking_scope FROM services sb
+                       WHERE sb.provider_id = u.id AND sb.is_active
+                       ORDER BY sb.booking_scope) AS booking_scopes
          FROM services s
          WHERE s.provider_id = u.id AND s.is_active
        ) stats ON TRUE
@@ -211,6 +297,16 @@ export const listProviders = async (req, res) => {
         // provider's cheapest service in one assumed currency, which is wrong
         // for all but one of them.
         currency: row.currency,
+        // Where the provider is, and — for an in-person service — where the
+        // appointment happens. The country is what the domestic filter compares;
+        // the address is what a client travelling to the appointment needs.
+        country: normaliseCountry(row.country),
+        businessAddress: row.business_address ?? null,
+        // The delivery types and booking scopes this provider has something
+        // active under. Arrays rather than single values because a provider can
+        // offer both; see the query's comment.
+        deliveryTypes: row.delivery_types ?? [],
+        bookingScopes: row.booking_scopes ?? [],
         fromPrice: row.min_price,
         shortestDuration: row.min_duration,
         // Named as GET /providers/:id names them, so a caller moving between the
@@ -282,6 +378,8 @@ export const getProviderProfile = async (req, res) => {
     const result = await query(
       `SELECT u.id, u.name, u.avatar_url, u.bio, u.timezone,
               u.business_name, u.business_type, u.qualifications, u.currency,
+              u.country, u.business_address,
+              u.phone_number, u.email,
               u.cancellation_cutoff_hours, u.role,
               (SELECT COUNT(*)::int FROM bookings b
                  WHERE b.provider_id = u.id AND b.status = ANY($2)) AS delivered_appointments,
@@ -319,6 +417,28 @@ export const getProviderProfile = async (req, res) => {
       business_type: provider.business_type,
       qualifications: provider.qualifications,
       currency: provider.currency,
+      // Public, and unauthenticated — see the note at the top of this file for
+      // what that costs and why it is accepted. Sent as-is rather than
+      // obfuscated: a half-hidden address ("j••••@example.com") is unusable for
+      // the one purpose it is here for, and stops no scraper worth the name.
+      //
+      // Null passes straight through. A provider who has cleared their phone
+      // number has no number, and the page renders only what is present rather
+      // than an empty row implying the field failed to load.
+      email: provider.email,
+      phoneNumber: provider.phone_number,
+      // Where they are. Public, because it is the shopfront: someone deciding
+      // whether to book an in-person appointment needs to know they can get
+      // there, and finding that out only after signing in and reaching the
+      // confirmation step is the wrong moment to learn it.
+      //
+      // Published even when the provider offers nothing in person — an address
+      // is not a secret, and hiding it based on what they currently offer would
+      // make the field flicker as their catalogue changed. Whether a *given
+      // appointment* happens there is a property of the service, and is answered
+      // by that service's `deliveryType` and `location`.
+      country: normaliseCountry(provider.country),
+      businessAddress: provider.business_address ?? null,
       cancellationCutoffHours: provider.cancellation_cutoff_hours,
       isOwner: Boolean(req.user && req.user.userId === provider.id),
       // Exact figures, never rounded into "500+" buckets. At this scale a bucket

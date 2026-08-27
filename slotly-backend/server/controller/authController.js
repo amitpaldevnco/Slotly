@@ -49,6 +49,7 @@ import {
   validatePhone,
   validateBusinessName,
 } from "../utils/identity.js";
+import { normaliseCountry, countryForTimezone, validateAddress } from "../utils/geography.js";
 import {
   frontendBaseUrl,
   sessionCookieOptions,
@@ -143,6 +144,11 @@ function publicUser(row) {
     businessName: row.business_name,
     businessType: row.business_type,
     currency: row.currency,
+    // ISO 3166-1 alpha-2, or null when the account has never stated one and its
+    // timezone did not imply one. The client needs it to tell a domestic service
+    // it can book from one it cannot, and to prefill the profile form.
+    country: row.country ?? null,
+    businessAddress: row.business_address ?? null,
   };
 }
 
@@ -246,7 +252,8 @@ export const googleAuth = async (req, res) => {
  */
 export const completeProfile = async (req, res) => {
   try {
-    const { role, phoneNumber, timezone, businessName, businessType, currency } = req.body;
+    const { role, phoneNumber, timezone, businessName, businessType, currency, country, businessAddress } =
+      req.body;
 
     const current = await query("SELECT role FROM users WHERE id = $1", [req.user.userId]);
     if (current.rows.length === 0) {
@@ -278,12 +285,35 @@ export const completeProfile = async (req, res) => {
     } else if (!isValidTimezone(timezone)) {
       errors.push({ field: "timezone", message: "That is not a timezone we recognise" });
     }
+    // Country, for both roles.
+    //
+    // A client's country is not decoration: a service with a domestic booking
+    // scope is bookable only when the two countries match, so a client with none
+    // cannot be told whether they are eligible. Asked of everyone for that
+    // reason, and defaulted from the timezone they have just chosen so the form
+    // can pre-select it and almost nobody has to think about it.
+    //
+    // Not fatal when it cannot be resolved. A timezone belonging to no country
+    // (UTC) leaves this null, and null is a legitimate state the whole feature is
+    // built to tolerate — see `services/bookingScope.js`. Refusing sign-up over
+    // it would be turning an optional refinement into a barrier to entry.
+    let resolvedCountry = null;
+    if (country !== undefined && country !== null && String(country).trim() !== "") {
+      resolvedCountry = normaliseCountry(country);
+      if (!resolvedCountry) {
+        errors.push({ field: "country", message: "That is not a country we recognise" });
+      }
+    } else if (isValidTimezone(timezone)) {
+      resolvedCountry = countryForTimezone(timezone);
+    }
+
     // Providers must state a currency here, at the one moment the profile is
     // filled in, because every price they go on to set is denominated in it.
     // Leaving it to a default would mean a London physiotherapist publishing
     // prices in rupees until they noticed.
     let resolvedCurrency = null;
     let cleanBusinessName = null;
+    let resolvedAddress = null;
     if (role === "provider") {
       const checkedBusinessName = validateBusinessName(businessName);
       if (!checkedBusinessName.ok) {
@@ -302,6 +332,18 @@ export const completeProfile = async (req, res) => {
           errors.push({ field: "currency", message: "That is not a currency we recognise" });
         }
       }
+
+      // Optional here, deliberately. A provider who will only ever offer virtual
+      // services has no address to give, and this screen is the wrong place to
+      // find that out — they have not created a service yet, so nothing yet
+      // depends on it. `serviceController` asks at the point it becomes
+      // load-bearing: publishing an In-Person service.
+      const checkedAddress = validateAddress(businessAddress);
+      if (!checkedAddress.ok) {
+        errors.push({ field: "businessAddress", message: checkedAddress.message });
+      } else {
+        resolvedAddress = checkedAddress.value;
+      }
     }
 
     if (errors.length > 0) {
@@ -319,6 +361,8 @@ export const completeProfile = async (req, res) => {
            business_name = $4,
            business_type = $5,
            currency = COALESCE($6, currency),
+           country = COALESCE($8, country),
+           business_address = $9,
            updated_at = NOW()
        WHERE id = $7 AND role IS NULL
        RETURNING *`,
@@ -332,6 +376,11 @@ export const completeProfile = async (req, res) => {
         // client never sets a price, so there is nothing for them to denominate.
         resolvedCurrency,
         req.user.userId,
+        // COALESCE for the same reason as currency: an unresolvable country
+        // leaves whatever the column already held rather than overwriting a
+        // value with nothing.
+        resolvedCountry,
+        role === "provider" ? resolvedAddress : null,
       ]
     );
 
@@ -375,6 +424,7 @@ export const getCurrentUser = async (req, res) => {
     const result = await query(
       `SELECT id, name, email, avatar_url, role, phone_number, timezone,
               business_name, business_type, bio, qualifications, currency,
+              country, business_address,
               cancellation_cutoff_hours,
               -- A boolean, never the hash. Settings needs to know whether it is
               -- offering "change your password" or "add one" -- a Google or
@@ -405,6 +455,10 @@ export const getCurrentUser = async (req, res) => {
       bio: user.bio,
       qualifications: user.qualifications,
       currency: user.currency,
+      // Trimmed on the way out because CHAR(2) is blank-padded by PostgreSQL, and
+      // an unpadded comparison in the client would fail against a padded value.
+      country: user.country ? String(user.country).trim() : null,
+      business_address: user.business_address ?? null,
       cancellation_cutoff_hours: user.cancellation_cutoff_hours,
     });
 
@@ -792,6 +846,8 @@ export async function updateProfile(req, res) {
       businessType,
       qualifications,
       currency,
+      country,
+      businessAddress,
     } = req.body;
 
     const currentUser = await query(
@@ -878,6 +934,29 @@ export async function updateProfile(req, res) {
       updateData.timezone = timezone;
     }
 
+    // Country — both roles, for the reason `completeProfile` gives: a client's
+    // country decides whether a domestic service is bookable by them, so it is
+    // not a provider-only field.
+    //
+    // `!== undefined` rather than truthiness, and an empty string clears it to
+    // NULL — the convention `phoneNumber` above established. Clearing has to be
+    // possible: the value is *inferred* from a timezone for most accounts, so
+    // someone whose inferred country is wrong needs a way to say "not this one"
+    // as well as a way to correct it.
+    if (country !== undefined) {
+      if (country === null || String(country).trim() === "") {
+        updateData.country = null;
+      } else {
+        const resolvedCountry = normaliseCountry(country);
+        if (!resolvedCountry) {
+          return validationErrorResponse(res, "Please fix the errors below", [
+            { field: "country", message: "That is not a country we recognise" },
+          ]);
+        }
+        updateData.country = resolvedCountry;
+      }
+    }
+
     // Validate & add bio (providers only)
     if (role === "provider" && bio !== undefined) {
       if (bio.length > 500) {
@@ -944,6 +1023,26 @@ export async function updateProfile(req, res) {
         }
         updateData.currency = resolved;
       }
+
+      // Where in-person appointments happen. Providers only, and it appears on
+      // the public page, so it is gated on the role read from the database — the
+      // same guard `bio` and `qualifications` are under.
+      //
+      // Clearing it is allowed even while an In-Person service is published.
+      // Refusing that would be the wrong trade: the address is already wrong at
+      // that point — that is why they are clearing it — and holding a stale
+      // address on a public page to protect a constraint would keep sending
+      // clients to a place the provider has left. `GET /availability/health`
+      // reports the resulting gap so it is visible rather than silent.
+      if (businessAddress !== undefined) {
+        const checkedAddress = validateAddress(businessAddress);
+        if (!checkedAddress.ok) {
+          return validationErrorResponse(res, "Please fix the errors below", [
+            { field: "businessAddress", message: checkedAddress.message },
+          ]);
+        }
+        updateData.business_address = checkedAddress.value;
+      }
     }
 
     // Handle the profile photo. The file's real type is decided by sniffing its
@@ -1006,6 +1105,7 @@ export async function updateProfile(req, res) {
       WHERE id = $${columns.length + 1}
       RETURNING id, email, name, phone_number, timezone, bio, qualifications,
                 avatar_url, role, business_name, business_type, currency,
+                country, business_address,
                 cancellation_cutoff_hours
     `;
 
@@ -1015,7 +1115,18 @@ export async function updateProfile(req, res) {
       return errorResponse(res, "User not found", 404);
     }
 
-    return successResponse(res, "Profile updated successfully", result.rows[0], 200);
+    // Trimmed for the reason `getCurrentUser` trims it: `country` is CHAR(2) and
+    // PostgreSQL blank-pads it, so a raw "IN " reaching a `<select value="IN">`
+    // matches no option and the control silently blanks. The two endpoints feed
+    // the same auth context and have to hand back the same shape — this response
+    // replaces that context wholesale after a save.
+    const updated = result.rows[0];
+    return successResponse(
+      res,
+      "Profile updated successfully",
+      { ...updated, country: updated.country ? String(updated.country).trim() : null },
+      200
+    );
   } catch (err) {
     await discardUpload(req.file);
     console.error("Error updating profile:", err);

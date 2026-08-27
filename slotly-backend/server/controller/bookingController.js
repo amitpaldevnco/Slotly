@@ -33,6 +33,7 @@ import {
 } from "../services/slotEngine.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
 import { parseId } from "../middleware/validateParams.js";
+import { evaluateBookingScope } from "../services/bookingScope.js";
 import {
   evaluateClientCancellation,
   evaluateClientReschedule,
@@ -46,6 +47,23 @@ import {
 
 /** SQLSTATE raised by PostgreSQL when an exclusion constraint rejects a row. */
 const EXCLUSION_VIOLATION = "23P01";
+
+/**
+ * Reads a country code out of a `CHAR(2)` column.
+ *
+ * PostgreSQL blank-pads `CHAR(n)`, so the value arrives as `"GB"` here but could
+ * arrive as `"G "` from a one-letter write the CHECK constraint would have
+ * refused anyway. Trimmed so the client never has to, and null rather than an
+ * empty string so a missing country is falsy in the obvious way.
+ *
+ * @param {unknown} code
+ * @returns {string|null}
+ */
+function trimCountry(code) {
+  if (typeof code !== "string") return null;
+  const trimmed = code.trim();
+  return trimmed || null;
+}
 
 /**
  * Shapes a booking row for the API, rendering every instant in both parties'
@@ -105,6 +123,21 @@ function serialiseBooking(row, { viewerRole } = {}) {
       duration: row.duration_snapshot,
       coverImage: row.cover_image ?? null,
       isActive: row.service_is_active ?? null,
+
+      // How this appointment is delivered, and where.
+      //
+      // `location` is null for a virtual appointment even when the provider has
+      // an address on file: an online session does not happen at their clinic,
+      // and printing the clinic's address on it would be telling the client to
+      // travel somewhere they should not go. Null for an in-person appointment
+      // whose provider has no address on file either — which is a gap the
+      // provider is told about, not something to paper over here.
+      deliveryType: row.delivery_type ?? "in_person",
+      bookingScope: row.booking_scope ?? "international",
+      location:
+        (row.delivery_type ?? "in_person") === "in_person" && row.provider_address
+          ? { address: row.provider_address, country: trimCountry(row.provider_country) }
+          : null,
     },
     client: {
       id: row.client_id,
@@ -229,6 +262,16 @@ const BOOKING_SELECT = `
          p.timezone AS provider_timezone_now,
          p.currency AS provider_currency,
          s.cover_image, s.is_active AS service_is_active,
+         s.delivery_type, s.booking_scope,
+         -- Where an in-person appointment happens, and the two countries the
+         -- domestic rule compares. Read live from the users rows rather than
+         -- snapshotted onto the booking: an address is a fact about where the
+         -- provider is *now*, so a clinic that moves should show its new address
+         -- on the appointments it has already taken, not the old one. Contrast
+         -- price_snapshot, which is a term of the agreement and must not move.
+         p.business_address AS provider_address,
+         p.country AS provider_country,
+         c.country AS client_country,
          -- The service as it stands *now*, alongside the snapshots. Only the
          -- reschedule question needs these: a client moving their appointment
          -- enters the current arrangement, so the UI has to be able to show them
@@ -304,7 +347,7 @@ export const createBooking = async (req, res) => {
     // by design — it comes from the session, so "acting for another user" is not
     // expressible in the request at all.
     const client = await query(
-      "SELECT id, role, timezone FROM users WHERE id = $1",
+      "SELECT id, role, timezone, country FROM users WHERE id = $1",
       [req.user.userId]
     );
     if (client.rows.length === 0) {
@@ -320,7 +363,8 @@ export const createBooking = async (req, res) => {
     }
 
     const service = await query(
-      `SELECT s.*, u.timezone AS provider_timezone, u.cancellation_cutoff_hours, u.id AS provider_id
+      `SELECT s.*, u.timezone AS provider_timezone, u.cancellation_cutoff_hours, u.id AS provider_id,
+              u.country AS provider_country
        FROM services s
        JOIN users u ON u.id = s.provider_id
        WHERE s.id = $1 AND s.is_active AND u.role = 'provider'`,
@@ -330,6 +374,31 @@ export const createBooking = async (req, res) => {
       return errorResponse(res, "Service not found or no longer offered", 404, ERROR_CODES.NOT_FOUND);
     }
     const svc = service.rows[0];
+
+    // Is this service on offer where the client is?
+    //
+    // Checked before the time gates because it is a property of the arrangement
+    // rather than of the moment: no slot of a domestic service is bookable from
+    // another country, so telling the client "that time has passed" first would
+    // send them back to pick a different slot that will fail identically.
+    //
+    // Enforced here and not only in the slot list, for the reason every other
+    // gate in this file is duplicated: the list is a convenience, the write is
+    // the decision, and a client who crafts a POST must not be able to reach an
+    // outcome the list would never have offered. `getAvailableSlots` reports the
+    // same verdict so the UI can explain it up front.
+    const scope = evaluateBookingScope({
+      service: svc,
+      clientCountry: client.rows[0].country,
+      providerCountry: svc.provider_country,
+    });
+    if (!scope.allowed) {
+      return errorResponse(res, scope.reason, 409, ERROR_CODES.OUTSIDE_SERVICE_AREA, {
+        bookingScope: scope.scope,
+        providerCountry: scope.providerCountry,
+        clientCountry: scope.clientCountry,
+      });
+    }
 
     // The only time-based floor on a booking: has this instant already gone?
     //
@@ -904,10 +973,13 @@ export const rescheduleBooking = async (req, res) => {
     // times the write path then rejected as outside availability.
     const existing = await query(
       `SELECT b.*, s.price, s.duration, s.buffer_before, s.buffer_after, s.slot_interval,
-              p.timezone AS provider_timezone_now, p.currency AS provider_currency
+              s.delivery_type, s.booking_scope,
+              p.timezone AS provider_timezone_now, p.currency AS provider_currency,
+              p.country AS provider_country, c.country AS client_country
        FROM bookings b
        JOIN services s ON s.id = b.service_id
        JOIN users p ON p.id = b.provider_id
+       JOIN users c ON c.id = b.client_id
        WHERE b.id = $1`,
       [req.params.id]
     );
@@ -966,6 +1038,32 @@ export const rescheduleBooking = async (req, res) => {
     }
     if (hasInstantPassed(start, booking.provider_timezone_now)) {
       return errorResponse(res, "Pick a time in the future", 400, ERROR_CODES.SLOT_UNAVAILABLE);
+    }
+
+    // The same service-area gate the create path applies, for the same "both
+    // paths, same gates" reason — a client must not be able to reach, by moving
+    // an existing booking, an arrangement they could not have booked outright.
+    //
+    // Applied to a client's own move only. A provider moving somebody else's
+    // appointment is not entering a new arrangement on the client's behalf, and
+    // refusing them would be the wrong outcome anyway: the booking already
+    // exists, so the alternative to moving it is cancelling it, and a rule meant
+    // to stop out-of-area bookings being *made* should not force one that was
+    // made under earlier settings to be destroyed. The asymmetry is the one
+    // `describeRescheduleTerms` documents for pricing, applied here to place.
+    if (viewerRole === "client") {
+      const scope = evaluateBookingScope({
+        service: booking,
+        clientCountry: booking.client_country,
+        providerCountry: booking.provider_country,
+      });
+      if (!scope.allowed) {
+        return errorResponse(res, scope.reason, 409, ERROR_CODES.OUTSIDE_SERVICE_AREA, {
+          bookingScope: scope.scope,
+          providerCountry: scope.providerCountry,
+          clientCountry: scope.clientCountry,
+        });
+      }
     }
 
     // "Not in the past" is the only time-based floor here, checked above — the

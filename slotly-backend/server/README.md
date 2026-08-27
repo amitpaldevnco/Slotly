@@ -49,6 +49,7 @@ them:
 - [Deployment](#deployment)
 - [Architecture](#architecture)
 - [Data model](#data-model)
+- [Where a service happens, and who may book it](#where-a-service-happens-and-who-may-book-it)
 - [How availability is modelled](#how-availability-is-modelled)
 - [No double-booking](#no-double-booking)
 - [Time and timezones](#time-and-timezones)
@@ -108,7 +109,7 @@ allows.
 npm test
 ```
 
-392 tests across 15 suites. Eleven of them need the PostgreSQL configured
+458 tests across 17 suites. Twelve of them need the PostgreSQL configured
 above; they namespace their own fixtures and clean up after themselves.
 
 ---
@@ -293,8 +294,8 @@ bookings ──< booking_events
 
 | Table | Holds |
 |---|---|
-| `users` | Both roles. `role` is `NULL` until profile setup completes, which is how the app knows to route someone there. Carries `timezone` and the provider's `cancellation_cutoff_hours`. |
-| `services` | Name, price, duration, buffers, `slot_interval`. Retired with `is_active = false` rather than deleted when it has booking history. |
+| `users` | Both roles. `role` is `NULL` until profile setup completes, which is how the app knows to route someone there. Carries `timezone` and the provider's `cancellation_cutoff_hours`. Also `country` (ISO 3166-1 alpha-2, nullable, carried by clients too — a `domestic` service compares both) and the provider's free-text `business_address`. |
+| `services` | Name, price, duration, buffers, `slot_interval`. Retired with `is_active = false` rather than deleted when it has booking history. Also `delivery_type` (`in_person`/`virtual`, default `in_person`) and `booking_scope` (`domestic`/`international`, default `international`). |
 | `availability_rules` | The recurring weekly pattern. `weekday` (0 = Sunday) plus minutes-from-midnight. |
 | `availability_exceptions` | One-off `block` and `open` overrides, over an inclusive date range. |
 | `bookings` | The appointment. `starts_at`/`ends_at` bound the appointment; `blocked_from`/`blocked_to` add the buffers and are what the double-booking constraint compares. |
@@ -313,6 +314,48 @@ actual instant is `TIMESTAMPTZ`.
 the booking at creation. Without them, a provider renaming a service, changing
 its price, moving city, or tightening their cancellation policy would silently
 rewrite the history of appointments already made under the old terms.
+
+---
+
+## Where a service happens, and who may book it
+
+Two independent properties of every service. `delivery_type` (`in_person` /
+`virtual`) says **where** the appointment happens; `booking_scope` (`domestic` /
+`international`) says **who** may book it. Neither is derived from the other,
+because all four combinations are real — a London clinic seeing international
+visitors in person, an online tutor licensed in one country only.
+
+**Requirements, enforced in `serviceController` rather than by a `CHECK`.**
+Publishing an `in_person` service requires `users.business_address`; a `domestic`
+one requires `users.country`. Neither is expressible as a constraint: the rule
+spans two tables, which a `CHECK` cannot see and a foreign key cannot state. The
+check runs only when a request actually states a delivery type or scope, so an
+unrelated edit to a service that predates the feature is not blocked by a field
+it never had.
+
+**The domestic rule lives in `services/bookingScope.js`** and is pure — no clock,
+no connection — so the slot list, the create path and the reschedule path are
+guaranteed the same answer:
+
+| Path | When a domestic service is out of area |
+|---|---|
+| `POST /bookings` | `409` `OUTSIDE_SERVICE_AREA`, both country codes in `details` |
+| `POST /bookings/{id}/reschedule` | `409`, **for a client's own move only** — a provider moving an existing appointment is not entering a new arrangement on the client's behalf, and the alternative to moving it would be cancelling it |
+| `GET /providers/{id}/slots` | `200` with `eligibility.allowed: false` and an **empty** `days` list — reported rather than raised, because an error response could not carry the reason alongside the service details the page still needs |
+
+**An unknown country on either side is allowed through.** `users.country` is
+nullable — added after the first release, and unlike a currency a country can
+honestly be unstated — so refusing on it would restrict every pre-existing
+account for a reason nobody chose. `config/schema.js` backfills it from each
+account's `timezone` where that is unambiguous, which reaches almost everyone, so
+the rule bites in practice. Both `tests/bookingScope.test.js` and the frontend's
+`src/lib/serviceScope.test.js` pin these cases, because the intuitive
+implementation reads a null as "not the provider's country".
+
+`GET /availability/health` reports `servicesMissingLocation` for a published
+service whose location requirements the profile no longer meets — clearing an
+address is allowed even while an in-person service is live, since a stale address
+on a public page is worse than a missing one.
 
 ---
 
@@ -652,7 +695,7 @@ folder prefix.
 npm test
 ```
 
-**392 tests across 15 suites, Vitest.** `npm run test:watch` for watch mode.
+**458 tests across 17 suites, Vitest.** `npm run test:watch` for watch mode.
 
 Eleven of the fifteen suites talk to a real PostgreSQL — the same one the app uses,
 read from `.env`, or any database named by `DATABASE_URL`. That is deliberate rather than lazy: the double-booking
@@ -707,6 +750,7 @@ Codes worth calling out:
 | `CANCELLATION_WINDOW_CLOSED` | 409 | Past the cutoff. `details.deadline` gives the instant it closed. |
 | `BOOKING_NOT_ACTIVE` | 409 | Already cancelled, completed or marked no-show. |
 | `APPOINTMENT_NOT_STARTED` | 409 | Cannot mark completed or no-show before it has begun. |
+| `OUTSIDE_SERVICE_AREA` | 409 | The service is `domestic` and the client is in another country. `details` carries `bookingScope`, `providerCountry` and `clientCountry`. Distinct from `FORBIDDEN`: nothing about the account is wrong, the service is simply not on offer where they are. |
 | `RANGE_TOO_WIDE` | 400 | More than 62 days of slots requested. |
 
 ---
@@ -801,6 +845,15 @@ link straight to the booking is the shortest path to fixing it.
 
 ## Known limitations
 
+- **A provider's email and phone are public.** `GET /api/providers/:id` is
+  unauthenticated and returns both, so they are readable by anything that can
+  fetch a URL — scrapers included. That is deliberate: Slotly's messaging is
+  per-booking, so without it a client has no way to ask a question *before*
+  committing to a time. What makes it a limitation rather than just a decision is
+  that the fields published are the account's **own** sign-in address and phone
+  number, not separate public ones. A provider using a personal mobile is
+  publishing a personal mobile, and the only way out today is to clear the field.
+  Opting in properly would need `public_email` / `public_phone` columns.
 - **No pagination.** Booking lists are capped at 500 rows and the provider
   directory at 100. Fine at this scale; a real deployment would need cursors.
 - **Notifications are in-UI only.** Real email and SMS delivery are out of scope

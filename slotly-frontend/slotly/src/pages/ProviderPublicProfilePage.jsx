@@ -39,10 +39,19 @@ import ProviderReviews from "../components/reviews/ProviderReviews";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import BackLink from "../components/ui/BackLink";
-import EmptyState, { ErrorState, PageLoader } from "../components/ui/Feedback";
+import EmptyState, { Alert, ErrorState, PageLoader } from "../components/ui/Feedback";
 import { Select } from "../components/ui/Field";
 import { container, formatPrice, formatDuration, zoneName } from "../lib/ui";
 import usePageTitle from "../hooks/usePageTitle";
+import {
+  deliveryIcon,
+  deliveryLabel,
+  scopeIcon,
+  isInPerson,
+  isDomestic,
+  judgeEligibility,
+  countryLabel,
+} from "../lib/serviceScope";
 
 export default function ProviderPublicProfilePage() {
   const { providerId } = useParams();
@@ -95,6 +104,18 @@ export default function ProviderPublicProfilePage() {
   // the reader actually picked.
   const selectedService =
     bookable.find((s) => s.id === selectedServiceId) || bookable[0] || null;
+
+  // Whether the signed-in reader may book the selected service.
+  //
+  // Judged locally only to choose a sentence. `POST /bookings` re-checks it
+  // against the row it is about to write, and `judgeEligibility` mirrors the
+  // server's permissiveness exactly — including allowing an unknown country
+  // through — so the two can never disagree about who is turned away.
+  const selectedEligibility = judgeEligibility({
+    service: selectedService,
+    clientCountry: user?.country,
+    providerCountry: selectedService?.location?.country ?? data?.provider?.country ?? null,
+  });
 
   if (loading) return <PageLoader label="Loading provider…" />;
 
@@ -216,6 +237,19 @@ export default function ProviderPublicProfilePage() {
                   </span>
                 )}
 
+                {/* Beside the timezone, since the two together are the answer to
+                    "where is this person". The country and not the street
+                    address: the address belongs to a specific in-person service
+                    and is shown on the booking panel once one is selected, but
+                    the country is a fact about the practice and belongs in the
+                    header. */}
+                {provider.country && (
+                  <span className="flex items-center gap-1">
+                    <Icon name="place" size={18} />
+                    {countryLabel(provider.country)}
+                  </span>
+                )}
+
                 {provider.stats?.completedAppointments > 0 && (
                   <span className="flex items-center gap-1">
                     <Icon name="event_available" size={18} />
@@ -274,6 +308,90 @@ export default function ProviderPublicProfilePage() {
                   </ul>
                 </div>
               )}
+            </section>
+          )}
+
+          {/* Contact.
+              Its own card rather than a line in the header meta row: an email
+              address is long enough to wrap awkwardly beside the timezone and
+              the rating, and this is something a reader comes looking for rather
+              than glances at.
+
+              Its purpose is the gap before a booking exists. Slotly's messaging
+              is per-booking, so "do you treat this injury?" has nowhere to go
+              until the client has already committed to a time — which is the
+              wrong order. These details close that gap.
+
+              Rendered only when there is something to render, and each row
+              independently: a provider who has cleared their phone number gets
+              an email row and no empty second line implying the field failed to
+              load. */}
+          {(provider.email || provider.phoneNumber) && (
+            <section className="rounded-lg border border-outline-variant bg-surface p-6">
+              <h2 className="mb-4 flex items-center gap-2 font-h3 text-h3 text-primary">
+                <Icon name="contact_page" size={24} />
+                Contact
+              </h2>
+
+              <dl className="flex flex-col gap-3">
+                {provider.email && (
+                  <div className="flex items-start gap-2">
+                    <dt className="sr-only">Email</dt>
+                    <Icon
+                      name="mail"
+                      size={20}
+                      aria-hidden="true"
+                      className="mt-0.5 shrink-0 text-on-surface-variant"
+                    />
+                    {/* A real mailto: link. The whole point of publishing this is
+                        that a client can act on it, and an address they have to
+                        select and copy is a worse version of the same thing.
+                        `break-all` because a long address in a narrow column
+                        otherwise pushes the card wider than the grid. */}
+                    <dd className="min-w-0">
+                      <a
+                        href={`mailto:${provider.email}`}
+                        className="break-all font-body text-body text-primary underline decoration-outline-variant underline-offset-2 transition-colors hover:decoration-primary"
+                      >
+                        {provider.email}
+                      </a>
+                    </dd>
+                  </div>
+                )}
+
+                {provider.phoneNumber && (
+                  <div className="flex items-start gap-2">
+                    <dt className="sr-only">Phone</dt>
+                    <Icon
+                      name="call"
+                      size={20}
+                      aria-hidden="true"
+                      className="mt-0.5 shrink-0 text-on-surface-variant"
+                    />
+                    <dd className="min-w-0">
+                      {/* Spaces stripped from the href only. A stored
+                          "+44 20 7946 0000" is what a person should read, and
+                          "+442079460000" is what a dialler needs — so the label
+                          keeps the formatting and the link does not. */}
+                      <a
+                        href={`tel:${String(provider.phoneNumber).replace(/\s+/g, "")}`}
+                        className="font-body text-body text-primary underline decoration-outline-variant underline-offset-2 transition-colors hover:decoration-primary"
+                      >
+                        {provider.phoneNumber}
+                      </a>
+                    </dd>
+                  </div>
+                )}
+              </dl>
+
+              {/* Said plainly, because a client who emails about a booking they
+                  have already made will otherwise wonder why nobody replied on
+                  the thread they were pointed at. */}
+              <p className="mt-4 font-caption text-caption text-on-surface-variant">
+                For questions before you book. Once you have an appointment, message
+                {provider.business_name ? ` ${provider.business_name}` : " them"} about it from
+                the appointment itself — that thread stays attached to the booking.
+              </p>
             </section>
           )}
 
@@ -379,6 +497,22 @@ export default function ProviderPublicProfilePage() {
                               <Icon name="schedule" size={16} />
                               {formatDuration(service.duration)}
                             </span>
+                            {/* In the meta row rather than as a separate line,
+                                because "where" and "how long" are the same kind
+                                of fact about a service and a client comparing
+                                three of them reads them together. */}
+                            <span className="flex items-center gap-1">
+                              <Icon name={deliveryIcon(service.deliveryType)} size={16} />
+                              {deliveryLabel(service.deliveryType)}
+                            </span>
+                            {isDomestic(service) && (
+                              <span className="flex items-center gap-1">
+                                <Icon name={scopeIcon(service.bookingScope)} size={16} />
+                                {countryLabel(service.location?.country ?? provider.country) ||
+                                  "One country"}{" "}
+                                only
+                              </span>
+                            )}
                             {/* Drawn as a sibling of the duration above, because
                                 that is what it sits beside in the reference. It
                                 used to carry a permanent underline that ran
@@ -555,13 +689,74 @@ export default function ProviderPublicProfilePage() {
                           </dd>
                         </div>
                       )}
+                      <div className="flex items-center gap-2">
+                        <dt className="text-on-surface-variant">Delivery</dt>
+                        <dd className="flex items-center gap-1 font-semibold text-on-surface">
+                          <Icon name={deliveryIcon(selectedService.deliveryType)} size={15} />
+                          {deliveryLabel(selectedService.deliveryType)}
+                        </dd>
+                      </div>
                     </dl>
+                  )}
+
+                  {/* The address, before the client commits to anything.
+                      An in-person appointment is a journey, and the moment to
+                      learn where to is while choosing the service — not on a
+                      confirmation screen after picking a time. Drawn from the
+                      service rather than the provider so a virtual service never
+                      shows one, even though this provider has an address on
+                      file. */}
+                  {selectedService && isInPerson(selectedService) && selectedService.location?.address && (
+                    <div className="flex items-start gap-2 rounded-md border border-outline-variant bg-surface-container-low p-3">
+                      <Icon name="place" size={16} className="mt-0.5 shrink-0 text-on-surface-variant" />
+                      <div className="min-w-0">
+                        <p className="font-caption text-caption font-semibold uppercase tracking-wider text-on-surface-variant">
+                          Where
+                        </p>
+                        {/* whitespace-pre-line because the address is one free-text
+                            field and providers type it as they would write it on an
+                            envelope. Collapsing the newlines would run a
+                            three-line address into one unreadable string. */}
+                        <p className="whitespace-pre-line font-small text-small text-on-surface">
+                          {selectedService.location.address}
+                        </p>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Whether this reader may book it at all.
+                      Rendered here, on the panel that holds the button, rather
+                      than on the card — a client who has selected a service they
+                      cannot book should be told beside the control that is about
+                      to refuse them. Advisory: the API re-checks it, and both
+                      say the same thing because both fail open on an unknown
+                      country. */}
+                  {selectedService && !selectedEligibility.eligible && (
+                    <Alert tone="warn">{selectedEligibility.reason}</Alert>
                   )}
 
                   {isOwner ? (
                     <p className="rounded-md border border-outline-variant bg-surface-container-low p-3 font-caption text-caption text-on-surface-variant">
                       This is your own page, so there is nothing to book here.
                     </p>
+                  ) : canBook && selectedService && !selectedEligibility.eligible ? (
+                    /* Ineligible: the button is inert rather than a link into a
+                       page that can only refuse. The reason is already stated
+                       above it, so the honest thing is to stop offering the
+                       action — a live "Choose a time" that leads to "not
+                       available in your country" spends the client's click to
+                       tell them something this panel has already said.
+
+                       Still rendered, and still the same size, so the panel does
+                       not change shape between an eligible and an ineligible
+                       service and the reason is what draws the eye. */
+                    <button
+                      type="button"
+                      disabled
+                      className="flex h-12 w-full cursor-not-allowed items-center justify-center gap-2 rounded-md bg-surface-variant font-small text-small font-medium text-on-surface-variant"
+                    >
+                      Not available in your country
+                    </button>
                   ) : canBook && selectedService ? (
                     <Link
                       to={`/providers/${providerId}/book/${selectedService.id}`}

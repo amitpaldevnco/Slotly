@@ -27,6 +27,7 @@
  * IF NOT EXISTS` for an existing one.
  */
 import { exec, query } from "./dbConfig.js";
+import { timezoneCountryPairs } from "../utils/geography.js";
 
 export async function initSchema() {
   await exec("CREATE EXTENSION IF NOT EXISTS btree_gist;");
@@ -72,6 +73,40 @@ export async function initSchema() {
       -- constraint under the same name instead of two under different ones.
       currency                  CHAR(3) NOT NULL DEFAULT 'INR',
 
+      -- ISO 3166-1 alpha-2 code, e.g. 'GB', 'IN', 'US'.
+      --
+      -- Carried by clients as well as providers, and needed on both: a service
+      -- with a domestic booking_scope is bookable only when the two
+      -- countries match, so a country the client has not stated makes that
+      -- comparison unanswerable. See services/bookingScope.js for what happens
+      -- then — it is deliberately permissive rather than a refusal.
+      --
+      -- Nullable, unlike currency. A currency has no honest "not stated"
+      -- reading because a price must be denominated in something; a country
+      -- genuinely can be unknown, and inventing one would silently decide who is
+      -- allowed to book. Existing rows are backfilled from timezone below
+      -- where that is unambiguous, which covers almost everyone.
+      --
+      -- The code alone is stored, never a country name: names are localised and
+      -- change, codes are stable. Same rule as currency.
+      country                   CHAR(2),
+
+      -- Where an in-person appointment physically happens. Providers only;
+      -- shown on the public profile and on a booking for an in-person service.
+      --
+      -- One free-text field rather than line/city/region/postcode columns, for
+      -- the reason qualifications above gives: nothing in the app queries,
+      -- sorts or verifies a street address, so structuring it would buy nothing
+      -- and cost a join. The *country* is separate and structured precisely
+      -- because it is the one part that is compared. If addresses ever need to
+      -- be geocoded or searched, that is the point to normalise them.
+      --
+      -- Nullable even for providers: a provider offering only virtual services
+      -- has no address to give, and demanding one would be asking for a fact
+      -- that does not exist. serviceController requires it at the moment it
+      -- becomes load-bearing — publishing an in-person service — and not before.
+      business_address          TEXT,
+
       password_hash             VARCHAR(255),
 
       -- How many hours before the appointment a client may still cancel it.
@@ -109,6 +144,49 @@ export async function initSchema() {
       ADD CONSTRAINT users_currency_format CHECK (currency ~ '^[A-Z]{3}$');
   `);
 
+  // Location, added with the booking-scope feature. Both nullable, so every
+  // existing row reads as "not stated" rather than being given a value nobody
+  // entered — the `qualifications` treatment rather than the `currency` one,
+  // because unlike a currency a country can honestly be unknown.
+  await exec(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS country CHAR(2);
+  `);
+  await exec(`
+    ALTER TABLE users
+      ADD COLUMN IF NOT EXISTS business_address TEXT;
+  `);
+  await exec(`ALTER TABLE users DROP CONSTRAINT IF EXISTS users_country_format;`);
+  await exec(`
+    ALTER TABLE users
+      ADD CONSTRAINT users_country_format CHECK (country IS NULL OR country ~ '^[A-Z]{2}$');
+  `);
+
+  // One-time backfill: infer each existing account's country from the timezone
+  // it already states.
+  //
+  // Every account has a timezone — the column is NOT NULL and sign-up pre-fills
+  // it from the browser — so this reaches almost every row without asking anyone
+  // a second question, which is what makes `booking_scope = 'domestic'`
+  // meaningful for accounts created before this column existed. Without it every
+  // pre-existing account would read as "country unknown" and the domestic rule
+  // would never apply to any of them.
+  //
+  // Idempotent by `country IS NULL`: it fills a blank and never overwrites a
+  // stated value, so a provider who has corrected their country keeps the
+  // correction across every subsequent boot. Ambiguous zones are absent from the
+  // mapping (see `timezoneCountryPairs`) and are left null on purpose — a guess
+  // here would silently decide who may book.
+  const { timezones, countries } = timezoneCountryPairs();
+  await query(
+    `UPDATE users u
+        SET country = m.country
+       FROM (SELECT unnest($1::text[]) AS timezone, unnest($2::text[]) AS country) m
+      WHERE u.country IS NULL
+        AND u.timezone = m.timezone`,
+    [timezones, countries]
+  );
+
   // Partial index: only providers are ever browsed, so the discovery query
   // never has to skip past client rows.
   await exec(`
@@ -143,6 +221,35 @@ export async function initSchema() {
       cover_image   TEXT,
       is_active     BOOLEAN NOT NULL DEFAULT TRUE,
 
+      -- How the appointment is delivered: at the provider's address, or online.
+      --
+      -- NOT NULL with a default rather than nullable, because every appointment
+      -- happens *somewhere* — there is no honest "not stated" reading, the same
+      -- argument 'currency' makes. 'in_person' is the default because Slotly's
+      -- model is an appointment at a place and every provider seeded or created
+      -- before this column existed was one; a virtual service is the thing you
+      -- opt into.
+      --
+      -- A provider publishing an in-person service must have
+      -- users.business_address set — enforced in serviceController, not here,
+      -- because a CHECK cannot reach another table and a foreign key cannot
+      -- express "not null when this column has that value". The database keeps
+      -- the guarantees it can keep alone; see the schema header.
+      delivery_type VARCHAR(20) NOT NULL DEFAULT 'in_person'
+                      CHECK (delivery_type IN ('in_person', 'virtual')),
+
+      -- Who may book it: anyone, or only clients in the provider's own country.
+      --
+      -- 'international' is the default, and the choice is deliberate rather than
+      -- arbitrary: it is the value that imposes no restriction, so every service
+      -- that existed before this column did keeps behaving exactly as it did.
+      -- Defaulting to 'domestic' would have silently made every existing service
+      -- unbookable by every client in another country, which is a data migration
+      -- quietly changing who is allowed to book — the worst kind of breaking
+      -- change, because nothing errors and the slots simply stop appearing.
+      booking_scope VARCHAR(20) NOT NULL DEFAULT 'international'
+                      CHECK (booking_scope IN ('domestic', 'international')),
+
       -- True once this service has its own weekly hours/exceptions instead of
       -- inheriting the provider's default ones. A dedicated flag rather than
       -- "does it have any rule rows" because a service can legitimately have
@@ -161,6 +268,45 @@ export async function initSchema() {
   await exec(`
     ALTER TABLE services
       ADD COLUMN IF NOT EXISTS has_custom_availability BOOLEAN NOT NULL DEFAULT FALSE;
+  `);
+
+  // Delivery type and booking scope, added with the location feature. Both NOT
+  // NULL with a default, so existing rows land on a value that changes nothing
+  // about how they already behave: 'in_person' describes every service seeded
+  // before the column existed, and 'international' is the scope that imposes no
+  // restriction. See the CREATE TABLE above for the full reasoning.
+  //
+  // The CHECK constraints are added separately and by name, for the reason
+  // `users_currency_format` gives: an inline CHECK on a fresh database and an
+  // ALTER on a migrated one would leave the two with differently-named
+  // constraints doing the same job.
+  await exec(`
+    ALTER TABLE services
+      ADD COLUMN IF NOT EXISTS delivery_type VARCHAR(20) NOT NULL DEFAULT 'in_person';
+  `);
+  await exec(`
+    ALTER TABLE services
+      ADD COLUMN IF NOT EXISTS booking_scope VARCHAR(20) NOT NULL DEFAULT 'international';
+  `);
+  await exec(`ALTER TABLE services DROP CONSTRAINT IF EXISTS services_delivery_type_known;`);
+  await exec(`
+    ALTER TABLE services
+      ADD CONSTRAINT services_delivery_type_known
+        CHECK (delivery_type IN ('in_person', 'virtual'));
+  `);
+  await exec(`ALTER TABLE services DROP CONSTRAINT IF EXISTS services_booking_scope_known;`);
+  await exec(`
+    ALTER TABLE services
+      ADD CONSTRAINT services_booking_scope_known
+        CHECK (booking_scope IN ('domestic', 'international'));
+  `);
+
+  // The directory filters on both, always alongside `is_active` — a retired
+  // service is never offered, so it is excluded from the index rather than
+  // scanned past.
+  await exec(`
+    CREATE INDEX IF NOT EXISTS idx_services_delivery_scope
+      ON services (delivery_type, booking_scope) WHERE is_active;
   `);
 
   await exec(`

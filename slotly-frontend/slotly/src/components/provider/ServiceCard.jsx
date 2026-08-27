@@ -16,6 +16,12 @@ import { Link } from "react-router-dom";
 import Icon from "../ui/Icon";
 import ServiceCover from "./ServiceCover";
 import { formatPrice, formatDuration } from "../../lib/ui";
+import {
+  deliveryIcon,
+  deliveryLabel,
+  scopeIcon,
+  scopeLabel,
+} from "../../lib/serviceScope";
 
 export default function ServiceCard({
   service,
@@ -214,6 +220,16 @@ export default function ServiceCard({
             <span className="font-caption text-caption">No buffer time</span>
           </div>
         )}
+
+        {/* Where it happens and who may book it, on one line.
+            Always drawn, for the reason the buffer line above is: both columns
+            are NOT NULL on the server, so every service has an answer, and a
+            row that appeared only sometimes would be the last thing left that
+            could shift a card's insides. */}
+        <div className="flex w-full flex-wrap items-center gap-1.5">
+          <ScopeChip icon={deliveryIcon(service.deliveryType)} label={deliveryLabel(service.deliveryType)} />
+          <ScopeChip icon={scopeIcon(service.bookingScope)} label={scopeLabel(service.bookingScope)} />
+        </div>
       </div>
 
       {/* The owner's running totals, and the actions each viewer gets. The
@@ -319,5 +335,23 @@ export default function ServiceCard({
         </div>
       )}
     </div>
+  );
+}
+
+/**
+ * One small labelled chip: an icon and a word.
+ *
+ * Deliberately not a `StatusBadge` — those carry a booking's status and are
+ * colour-coded to it, and reusing that vocabulary here would suggest these two
+ * values are states a service moves between rather than settings it holds.
+ * Neutral, so the status badge at the top of the card stays the only coloured
+ * thing on it.
+ */
+function ScopeChip({ icon, label }) {
+  return (
+    <span className="inline-flex items-center gap-1 rounded-full border border-outline-variant px-2 py-0.5 text-on-surface-variant">
+      <Icon name={icon} size={13} />
+      <span className="font-caption text-caption">{label}</span>
+    </span>
   );
 }

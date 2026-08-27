@@ -49,6 +49,23 @@ export const ERROR_CODES = {
   WRONG_AUTH_METHOD: "WRONG_AUTH_METHOD",
   INVALID_CREDENTIALS: "INVALID_CREDENTIALS",
 
+  // The service is offered only in the provider's own country
+  // (`booking_scope = 'domestic'`) and the client is somewhere else. Distinct
+  // from FORBIDDEN, which is about who the caller *is*: nothing about this
+  // client's account is wrong, the service simply is not on offer where they
+  // are, and the fix is a different service rather than a different permission.
+  // `details` carries both country codes so the UI can name them. See
+  // `services/bookingScope.js` — in particular why an unknown country on either
+  // side is allowed through rather than refused.
+  OUTSIDE_SERVICE_AREA: "OUTSIDE_SERVICE_AREA",
+  // There is deliberately no code here for "a provider tried to publish an
+  // in-person service with no address". That is a field-level VALIDATION_FAILED,
+  // keyed to `deliveryType` or `bookingScope` with a message naming the profile
+  // screen, because the form's job is to attach the message to the control the
+  // provider can act on. A distinct code would carry no information the details
+  // array does not, and `api.docs.test.js` treats a code nothing emits as drift
+  // — correctly, since a client branching on it would have a dead branch.
+
   UPLOAD_REJECTED: "UPLOAD_REJECTED",
   RANGE_TOO_WIDE: "RANGE_TOO_WIDE",
   SERVICE_RETIRED: "SERVICE_RETIRED",

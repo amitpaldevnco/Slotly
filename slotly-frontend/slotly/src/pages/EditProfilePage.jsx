@@ -23,11 +23,14 @@ import { useToast } from "../context/ToastContext";
 import { useNotifications } from "../context/NotificationsContext";
 import { imageUrl, parseApiError } from "../api/client";
 import * as authApi from "../api/auth";
+import * as providersApi from "../api/providers";
+import useApiResource from "../hooks/useApiResource";
 import Page, { PageHeader, SectionNav } from "../components/ui/Page";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import Field, { Input, Textarea, Select, CharCount } from "../components/ui/Field";
 import { CURRENCIES, currencyLabel, DEFAULT_CURRENCY } from "../lib/currencies";
+import { buildCountryOptions } from "../lib/countries";
 import { Alert, PageLoader } from "../components/ui/Feedback";
 import {
   primaryButton,
@@ -57,6 +60,10 @@ export default function EditProfilePage() {
   const [businessName, setBusinessName] = useState("");
   const [businessType, setBusinessType] = useState("");
   const [currency, setCurrency] = useState(DEFAULT_CURRENCY);
+  // Both roles. A client's country decides whether a Domestic service is
+  // bookable by them, so this is not a provider-only field.
+  const [country, setCountry] = useState("");
+  const [businessAddress, setBusinessAddress] = useState("");
   const [profilePicture, setProfilePicture] = useState(null);
   const [profilePicturePreview, setProfilePicturePreview] = useState("");
 
@@ -78,11 +85,36 @@ export default function EditProfilePage() {
       setBusinessName(user.business_name || "");
       setBusinessType(user.business_type || "");
       setCurrency(user.currency || DEFAULT_CURRENCY);
+      setCountry(user.country || "");
+      setBusinessAddress(user.business_address || "");
       if (user.avatar_url) setProfilePicturePreview(imageUrl(user.avatar_url));
     } else {
       navigate("/login");
     }
   }, [user, navigate]);
+
+  // Every country, not a shortlist: unlike a currency this is a fact with one
+  // right answer, and a list that omits someone's country leaves them unable to
+  // state it. See `lib/countries.js`.
+  const countryOptions = useMemo(() => buildCountryOptions(), []);
+
+  // The provider's own services, read for one purpose: to say whether clearing
+  // the address would leave a published In-Person service with nowhere to go.
+  //
+  // Worth a request because the alternative is a hint that guesses. "You have
+  // In-Person services published" is either true or it is a sentence that
+  // frightens a purely-online provider for no reason, and this page cannot tell
+  // which without asking. `enabled` keeps clients out of it entirely — they have
+  // no services and no address field.
+  const { data: ownServices } = useApiResource(
+    ({ signal }) => providersApi.listServices(user.id, { signal }),
+    { deps: [user?.id, isProvider], enabled: Boolean(isProvider && user?.id), initialData: [] }
+  );
+
+  const inPersonWithoutAddress =
+    isProvider &&
+    !businessAddress.trim() &&
+    (ownServices ?? []).some((service) => service.isActive && service.deliveryType === "in_person");
 
   const sections = useMemo(() => {
     const list = [{ id: "basic-info", label: "Basic information" }];
@@ -155,6 +187,12 @@ export default function EditProfilePage() {
       // up with nothing in it, and the server answered "No fields to update" —
       // so a number already shared with providers could never be withdrawn.
       formData.append("phoneNumber", phoneNumber.trim());
+      // Always sent, including as "" — the server reads an empty value as a
+      // deliberate "remove it" and stores null. Clearing has to be possible:
+      // the country is *inferred* from a timezone for most accounts, so someone
+      // whose inferred country is wrong needs a way to say "not this one" as
+      // well as a way to correct it.
+      formData.append("country", country);
 
       if (user.role === "provider") {
         formData.append("bio", bio);
@@ -162,6 +200,10 @@ export default function EditProfilePage() {
         formData.append("businessName", businessName.trim());
         if (businessType) formData.append("businessType", businessType);
         if (currency) formData.append("currency", currency);
+        // Sent unconditionally for the same reason as country: an empty string is
+        // how a provider withdraws an address that has become wrong, and a
+        // truthiness check here would silently keep publishing the old one.
+        formData.append("businessAddress", businessAddress);
       }
       if (profilePicture) {
         formData.append("profilePicture", profilePicture);
@@ -298,6 +340,36 @@ export default function EditProfilePage() {
                   />
                 </Field>
 
+                {/* In Basic information rather than Business details, because
+                    clients have one too: a service marked Domestic compares the
+                    client's country with the provider's, so a client with none
+                    cannot be told whether they are eligible to book it. */}
+                <Field
+                  id="country"
+                  label="Country"
+                  optional
+                  error={errors.country}
+                  hint={
+                    isProvider
+                      ? "Used for services you mark Domestic, and shown on your public page."
+                      : "Lets Slotly tell you which providers offer their services where you are."
+                  }
+                >
+                  <Select
+                    id="country"
+                    value={country}
+                    onChange={(event) => setCountry(event.target.value)}
+                    className={country === "" ? "text-ink-3" : ""}
+                  >
+                    <option value="">Prefer not to say</option>
+                    {countryOptions.map((option) => (
+                      <option key={option.code} value={option.code}>
+                        {option.name}
+                      </option>
+                    ))}
+                  </Select>
+                </Field>
+
                 <div className="flex flex-wrap items-center justify-between gap-3 rounded-md border border-line bg-subtle px-4 py-3">
                   <p className="flex items-center gap-2 text-[0.8125rem] text-ink-2">
                     <Icon name="globe" size={15} className="text-ink-3" />
@@ -380,6 +452,33 @@ export default function EditProfilePage() {
                         </option>
                       ))}
                     </Select>
+                  </Field>
+
+                  {/* Where in-person appointments happen.
+                      Clearable, deliberately, even while an In-Person service is
+                      published: at the point someone empties this the address is
+                      already wrong, and holding a stale one on a public page
+                      would keep sending clients to a place the provider has left.
+                      The dashboard's availability check reports the resulting gap
+                      rather than the form refusing to accept the truth. */}
+                  <Field
+                    id="businessAddress"
+                    label="Business address"
+                    optional
+                    error={errors.businessAddress}
+                    hint={
+                      inPersonWithoutAddress
+                        ? "You have In-Person services published, so clients currently have no address to travel to."
+                        : "Shown to clients booking an In-Person service. Leave it blank if you only work online."
+                    }
+                  >
+                    <Textarea
+                      id="businessAddress"
+                      rows={3}
+                      placeholder={"e.g. Unit 4, 118 Great Portland Street\nLondon W1W 6PP"}
+                      value={businessAddress}
+                      onChange={(event) => setBusinessAddress(event.target.value)}
+                    />
                   </Field>
                 </div>
               </ProfileSection>

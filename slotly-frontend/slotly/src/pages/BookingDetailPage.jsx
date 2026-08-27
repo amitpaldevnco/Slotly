@@ -57,6 +57,7 @@ import {
   zoneName,
 } from "../lib/ui";
 import usePageTitle from "../hooks/usePageTitle";
+import { deliveryLabel } from "../lib/serviceScope";
 
 const MAX_REASON = 500;
 
@@ -213,6 +214,27 @@ export default function BookingDetailPage() {
                   label="Price"
                   value={<span className={metricSm}>{formatPrice(booking.service.price, booking.service.currency)}</span>}
                 />
+                <DetailRow
+                  label="Delivery"
+                  value={deliveryLabel(booking.service.deliveryType)}
+                />
+                {/* Where to go, on the page the client opens on the day.
+                    Read live from the provider rather than snapshotted onto the
+                    booking, so a clinic that has moved shows its new address on
+                    appointments it took before the move — an address is a fact
+                    about where they are now, unlike the price, which is a term
+                    of the agreement and must not move. Absent for a virtual
+                    appointment, which does not happen anywhere. */}
+                {booking.service.location?.address && (
+                  <DetailRow
+                    label="Where"
+                    value={
+                      <span className="whitespace-pre-line">
+                        {booking.service.location.address}
+                      </span>
+                    }
+                  />
+                )}
                 <DetailRow label={isClient ? "Provider" : "Client"} value={otherParty.name} />
 
                 {/* Contact details are the provider's view only — a client has no

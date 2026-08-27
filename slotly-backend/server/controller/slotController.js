@@ -21,6 +21,7 @@ import { generateSlots, MAX_RANGE_DAYS } from "../services/slotEngine.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
 import { TIME_FORMAT, ACTIVE_STATUSES, describeRescheduleTerms } from "../services/bookingRules.js";
 import { parseId } from "../middleware/validateParams.js";
+import { evaluateBookingScope } from "../services/bookingScope.js";
 
 /**
  * GET /api/providers/:providerId/slots — public.
@@ -115,7 +116,8 @@ export const getAvailableSlots = async (req, res) => {
       // retired service is unbookable, but an appointment already on it is still
       // going ahead and still movable — see the note on `bookingId` above.
       `SELECT s.*, u.timezone AS provider_timezone, u.id AS provider_id,
-              u.currency AS provider_currency
+              u.currency AS provider_currency,
+              u.country AS provider_country, u.business_address AS provider_address
        FROM services s
        JOIN users u ON u.id = s.provider_id
        WHERE s.id = $1 AND s.provider_id = $2 AND (s.is_active OR $3) AND u.role = 'provider'`,
@@ -146,6 +148,34 @@ export const getAvailableSlots = async (req, res) => {
         }
       : service.rows[0];
     const viewerTimezone = await resolveViewerTimezone(req.query.timezone, req.user?.userId);
+
+    // Is this service on offer where the caller is?
+    //
+    // The read path's half of the gate `createBooking` enforces. Reported rather
+    // than raised: a 4xx here would leave the booking page with an error and no
+    // way to say *why* the picker is empty, and "there are no times" is a
+    // different and misleading statement from "this service is not offered in
+    // your country". So the response stays 200 and carries the verdict, and the
+    // page renders the reason in place of the picker.
+    //
+    // The days list is emptied when the verdict is a refusal, because offering
+    // times the write path will reject is the one outcome the "both paths, same
+    // gates" rule exists to prevent — a client would click a slot and be told no.
+    //
+    // Anonymous callers have no country, so `evaluateBookingScope` allows them
+    // through and the directory keeps working for someone who has not signed in.
+    // They are told what the restriction *is* by `service.bookingScope` in the
+    // payload; whether it applies to them is only answerable once they have an
+    // account with a country on it.
+    const viewer = req.user?.userId
+      ? await query("SELECT country FROM users WHERE id = $1", [req.user.userId])
+      : { rows: [] };
+
+    const eligibility = evaluateBookingScope({
+      service: row,
+      clientCountry: viewer.rows[0]?.country,
+      providerCountry: row.provider_country,
+    });
 
     const rangeStart = DateTime.fromISO(String(from || ""), { zone: viewerTimezone }).startOf("day");
     // `to` is inclusive, so the exclusive end of the range is the start of the
@@ -241,6 +271,12 @@ export const getAvailableSlots = async (req, res) => {
       });
     }
 
+    const days = eligibility.allowed
+      ? [...byDate.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([date, daySlots]) => ({ date, slots: daySlots }))
+      : [];
+
     return successResponse(res, "Slots fetched", {
       service: {
         id: row.id,
@@ -253,15 +289,37 @@ export const getAvailableSlots = async (req, res) => {
         currency: row.provider_currency,
         bufferBefore: row.buffer_before,
         bufferAfter: row.buffer_after,
+        // How the appointment is delivered, and where. The booking page needs
+        // both: an in-person slot has an address the client is about to travel
+        // to, and a virtual one deliberately has none.
+        deliveryType: row.delivery_type ?? "in_person",
+        bookingScope: row.booking_scope ?? "international",
+        location:
+          (row.delivery_type ?? "in_person") === "in_person" && row.provider_address
+            ? { address: row.provider_address, country: (row.provider_country ?? "").trim() || null }
+            : null,
       },
       clientTimezone: viewerTimezone,
       providerTimezone: row.provider_timezone,
       from: rangeStart.toFormat("yyyy-MM-dd"),
       to: rangeEnd.minus({ days: 1 }).toFormat("yyyy-MM-dd"),
-      totalSlots: slots.length,
-      days: [...byDate.entries()]
-        .sort(([a], [b]) => a.localeCompare(b))
-        .map(([date, daySlots]) => ({ date, slots: daySlots })),
+      // Whether the caller may book any of this at all, and why not if not.
+      // Always present, with `allowed: true` in the ordinary case, so a consumer
+      // reads one shape rather than testing for the field's existence.
+      eligibility: {
+        allowed: eligibility.allowed,
+        code: eligibility.code,
+        reason: eligibility.reason,
+        bookingScope: eligibility.scope,
+        providerCountry: eligibility.providerCountry,
+        clientCountry: eligibility.clientCountry,
+      },
+      // Counted from what is actually being returned, not from what the engine
+      // generated: a refused caller is shown no times, and a total that
+      // disagreed with the list would be a number describing slots nobody can
+      // see or book.
+      totalSlots: days.reduce((sum, day) => sum + day.slots.length, 0),
+      days,
     });
   } catch (err) {
     console.error("getAvailableSlots error:", err.message);

@@ -38,6 +38,33 @@ export const openApiDocument = {
       "",
       "**The one error worth special-casing:** losing the race for a slot is `409` with code `SLOT_TAKEN`.",
       "It is distinct from `SLOT_UNAVAILABLE` (the time is outside the provider's hours) and from any 5xx.",
+      "",
+      "## Where a service happens, and who may book it",
+      "",
+      "Two independent properties of every service, and they are not derived from one another:",
+      "",
+      "- **`deliveryType`** — `in_person` or `virtual`. Says *where*. An in-person service carries the",
+      "  provider's street address as `location`; a virtual one carries `location: null`, deliberately,",
+      "  because an online appointment does not happen at the provider's premises.",
+      "- **`bookingScope`** — `domestic` or `international`. Says *who*. A domestic service is bookable only",
+      "  by a client whose `country` matches the provider's.",
+      "",
+      "A London clinic can see international visitors in person, and an online tutor can take domestic",
+      "students only. Both are representable because the two fields are separate, not derived.",
+      "",
+      "**Enforcement is server-side.** `POST /bookings` and `POST /bookings/{id}/reschedule` return `409`",
+      "`OUTSIDE_SERVICE_AREA` when a domestic service is booked from another country. `GET",
+      "/providers/{id}/slots` reports the same verdict up front in `eligibility` and returns an empty",
+      "`days` list rather than offering times the write path would refuse.",
+      "",
+      "**An unknown country is allowed through.** `users.country` is nullable — it was added after the",
+      "first release and is inferred from each account's timezone where that is unambiguous — so when",
+      "either side's country is unknown the domestic rule does not apply. Refusing on the strength of a",
+      "fact the server does not have would restrict people who cannot see why.",
+      "",
+      "**Defaults.** `deliveryType` defaults to `in_person` and `bookingScope` to `international`. Both are",
+      "omissible on create, and every service predating these fields sits on them — `international` in",
+      "particular imposes no restriction, so nothing about existing services changed."
     ].join("\n"),
   },
   servers: [{ url: "/api", description: "Same origin as the running server" }],
@@ -79,6 +106,7 @@ export const openApiDocument = {
               "RATE_LIMITED",
               "BOOKING_NOT_ACTIVE",
               "SERVICE_TERMS_CHANGED",
+              "OUTSIDE_SERVICE_AREA",
               "APPOINTMENT_NOT_STARTED",
               "INVALID_TRANSITION",
               "INVALID_STATUS",
@@ -214,6 +242,37 @@ export const openApiDocument = {
           },
           coverImage: { type: "string", nullable: true, example: "/uploads/services/2_1717.jpg" },
           isActive: { type: "boolean", description: "False once retired; hidden from booking" },
+          deliveryType: {
+            type: "string",
+            enum: ["in_person", "virtual"],
+            default: "in_person",
+            description:
+              "Where the appointment happens. Publishing an `in_person` service requires the " +
+              "provider to have a business address; the write is refused with a field-level " +
+              "`VALIDATION_FAILED` on `deliveryType` if they do not.",
+          },
+          bookingScope: {
+            type: "string",
+            enum: ["domestic", "international"],
+            default: "international",
+            description:
+              "Who may book it. `domestic` restricts it to clients in the provider's own country " +
+              "and requires the provider to have a country set. `international` is the default " +
+              "and imposes no restriction.",
+          },
+          location: {
+            type: "object",
+            nullable: true,
+            description:
+              "Where an in-person appointment takes place, drawn from the provider. **Null for " +
+              "every `virtual` service**, and null for an `in_person` one whose provider has no " +
+              "address on file. Read live rather than snapshotted: a clinic that moves should " +
+              "show its new address on appointments it has already taken.",
+            properties: {
+              address: { type: "string", nullable: true, description: "Free text; may contain newlines" },
+              country: { type: "string", nullable: true, description: "ISO 3166-1 alpha-2", example: "GB" },
+            },
+          },
           hasCustomAvailability: {
             type: "boolean",
             description: "True when the service has its own hours instead of the provider's default ones",
@@ -261,6 +320,36 @@ export const openApiDocument = {
               "The directory is multi-currency and nothing here is converted.",
           },
           serviceCount: { type: "integer", description: "Active services only" },
+          country: {
+            type: "string",
+            nullable: true,
+            example: "GB",
+            description:
+              "ISO 3166-1 alpha-2, and the value a `domestic` service compares against the " +
+              "client's own. Null when the account has never stated one and its timezone " +
+              "implied none.",
+          },
+          businessAddress: {
+            type: "string",
+            nullable: true,
+            description:
+              "Free text, may contain newlines. Where in-person appointments happen. Null for " +
+              "a provider who works only online.",
+          },
+          deliveryTypes: {
+            type: "array",
+            items: { type: "string", enum: ["in_person", "virtual"] },
+            description:
+              "Which delivery types this provider has something **active** under. An array, " +
+              "not a single value: a clinic offering both in-person and online consultations " +
+              "must appear under either filter, which one value per provider cannot express. " +
+              "Empty when they have no active services.",
+          },
+          bookingScopes: {
+            type: "array",
+            items: { type: "string", enum: ["domestic", "international"] },
+            description: "The same, for booking scope.",
+          },
           fromPrice: {
             type: "string",
             nullable: true,
@@ -291,6 +380,86 @@ export const openApiDocument = {
               "Which of this provider's services matched `search`, so a card can say why it " +
               "is in the results. Empty when the provider matched on their own name, or when " +
               "no `search` was given.",
+          },
+        },
+      },
+
+      ProviderProfile: {
+        type: "object",
+        description:
+          "The full record behind `GET /providers/{id}`, and the shopfront a client reads " +
+          "before deciding to book. Unauthenticated, so every field here is public.\n\n" +
+          "Mixed casing is historical rather than intentional: `avatar_url`, `business_name`, " +
+          "`business_type` predate the camelCase convention the rest of the API follows and " +
+          "are still sent under their original names, because the web client reads them " +
+          "positionally and renaming them would be a breaking change for no gain. Fields " +
+          "added since — `phoneNumber`, `country`, `businessAddress`, `cancellationCutoffHours` " +
+          "— use camelCase.",
+        properties: {
+          id: { type: "integer" },
+          name: { type: "string" },
+          avatar_url: { type: "string", nullable: true },
+          bio: { type: "string", nullable: true },
+          timezone: { type: "string", example: "Europe/London" },
+          business_name: { type: "string", nullable: true },
+          business_type: { type: "string", nullable: true },
+          qualifications: { type: "string", nullable: true, description: "Free text, unverified" },
+          currency: { type: "string", description: "ISO 4217; what every price of theirs is read in" },
+          email: {
+            type: "string",
+            format: "email",
+            description:
+              "**Public.** The account's own sign-in address, published so a client can ask a " +
+              "question before booking — per-booking messaging only exists after a booking. " +
+              "There is no separate opt-in public address today.",
+          },
+          phoneNumber: {
+            type: "string",
+            nullable: true,
+            description:
+              "**Public**, on the same reasoning as `email`, and equally the account's own " +
+              "number. Null when the provider has cleared it.",
+          },
+          country: { type: "string", nullable: true, example: "GB", description: "ISO 3166-1 alpha-2" },
+          businessAddress: {
+            type: "string",
+            nullable: true,
+            description: "Free text, may contain newlines. Where in-person appointments happen.",
+          },
+          cancellationCutoffHours: {
+            type: "integer",
+            description:
+              "How many hours before an appointment a client may still cancel it. Snapshotted " +
+              "onto each booking at creation, so changing it never strands an existing one.",
+          },
+          isOwner: {
+            type: "boolean",
+            description:
+              "True when the caller is this provider. The page uses it to say \"this is your " +
+              "own page\" instead of offering a booking button; it grants nothing.",
+          },
+          stats: {
+            type: "object",
+            description:
+              "Aggregates over bookings, never individual rows — no client name, time or " +
+              "contact detail crosses this boundary. Exact figures rather than \"500+\" " +
+              "buckets: a bucket reads fine at 512 and badly at 3, and the UI cannot know " +
+              "which it is holding.",
+            properties: {
+              completedAppointments: { type: "integer" },
+              clientsServed: { type: "integer" },
+              activeServices: { type: "integer" },
+              ratingAverage: {
+                type: "number",
+                nullable: true,
+                format: "float",
+                example: 4.3,
+                description:
+                  "Rounded to one decimal place, the same way the directory and the reviews " +
+                  "list round it. **Null, not 0, when nobody has reviewed yet.**",
+              },
+              ratingCount: { type: "integer" },
+            },
           },
         },
       },
@@ -588,6 +757,27 @@ export const openApiDocument = {
                   timezone: { type: "string", description: "IANA name; rejected if Luxon cannot resolve it" },
                   businessName: { type: "string", description: "Required when role is provider" },
                   businessType: { type: "string", description: "Required when role is provider" },
+                  currency: { type: "string", description: "ISO 4217; required when role is provider" },
+                  country: {
+                    type: "string",
+                    example: "GB",
+                    description:
+                      "ISO 3166-1 alpha-2. Optional, and asked of **both** roles: a client's " +
+                      "country is what a `domestic` service compares against, so a client " +
+                      "without one cannot be told whether they are eligible. Omitted, it is " +
+                      "inferred from `timezone` where that is unambiguous. An unresolvable " +
+                      "value is not fatal — the column stays null, which the domestic rule " +
+                      "treats as \"unknown\" and allows through.",
+                  },
+                  businessAddress: {
+                    type: "string",
+                    description:
+                      "Free text, may contain newlines, max 500 characters. Providers only, and " +
+                      "optional here on purpose: a provider who will only ever offer virtual " +
+                      "services has no address, and this screen is the wrong place to find that " +
+                      "out. It is required at the point it becomes load-bearing — publishing an " +
+                      "`in_person` service.",
+                  },
                 },
               },
             },
@@ -620,6 +810,26 @@ export const openApiDocument = {
                   bio: { type: "string", maxLength: 500, description: "Providers only" },
                   businessName: { type: "string", description: "Providers only" },
                   businessType: { type: "string", description: "Providers only" },
+                  country: {
+                    type: "string",
+                    nullable: true,
+                    example: "GB",
+                    description:
+                      "ISO 3166-1 alpha-2, both roles. Send `\"\"` to clear it — clearing has to " +
+                      "be possible because the value is *inferred* from a timezone for most " +
+                      "accounts, so someone whose inferred country is wrong needs a way to say " +
+                      "\"not this one\" as well as a way to correct it.",
+                  },
+                  businessAddress: {
+                    type: "string",
+                    nullable: true,
+                    description:
+                      "Providers only; free text, max 500 characters. Send `\"\"` to clear it. " +
+                      "Clearing is allowed even while an `in_person` service is published: the " +
+                      "address is already wrong at that point, and holding a stale one on a " +
+                      "public page would keep sending clients somewhere the provider has left. " +
+                      "`GET /availability/health` reports the resulting gap.",
+                  },
                   profilePicture: { type: "string", format: "binary" },
                 },
               },
@@ -658,6 +868,24 @@ export const openApiDocument = {
         parameters: [
           { name: "search", in: "query", schema: { type: "string" }, description: "Name, business or category" },
           { name: "businessType", in: "query", schema: { type: "string" } },
+          {
+            name: "deliveryType",
+            in: "query",
+            schema: { type: "string", enum: ["in_person", "virtual"] },
+            description:
+              "Keep only providers with at least one **active** service of this type. An " +
+              "unrecognised value is a 400 rather than being ignored — silently returning the " +
+              "whole directory would look like a filter that had been applied.",
+          },
+          {
+            name: "scope",
+            in: "query",
+            schema: { type: "string", enum: ["domestic", "international"] },
+            description:
+              "The same, for booking scope. Note this filters on what the *service* declares, " +
+              "not on whether the calling client is eligible for it — eligibility is per client " +
+              "and is reported by `GET /providers/{id}/slots`.",
+          },
           { name: "limit", in: "query", schema: { type: "integer", default: 50, maximum: 100 } },
         ],
         responses: {
@@ -688,7 +916,40 @@ export const openApiDocument = {
         summary: "One provider's public profile",
         security: [],
         parameters: [{ name: "id", in: "path", required: true, schema: { type: "integer" } }],
-        responses: { 200: { description: "Provider" }, 404: errorRef("No such provider") },
+        description:
+          "The provider's shopfront. **Unauthenticated** — `security: []` — so everything " +
+          "below is readable by anything that can fetch a URL.\n\n" +
+          "Includes `country` (ISO 3166-1 alpha-2, nullable) and `businessAddress` (free text, " +
+          "nullable). Both are public: someone deciding whether to book an in-person " +
+          "appointment needs to know they can get there, and finding that out only after " +
+          "signing in and reaching the confirmation step is the wrong moment to learn it.\n\n" +
+          "**Also includes the provider's `email` and `phoneNumber`, deliberately.** A " +
+          "shopfront that cannot be contacted is a worse product than one whose contact " +
+          "details are public, and Slotly's per-booking messaging only exists *after* a " +
+          "booking — too late for \"do you treat this injury?\". The cost is accepted rather " +
+          "than hidden: these are the account's own address and number, not separate public " +
+          "ones, so a provider using a personal mobile is publishing a personal mobile.\n\n" +
+          "Nothing about a **client** is exposed here. `stats` are aggregates over bookings; " +
+          "no individual booking, name, time or contact detail crosses this boundary. The " +
+          "directory (`GET /providers`) does not carry either field.",
+        responses: {
+          200: {
+            description: "Provider",
+            content: {
+              "application/json": {
+                schema: {
+                  type: "object",
+                  properties: {
+                    success: { type: "boolean", const: true },
+                    message: { type: "string" },
+                    data: { $ref: "#/components/schemas/ProviderProfile" },
+                  },
+                },
+              },
+            },
+          },
+          404: errorRef("No such provider"),
+        },
       },
     },
 
@@ -728,7 +989,7 @@ export const openApiDocument = {
         tags: ["Slots"],
         summary: "Bookable slots for one service",
         description:
-          "Slots are derived from the provider's hours, the service's duration and buffers, and existing bookings. `from` and `to` are calendar dates read in `timezone`, and `to` is inclusive. Ranges wider than 62 days are refused with RANGE_TOO_WIDE.\n\nBooking is real time: the only slot excluded for being too soon is one that has already started, so a range beginning today returns the rest of today, including slots inside the next hour. Because of that, a response held on screen goes stale — it carries no expiry, and the client should re-request rather than trust an old list.\n\nPass `bookingId` when the answer will be used to reschedule that booking. It aligns the list with what `POST /bookings/{id}/reschedule` will accept: the booking stops blocking its own move, slots are sized from its snapshotted duration rather than the service's current one, and a retired service is still answered. Requires a session held by the client or provider on that booking.",
+          "Slots are derived from the provider's hours, the service's duration and buffers, and existing bookings. `from` and `to` are calendar dates read in `timezone`, and `to` is inclusive. Ranges wider than 62 days are refused with RANGE_TOO_WIDE.\n\nBooking is real time: the only slot excluded for being too soon is one that has already started, so a range beginning today returns the rest of today, including slots inside the next hour. Because of that, a response held on screen goes stale — it carries no expiry, and the client should re-request rather than trust an old list.\n\nPass `bookingId` when the answer will be used to reschedule that booking. It aligns the list with what `POST /bookings/{id}/reschedule` will accept: the booking stops blocking its own move, slots are sized from its snapshotted duration rather than the service's current one, and a retired service is still answered. Requires a session held by the client or provider on that booking.\n\n**Service area.** The response always carries an `eligibility` object saying whether the caller may book any of this. When a `domestic` service is requested by a client in another country, `eligibility.allowed` is `false` with code `OUTSIDE_SERVICE_AREA`, and `days` is **empty** with `totalSlots: 0` — offering times `POST /bookings` would refuse is the one outcome the matching gates exist to prevent. The status stays 200 because \"there are no times\" and \"this service is not offered in your country\" are different facts, and an error response could not carry the second. An anonymous caller has no country, so eligibility is allowed and the restriction is visible only as `service.bookingScope`.",
         security: [],
         parameters: [
           { name: "id", in: "path", required: true, schema: { type: "integer" } },
@@ -751,7 +1012,10 @@ export const openApiDocument = {
         ],
         responses: {
           200: {
-            description: "Slots grouped by the caller's local date",
+            description:
+              "Slots grouped by the caller's local date, plus `eligibility` and a `service` " +
+              "object carrying `deliveryType`, `bookingScope` and `location`. `days` is empty " +
+              "when `eligibility.allowed` is false.",
             content: {
               "application/json": {
                 schema: {
@@ -1149,7 +1413,9 @@ Routed through the same \`diagnoseSlotFeasibility()\` the validation endpoint us
 
 The same feasibility check as \`POST /availability/validate\`, run against what is already stored rather than a draft, once per active service. This is what powers the dashboard warning that a service is configured so that it can never be booked.
 
-Like the dry run, it deliberately ignores bookings, one-off blocks and the booking lead time: none of those are things a provider can fix by editing their settings, and reporting a fully-booked day as a misconfiguration would be noise.`,
+Like the dry run, it deliberately ignores bookings, one-off blocks and the booking lead time: none of those are things a provider can fix by editing their settings, and reporting a fully-booked day as a misconfiguration would be noise.
+
+Also reports \`servicesMissingLocation\`: services whose \`deliveryType\`/\`bookingScope\` need a profile field the provider has not set — an \`in_person\` service with no \`businessAddress\`, or a \`domestic\` one with no \`country\`. Kept apart from \`misconfiguredServices\` because the remedy is on a different screen: this one is fixed under Profile, not under Availability. \`providerLocation\` carries the two fields it refers to so a dashboard needs no second request.`,
         responses: {
           200: {
             description: "One entry per active service.",
@@ -1373,7 +1639,11 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
           ),
           403: errorRef("Not a client account"),
           404: errorRef("No such service, or it has been retired"),
-          409: errorRef("SLOT_TAKEN (lost the race) or SLOT_UNAVAILABLE (outside the provider's hours)"),
+          409: errorRef(
+            "SLOT_TAKEN (lost the race), SLOT_UNAVAILABLE (outside the provider's hours), or " +
+              "OUTSIDE_SERVICE_AREA (the service is `domestic` and the client is in another " +
+              "country; `details` carries `bookingScope`, `providerCountry` and `clientCountry`)"
+          ),
         },
       },
       get: {
@@ -1502,7 +1772,11 @@ A conflict is a 200 here, not an error: it is the answer to the question asked. 
           400: errorRef("VALIDATION_FAILED, or a time in the past"),
           404: errorRef("No such booking, or the caller is neither party"),
           409: errorRef(
-            "SLOT_TAKEN, SLOT_UNAVAILABLE, BOOKING_NOT_ACTIVE, RESCHEDULE_WINDOW_CLOSED or SERVICE_TERMS_CHANGED"
+            "SLOT_TAKEN, SLOT_UNAVAILABLE, BOOKING_NOT_ACTIVE, RESCHEDULE_WINDOW_CLOSED, " +
+              "SERVICE_TERMS_CHANGED, or OUTSIDE_SERVICE_AREA. The last applies to a **client's** " +
+              "own move only: a provider moving somebody else's appointment is not entering a new " +
+              "arrangement on their behalf, and the alternative to moving an out-of-area booking " +
+              "would be destroying it."
           ),
         },
       },

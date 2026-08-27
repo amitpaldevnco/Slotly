@@ -11,6 +11,7 @@ import {
   ERROR_CODES,
 } from "../responseController/responseHandler.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
+import { checkProviderLocation } from "../services/bookingScope.js";
 import { diagnoseSlotFeasibility } from "../services/slotEngine.js";
 import { assessTimezoneChange, isResolvableTimezone } from "../services/timezoneChange.js";
 import { parseId } from "../middleware/validateParams.js";
@@ -601,12 +602,29 @@ export const getAvailabilityHealth = async (req, res) => {
     const providerId = req.user.userId;
 
     const services = await query(
-      `SELECT id, service_name, duration, buffer_before, buffer_after, slot_interval
+      `SELECT id, service_name, duration, buffer_before, buffer_after, slot_interval,
+              delivery_type, booking_scope
        FROM services
        WHERE provider_id = $1 AND is_active
        ORDER BY service_name`,
       [providerId]
     );
+
+    // The provider's own location, so this report can tell them when a published
+    // service depends on a field their profile does not have.
+    //
+    // It reaches them here rather than only from the service form because that
+    // form is not where the gap is discovered: `updateProfile` lets an address be
+    // cleared while an In-Person service is live — deliberately, since a stale
+    // address on a public page is worse than a missing one — and a service that
+    // predates this feature was never asked for one at all. Either way the
+    // provider ends up with an in-person service and nowhere for it to happen,
+    // and the dashboard is where they will see it.
+    const owner = await query(
+      "SELECT country, business_address FROM users WHERE id = $1",
+      [providerId]
+    );
+    const providerLocation = owner.rows[0] ?? {};
 
     // Sequential rather than parallel: this runs on a dashboard load, the row
     // count is a provider's service list rather than anything unbounded, and
@@ -617,10 +635,27 @@ export const getAvailabilityHealth = async (req, res) => {
       const { rules, scope } = await getEffectiveAvailability({ providerId, serviceId: service.id });
       const report = diagnoseSlotFeasibility({ rules, service });
 
+      // What this service needs from the provider's profile and is not getting.
+      // Empty in the ordinary case, so a consumer can treat a non-empty array as
+      // "something to show" without comparing flags.
+      const location = checkProviderLocation({
+        deliveryType: service.delivery_type,
+        bookingScope: service.booking_scope,
+        provider: providerLocation,
+      });
+
       reports.push({
         serviceId: service.id,
         serviceName: service.service_name,
         scope,
+        deliveryType: service.delivery_type,
+        bookingScope: service.booking_scope,
+        // "This service is published but cannot be honoured as described." A
+        // separate axis from `bookable`, which is about whether the hours yield
+        // any slot at all: a service can have a perfectly good week of slots and
+        // still be an in-person appointment with no address.
+        locationComplete: location.ok,
+        missingLocation: location.missing,
         hasRules: rules.length > 0,
         bookable: report.bookable,
         totalSlotsPerWeek: report.totalSlotsPerWeek,
@@ -641,6 +676,26 @@ export const getAvailabilityHealth = async (req, res) => {
       // a slot needs "your day is too short for this service".
       servicesWithoutHours: reports.filter((r) => !r.hasRules).map((r) => r.serviceName),
       misconfiguredServices: reports.filter((r) => r.hasRules && !r.bookable),
+      // Kept apart from `misconfiguredServices` for the reason that field is
+      // itself split from `servicesWithoutHours`: the three need different words
+      // and different remedies. This one is fixed on the profile screen, not on
+      // the availability screen or the service form, so lumping it in with the
+      // others would send the provider to the wrong place.
+      servicesMissingLocation: reports
+        .filter((r) => !r.locationComplete)
+        .map((r) => ({
+          serviceId: r.serviceId,
+          serviceName: r.serviceName,
+          deliveryType: r.deliveryType,
+          bookingScope: r.bookingScope,
+          missing: r.missingLocation,
+        })),
+      // The two profile fields the list above refers to, so a dashboard can word
+      // its prompt without a second request.
+      providerLocation: {
+        country: providerLocation.country ? String(providerLocation.country).trim() : null,
+        hasAddress: Boolean(String(providerLocation.business_address ?? "").trim()),
+      },
     });
   } catch (err) {
     console.error("getAvailabilityHealth error:", err.message);

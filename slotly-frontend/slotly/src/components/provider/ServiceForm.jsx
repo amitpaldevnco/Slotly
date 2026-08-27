@@ -33,6 +33,13 @@ import {
   formatPrice,
   formatDuration,
 } from "../../lib/ui";
+import {
+  DELIVERY_OPTIONS,
+  SCOPE_OPTIONS,
+  DEFAULT_DELIVERY_TYPE,
+  DEFAULT_BOOKING_SCOPE,
+} from "../../lib/serviceScope";
+import { Link } from "react-router-dom";
 
 const emptyForm = {
   serviceName: "",
@@ -42,9 +49,64 @@ const emptyForm = {
   bufferBefore: "",
   bufferAfter: "",
   slotInterval: "30",
+  // Seeded with the same defaults the column carries, so a provider who never
+  // touches these two controls sends exactly what the server would have applied
+  // on its own — the form agrees with the schema instead of racing it.
+  deliveryType: DEFAULT_DELIVERY_TYPE,
+  bookingScope: DEFAULT_BOOKING_SCOPE,
 };
 
 const MAX_DESCRIPTION = 2000;
+
+/**
+ * One radio drawn as a card: icon, label, and a line saying what it means.
+ *
+ * A card rather than a bare radio because these two choices change what the
+ * service *is* — where it happens and who can buy it — and a provider skimming
+ * a form should not have to infer that from a four-word label. The hint is the
+ * whole reason the option lists in `lib/serviceScope` carry one.
+ *
+ * A real `<input type="radio">` underneath, visually hidden rather than replaced
+ * by a styled `<div>`, so arrow-key navigation, the roving tab stop and the
+ * grouping the surrounding `<fieldset>`/`<legend>` provides all come from the
+ * platform instead of being reimplemented.
+ */
+function ChoiceCard({ name, option, checked, onChange }) {
+  return (
+    <label
+      className={`flex cursor-pointer items-start gap-3 rounded-md border p-3 transition-colors ${
+        checked
+          ? "border-primary bg-primary/5"
+          : "border-outline-variant hover:border-primary/40 hover:bg-surface-container-low"
+      }`}
+    >
+      <input
+        type="radio"
+        name={name}
+        value={option.value}
+        checked={checked}
+        onChange={onChange}
+        className="sr-only"
+      />
+      <span
+        aria-hidden="true"
+        className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-full ${
+          checked ? "bg-primary text-on-primary" : "bg-surface-variant text-on-surface-variant"
+        }`}
+      >
+        <Icon name={option.icon} size={17} />
+      </span>
+      <span className="min-w-0">
+        <span className="block font-small text-small font-semibold text-on-surface">
+          {option.label}
+        </span>
+        <span className="block font-caption text-caption text-on-surface-variant">
+          {option.hint}
+        </span>
+      </span>
+    </label>
+  );
+}
 
 export default function ServiceForm({ existingService, onSaved, onCancel, formId, onBusyChange }) {
   // The live preview prices in the signed-in provider's own currency — this form
@@ -58,6 +120,18 @@ export default function ServiceForm({ existingService, onSaved, onCancel, formId
   const [formError, setFormError] = useState("");
 
   const isEditing = Boolean(existingService);
+
+  // Whether the current selection needs a profile field the provider has not
+  // filled in. Derived from `user` rather than fetched: the auth context already
+  // holds the signed-in provider's own row, and this form is only ever reachable
+  // by the owner of the service being edited.
+  //
+  // Advisory only. The server re-checks both against the row it is about to
+  // write — see `locationErrors` in `serviceController` — so this decides which
+  // warning to show, never whether the save is allowed.
+  const needsAddress =
+    fields.deliveryType === "in_person" && !String(user?.business_address ?? "").trim();
+  const needsCountry = fields.bookingScope === "domestic" && !user?.country;
 
   useEffect(() => {
     onBusyChange?.(loading);
@@ -73,6 +147,8 @@ export default function ServiceForm({ existingService, onSaved, onCancel, formId
         bufferBefore: existingService.bufferBefore ?? "",
         bufferAfter: existingService.bufferAfter ?? "",
         slotInterval: String(existingService.slotInterval ?? 30),
+        deliveryType: existingService.deliveryType ?? DEFAULT_DELIVERY_TYPE,
+        bookingScope: existingService.bookingScope ?? DEFAULT_BOOKING_SCOPE,
       });
       setCoverImagePreview(imageUrl(existingService.coverImage) || "");
     } else {
@@ -125,6 +201,8 @@ export default function ServiceForm({ existingService, onSaved, onCancel, formId
       if (fields.bufferBefore !== "") formData.append("bufferBefore", fields.bufferBefore);
       if (fields.bufferAfter !== "") formData.append("bufferAfter", fields.bufferAfter);
       if (fields.slotInterval !== "") formData.append("slotInterval", fields.slotInterval);
+      formData.append("deliveryType", fields.deliveryType);
+      formData.append("bookingScope", fields.bookingScope);
       if (coverImage) formData.append("coverImage", coverImage);
 
       const saved = isEditing
@@ -288,6 +366,93 @@ export default function ServiceForm({ existingService, onSaved, onCancel, formId
                   Duration, both buffers and the spacing interact in a way that
                   is genuinely hard to predict — see the component. */}
               <SlotYieldPreview fields={fields} serviceId={existingService?.id} />
+
+              <hr className="border-t border-outline-variant" />
+
+              {/* Where the appointment happens, and who may book it.
+                  Two separate controls, never one, because the combinations are
+                  all real: a clinic that sees international visitors in person,
+                  an online tutor registered to teach in one country only.
+                  Deriving either from the other would make one of those
+                  impossible to express. */}
+              <fieldset>
+                <legend className="mb-2 block font-small text-small text-on-surface">
+                  How is it delivered?
+                </legend>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {DELIVERY_OPTIONS.map((option) => (
+                    <ChoiceCard
+                      key={option.value}
+                      name="deliveryType"
+                      option={option}
+                      checked={fields.deliveryType === option.value}
+                      onChange={handleChange("deliveryType")}
+                    />
+                  ))}
+                </div>
+                {errors.deliveryType && (
+                  <p role="alert" className="mt-2 flex items-start gap-1.5 font-small text-small text-error">
+                    <Icon name="warning" size={15} className="mt-px shrink-0" />
+                    <span>{errors.deliveryType}</span>
+                  </p>
+                )}
+                {/* Warned about here, before Save, rather than only being
+                    refused by the API afterwards. The provider is choosing
+                    In-Person on a form that has no address field on it, so
+                    without this the refusal arrives with no visible cause and
+                    names a screen they have to go and find. */}
+                {needsAddress && !errors.deliveryType && (
+                  <Alert tone="warn" className="mt-2">
+                    An In-Person service needs your business address, and your profile does not
+                    have one yet.{" "}
+                    <Link to="/profile" className="font-semibold underline">
+                      Add it under Profile
+                    </Link>
+                    , or choose Virtual.
+                  </Alert>
+                )}
+              </fieldset>
+
+              <fieldset>
+                <legend className="mb-2 block font-small text-small text-on-surface">
+                  Who can book it?
+                </legend>
+                <div className="grid gap-2 sm:grid-cols-2">
+                  {SCOPE_OPTIONS.map((option) => (
+                    <ChoiceCard
+                      key={option.value}
+                      name="bookingScope"
+                      option={option}
+                      checked={fields.bookingScope === option.value}
+                      onChange={handleChange("bookingScope")}
+                    />
+                  ))}
+                </div>
+                {errors.bookingScope && (
+                  <p role="alert" className="mt-2 flex items-start gap-1.5 font-small text-small text-error">
+                    <Icon name="warning" size={15} className="mt-px shrink-0" />
+                    <span>{errors.bookingScope}</span>
+                  </p>
+                )}
+                {needsCountry && !errors.bookingScope && (
+                  <Alert tone="warn" className="mt-2">
+                    A Domestic service needs your country, so Slotly knows which clients are
+                    local.{" "}
+                    <Link to="/profile" className="font-semibold underline">
+                      Set it under Profile
+                    </Link>
+                    , or choose International.
+                  </Alert>
+                )}
+                <p className={`${hintClasses} mt-2 flex items-start gap-2`}>
+                  <Icon name="info" size={16} className="mt-px shrink-0" />
+                  <span>
+                    Domestic compares the client's country with yours. A client who has not
+                    stated a country is not turned away — Slotly does not refuse a booking on a
+                    fact it does not have.
+                  </span>
+                </p>
+              </fieldset>
 
               <hr className="border-t border-outline-variant" />
 

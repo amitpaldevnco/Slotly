@@ -19,14 +19,27 @@ Password for all three: **`SlotlyDemo123!`**
 
 | Role | Email | Timezone | Why this one |
 |---|---|---|---|
-| Provider | `priya.provider@slotly.demo` | `Europe/London` | **Observes DST** — her 09:00–17:00 stays 09:00–17:00 across the clock change while the UTC instant moves |
-| Provider | `arjun.provider@slotly.demo` | `Asia/Kolkata` | **Never observes DST**, and sits on a **+05:30** half-hour offset |
-| Client | `casey.client@slotly.demo` | `America/New_York` | A third zone, behind both providers, so every screen does a real conversion |
+| Provider | `priya.provider@slotly.demo` | `Europe/London` (**GB**) | **Observes DST** — her 09:00–17:00 stays 09:00–17:00 across the clock change while the UTC instant moves. A clinic, so she has a street address and everything she offers is **in-person** |
+| Provider | `arjun.provider@slotly.demo` | `Asia/Kolkata` (**IN**) | **Never observes DST**, and sits on a **+05:30** half-hour offset. Teaches online, so he has **no address at all** — which is the case a nullable `business_address` exists for |
+| Client | `casey.client@slotly.demo` | `America/New_York` (**US**) | A third zone *and* a third country, behind both providers, so every screen does a real conversion and both domestic services are genuinely out of her reach |
+
+The seed ships all four delivery/scope combinations on purpose: Priya's *Sports
+Injury Rehab* is in-person **domestic**, Arjun's *Physics Problem Clinic* is
+virtual **domestic**, and the rest are international. Nothing Casey is ineligible
+for is pre-booked — the seed filters its own bookings through
+`evaluateBookingScope`, so it cannot create data the API would refuse.
 
 **A one-minute tour:** sign in as Casey, open *Find providers* → *Priya Raman* →
 *Initial Assessment*. Every slot is labelled in New York time with Priya's London
-time beside it. Book one; the confirmation shows both zones. Now sign in as Priya
-and the same appointment appears on her calendar at the correct London time.
+time beside it, and the panel shows the clinic's address. Book one; the
+confirmation shows both zones. Now sign in as Priya and the same appointment
+appears on her calendar at the correct London time.
+
+**Then see the service area refuse her:** back as Casey, select *Sports Injury
+Rehab* on the same page. The button reads *Not available in your country*, and
+opening the booking page names both countries and links to Profile — because the
+likeliest cause is a country inferred from a timezone rather than stated. Filter
+the directory by *Virtual (online)* and only Arjun remains.
 
 ---
 
@@ -44,6 +57,11 @@ them:
    instant is stored in UTC and converted only at the edges, for display. See
    [Time and timezones](#time-and-timezones).
 
+Every other rule — the cancellation cutoff, the service area, who may move an
+appointment — is enforced in a controller against the row being touched, and the
+read path that offers the action is made to agree with the write path that decides
+it. See [Where a service happens](#where-a-service-happens-and-who-may-book-it).
+
 ---
 
 ## Contents
@@ -53,6 +71,7 @@ them:
 - [Environment variables](#environment-variables)
 - [Architecture](#architecture)
 - [Data model](#data-model)
+- [Where a service happens, and who may book it](#where-a-service-happens-and-who-may-book-it)
 - [How availability is modelled](#how-availability-is-modelled)
 - [No double-booking](#no-double-booking)
 - [Time and timezones](#time-and-timezones)
@@ -259,8 +278,8 @@ bookings ──< booking_events
 
 | Table | Holds |
 |---|---|
-| `users` | Both roles. `role` is `NULL` until profile setup completes, which is how the app knows to route someone there. Carries `timezone`, the provider's `cancellation_cutoff_hours`, and `currency` — the ISO 4217 code every price of theirs is read in. Currency sits on the provider, not the service, because a provider bills in one currency; putting it per-service would allow a profile whose own services disagree. |
-| `services` | Name, price, duration, buffers, `slot_interval`. Retired with `is_active = false` rather than deleted when it has booking history. |
+| `users` | Both roles. `role` is `NULL` until profile setup completes, which is how the app knows to route someone there. Carries `timezone`, the provider's `cancellation_cutoff_hours`, and `currency` — the ISO 4217 code every price of theirs is read in. Currency sits on the provider, not the service, because a provider bills in one currency; putting it per-service would allow a profile whose own services disagree. Also `country` (ISO 3166-1 alpha-2, nullable, carried by clients too) and the provider's free-text `business_address`. |
+| `services` | Name, price, duration, buffers, `slot_interval`. Retired with `is_active = false` rather than deleted when it has booking history. Also `delivery_type` (`in_person`/`virtual`) and `booking_scope` (`domestic`/`international`) — see [Where a service happens](#where-a-service-happens-and-who-may-book-it). |
 | `availability_rules` | The recurring weekly pattern. `weekday` (0 = Sunday) plus minutes-from-midnight. |
 | `availability_exceptions` | One-off `block` and `open` overrides, over an inclusive date range. |
 | `bookings` | The appointment. `starts_at`/`ends_at` bound the appointment; `blocked_from`/`blocked_to` add the buffers and are what the double-booking constraint compares. |
@@ -279,6 +298,117 @@ actual instant is `TIMESTAMPTZ`.
 the booking at creation. Without them, a provider renaming a service, changing
 its price, moving city, or tightening their cancellation policy would silently
 rewrite the history of appointments already made under the old terms.
+
+---
+
+## Where a service happens, and who may book it
+
+Two properties of every service, and the app never derives one from the other.
+
+| Column | Values | Default | Says |
+|---|---|---|---|
+| `delivery_type` | `in_person`, `virtual` | `in_person` | **Where** the appointment happens |
+| `booking_scope` | `domestic`, `international` | `international` | **Who** may book it |
+
+They are separate because all four combinations are real. A London clinic that
+sees international visitors in person is `in_person` + `international`. An online
+tutor registered to teach in one country is `virtual` + `domestic`. Deriving
+either setting from the other would make one of those unrepresentable — and the
+seed data ships all four so the behaviour is visible rather than merely claimed.
+
+### In-person needs a place; domestic needs a country
+
+An `in_person` service is an appointment at an address, so publishing one
+requires the provider to have `business_address` set. A `domestic` service
+compares two countries, so publishing one requires `country`.
+
+Both are enforced in `serviceController`, not by a `CHECK` constraint — the
+requirement spans two tables ("this column must not be null when a row in
+`services` says `in_person`"), which a `CHECK` cannot see and a foreign key
+cannot express. The database keeps the guarantees it can keep alone; this is not
+one of them.
+
+The check gates **publishing**, not every edit. It runs when a request actually
+states a delivery type or scope, which on a create is always and on an update is
+only when the provider touched those controls. A provider fixing a typo in the
+description of a service that predates this feature is not asked for an address
+they have never been asked for before.
+
+`business_address` stays **nullable even for providers**, and clearing it is
+allowed even while an `in_person` service is live. At the moment someone empties
+that field the address is already wrong — that is why they are emptying it — and
+holding a stale address on a public page to protect a constraint would keep
+sending clients to a place the provider has left. `GET /availability/health`
+reports the resulting gap in `servicesMissingLocation`, so it is visible rather
+than silent.
+
+### The domestic rule, and why an unknown country is allowed through
+
+`services/bookingScope.js` holds the rule. It is pure — no clock, no connection
+— which is what lets the slot list, the create path and the reschedule path ask
+the same question and be guaranteed the same answer.
+
+A `domestic` service is refused when **both** countries are known and they
+differ. When either is unknown the booking is **allowed**, and that is a decision
+rather than an oversight:
+
+- `users.country` is nullable because it was added after the first release, and
+  unlike a currency a country genuinely can be unstated. A price must be
+  denominated in something; a person's country can honestly be unknown.
+- Refusing on the strength of a fact the server does not have would mean an
+  existing client who could book yesterday cannot book today because a column was
+  added — a restriction nobody chose, applied to people who cannot see why.
+- The schema backfills `country` from each account's `timezone` where that is
+  unambiguous, which reaches almost everyone, so the rule bites in practice.
+
+The frontend's `judgeEligibility` mirrors that permissiveness exactly, including
+the part that looks like a bug. A UI stricter than the server would hide a
+service the client could actually have booked; a UI looser would walk them into a
+409. `server/tests/bookingScope.test.js` and `src/lib/serviceScope.test.js` both
+pin the unknown-country cases so "fixing" either one fails the build.
+
+### Enforcement is server-side, on every path
+
+| Path | Behaviour when a domestic service is out of area |
+|---|---|
+| `POST /bookings` | `409` `OUTSIDE_SERVICE_AREA`, with both country codes in `details` |
+| `POST /bookings/{id}/reschedule` | `409`, **for a client's own move only** |
+| `GET /providers/{id}/slots` | `200` with `eligibility.allowed: false` and an **empty** `days` list |
+
+The slot list reports rather than raises. A 4xx there would leave the booking
+page with an error and no way to say *why* the picker is empty, and "there are no
+times" is a different and misleading statement from "this service is not offered
+in your country". The `days` list is emptied because offering a time the write
+path will refuse is the one outcome matching gates exist to prevent.
+
+A provider moving somebody else's out-of-area appointment is **not** refused. The
+booking already exists, so the alternative to moving it is cancelling it, and a
+rule meant to stop out-of-area bookings being *made* should not force one already
+made to be destroyed. Same asymmetry as
+[changed price or duration](#changed-price-or-duration-and-who-gets-asked).
+
+### What the client sees
+
+- **Directory** — two filter groups, *Appointment type* and *Who can book*, with
+  live facet counts like every other filter there. They match against the **set**
+  a provider offers (`deliveryTypes`, `bookingScopes` on each card): a clinic
+  doing both in-person and online consultations appears under either filter,
+  which one value per provider could not express.
+- **Provider page** — the country in the header, per-service badges, and the
+  street address on the booking panel once a service is selected. A client is
+  told where they are going *while choosing*, not on a confirmation screen after
+  picking a time.
+- **Ineligible** — the reason instead of the picker, naming both countries and
+  linking to Profile, because the likeliest cause is a country inferred from a
+  timezone rather than stated.
+- **Virtual services carry `location: null`** even when the provider has an
+  address on file. An online session does not happen at their clinic, and
+  printing the clinic's address beside it would tell the client to travel
+  somewhere they should not go.
+
+Country *names* are rendered client-side from the stored code via
+`Intl.DisplayNames`, for the same reason currency **symbols** are: a name is
+localised and is a rendering concern. The API stores and sends codes.
 
 ---
 
@@ -1004,9 +1134,12 @@ the reported 11:20/11:30 pair splits into columns again.
 cd slotly-backend/server && npm test
 ```
 
-**392 tests across 15 suites, Vitest.** `npm run test:watch` for watch mode.
+**458 tests across 17 suites, Vitest.** `npm run test:watch` for watch mode.
+The frontend has its own: `cd slotly-frontend/slotly && npm test` — **71 tests**
+over the pure helpers (time formatting, and the client's copy of the service-area
+rule).
 
-Eleven of the fifteen suites talk to a real PostgreSQL — the same one the app
+Twelve of the seventeen suites talk to a real PostgreSQL — the same one the app
 uses, read from `.env`, or any database named by `DATABASE_URL`. That is
 deliberate rather than lazy: the double-booking guarantee *is* a database
 constraint and the one-review-per-booking and one-user-per-email guarantees *are*
@@ -1029,6 +1162,8 @@ OpenAPI document drifts from the routes and error codes the app actually serves.
 | `tests/bookingTimezone.test.js` | A **stored instant never moves**: changing a user's timezone rewrites nothing in `bookings`, the appointment re-reads correctly in the new zone, can land on a different calendar date for the viewer, and the booking-time snapshot survives untouched as history. |
 | `tests/messagesAndReviews.test.js` | **One review per booking** under two racing submissions, rating bounds at the database level, whitespace-only messages rejected by a CHECK constraint, unread counting, and cascade behaviour when a booking is deleted. |
 | `tests/api.booking.test.js` | The double-booking guard **one layer up**, as ten clients racing over HTTP: exactly one 201, the rest a distinguishable 409 `SLOT_TAKEN`. Plus the off-grid guard, and **real-time booking through the API** — every un-started slot left today is offered and no others, and one inside the next hour books successfully. |
+| `tests/bookingScope.test.js` | The **service-area rule** where it is decided, as a pure function: the domestic comparison, case and `CHAR(2)` blank padding, and — the ones most worth having — the five **unknown-country** cases that must stay *permissive*, because the intuitive implementation reads a null as "not the provider's country" and would refuse every account created before the column existed. Plus that delivery type and booking scope never influence each other, and that the two location requirements are reported separately. |
+| `tests/api.location.test.js` | The same rule **wired up**: that the column defaults leave a cross-border booking working exactly as it did before these columns existed; the `409` `OUTSIDE_SERVICE_AREA` on create and on a client's reschedule, and that a **provider** may still move an out-of-area booking; that the slot list reports `eligibility` and empties `days` rather than erroring; publishing refused without an address or a country, and *not* refused for an unrelated edit; the directory filters, including that an unrecognised value is a 400 rather than silently ignored; country inferred from a timezone, corrected, and cleared; and that both columns survive the **`PATCH /auth/profile` response** — a regression test, because they were missing from that `RETURNING` clause and the profile form blanked the field the moment it was saved. |
 | `tests/api.lifecycle.test.js` | Cancellation and its cutoff, rescheduling, status transitions and the audit timeline, all request-shaped. Plus **the timezone-change guard**: the refusal and the report it carries, that nothing is written when it refuses (not even another field in the same request), that cancelling the stranded appointment unblocks it, that a harmless move and a re-save of the current zone both go through, that a pre-existing conflict is not blamed on the change, and that a client is never blocked. Plus **the reschedule slot list**: that `?bookingId=` sizes slots from the booking's own duration rather than the service's current one, that a booking does not block its own move, that a retired service still answers, and that only a party to the booking may ask. Plus **changed service terms**: that a client's move is refused until they accept and that the refusal writes nothing, that accepting applies the new price and resizes the appointment both ways, that the provider is never asked and cannot reprice by moving it, and that a non-boolean `acceptChanges` is not read as consent. |
 
 Every time-dependent test injects `now` explicitly, so the suite cannot start
@@ -1066,11 +1201,29 @@ Codes worth calling out:
 | `CANCELLATION_WINDOW_CLOSED` | 409 | Past the cutoff. `details.deadline` gives the instant it closed. |
 | `BOOKING_NOT_ACTIVE` | 409 | Already cancelled, completed or marked no-show. |
 | `APPOINTMENT_NOT_STARTED` | 409 | Cannot mark completed or no-show before it has begun. |
+| `OUTSIDE_SERVICE_AREA` | 409 | The service is `domestic` and the client is in another country. `details` carries `bookingScope`, `providerCountry` and `clientCountry`. Distinct from `FORBIDDEN`, which is about who the caller *is*: nothing about this account is wrong, the service simply is not on offer where they are. |
 | `RANGE_TOO_WIDE` | 400 | More than 62 days of slots requested. |
 
 ---
 
 ## Decisions, and why
+
+**A service can be in-person or virtual, and domestic or international. Why two
+fields rather than one setting?** Because all four combinations are real, and one
+field can express at most three of them. A London clinic that sees international
+visitors in person, and an online tutor licensed to teach in one country only,
+are both ordinary businesses — and either would have been unrepresentable had the
+scope been derived from the delivery type. Two independent columns cost a second
+control on one form; conflating them would have cost a migration to undo. See
+[Where a service happens](#where-a-service-happens-and-who-may-book-it).
+
+**What happens to a domestic service when you do not know the client's country?**
+It is bookable. That is the least intuitive decision in the feature and the one
+most likely to be "fixed" by mistake, so it is asserted in two test suites. The
+column is nullable because it was added after the first release, and refusing a
+booking on the strength of a fact the server does not have would silently
+restrict people who cannot see why. The rule bites when both countries are known;
+until then, Slotly declines to guess.
 
 **Do you store availability as rules, or generate slot rows in advance?**
 Rules, computed on demand — see [How availability is modelled](#how-availability-is-modelled)
@@ -1175,6 +1328,32 @@ link straight to the booking is the shortest path to fixing it.
   is correct for a single instance and wrong the moment the API runs on more than
   one: each process would enforce its own share of the limit. Scaling out means
   moving the store to Redis. See [Rate limiting](#rate-limiting).
+- **A provider's email and phone are public.** `GET /api/providers/:id` is
+  unauthenticated and returns both, so they are readable by anything that can
+  fetch a URL — scrapers included. That is deliberate: Slotly's messaging is
+  per-booking, so without it a client has no way to ask a question *before*
+  committing to a time. What makes it a limitation rather than just a decision is
+  that the fields published are the account's **own** sign-in address and phone
+  number, not separate public ones. A provider using a personal mobile is
+  publishing a personal mobile, and the only way out today is to clear the field.
+  Opting in properly would need `public_email` / `public_phone` columns.
+- **A country is inferred, not verified.** `users.country` is defaulted from the
+  account's timezone and freely editable, and nothing checks it against an IP, a
+  payment method or a document. So `booking_scope = 'domestic'` is a scheduling
+  rule the two parties cooperate with, not a geographic restriction — a client
+  who sets their country to the provider's can book a domestic service. That is
+  the right level for a booking app with no payments in it; enforcing it properly
+  would need identity verification, which is a different product.
+- **An unknown country bypasses the domestic rule entirely.** Deliberate, and
+  documented at length in [Where a service happens](#where-a-service-happens-and-who-may-book-it):
+  Slotly does not refuse a booking on the strength of a fact it does not have.
+  The consequence is that a provider cannot make a service *strictly* domestic
+  while any client has a blank country.
+- **The service area is not a distance.** "Domestic" is a country comparison, so a
+  client 20 miles away across a border is refused while one 500 miles away inside
+  it is not. Travel radius would need geocoding and a distance calculation, which
+  is why the street address is deliberately one unstructured field — see the
+  [data model](#data-model).
 - **Currency is a label, not a conversion.** A provider picks the currency they
   charge in, and every price of theirs is read in it. Changing it re-denominates
   the existing numbers rather than converting them — there is no exchange rate

@@ -143,7 +143,8 @@ slotly-frontend/
 │   ├── components/         UI, grouped by feature
 │   ├── pages/              one per route
 │   ├── hooks/              useApiResource, useDebouncedValue
-│   └── lib/                time helpers, timezone list, shared class names
+│   └── lib/                time helpers, timezone + country lists, service
+│                            delivery/scope vocabulary, shared class names
 ├── public/
 ├── index.html
 ├── vite.config.js
@@ -155,6 +156,16 @@ slotly-frontend/
 cannot inspect its own session and instead asks `GET /api/auth/me` who it is.
 Every request goes through the axios instance in `src/api/client.js` with
 `withCredentials: true`.
+
+**The service-area rule is duplicated on purpose, and only to explain.**
+`src/lib/serviceScope.js` holds a copy of the server's domestic-booking rule so a
+card can say *why* a service is unavailable instead of just hiding it. It decides
+nothing: `POST /bookings` re-checks every booking against the row it is writing.
+What matters is that the copy is **exactly as permissive** as the server —
+including allowing an unknown country through, which looks like a bug and is not.
+Stricter here would hide a service the client could have booked; looser would
+walk them into a 409. `src/lib/serviceScope.test.js` mirrors the server's own
+suite so the two cannot drift apart silently.
 
 **Every date conversion goes through `src/lib/time.js`.** The app never builds a
 date from parts and hopes; Luxon does the arithmetic, and the API sends each
@@ -172,4 +183,12 @@ for why the shifted, display-only Dates there are correct.
 - **The slot list is not live.** It carries a visible "as of" timestamp and
   refreshes after a lost race, rather than polling or holding a socket open.
 - **No end-to-end browser tests.** The logic that is hard to get right lives in
-  the API and is covered there; the UI was verified manually.
+  the API and is covered there; the UI was verified manually. The pure helpers in
+  `src/lib` do have unit tests (`npm test`, 71 of them) — time formatting and the
+  client's copy of the service-area rule, which are the two places a silent
+  divergence from the server would be invisible on screen.
+- **Country names are localised, country codes are not editable as text.** The
+  picker lists every country from `countries-and-timezones` and renders names via
+  `Intl.DisplayNames`, so the list is in the reader's language. There is no
+  free-text entry, which means a place the library does not list cannot be
+  stated — the API would accept any valid ISO 3166-1 alpha-2 code.
