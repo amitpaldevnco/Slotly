@@ -85,6 +85,8 @@ import {
 } from "../lib/ui";
 import {
   buildTimezonesWithCountry,
+  buildTimezoneOptions,
+  timezoneFilterOption,
   normalizeTimezone,
   timezoneSelectClassNames,
   timezoneSelectMenuProps,
@@ -99,6 +101,9 @@ export default function SettingsPage() {
   const isProvider = user?.role === "provider";
 
   const timezonesWithCountry = useMemo(() => buildTimezonesWithCountry(), []);
+  // The full list, replacing the one-per-offset menu the library would build.
+  // See the note in lib/timezones.js.
+  const timezoneOptions = useMemo(() => buildTimezoneOptions(), []);
 
   const [timezone, setTimezone] = useState("");
   const [errors, setErrors] = useState({});
@@ -308,23 +313,43 @@ export default function SettingsPage() {
                 section nav scrolls to. Two elements shared the id, so
                 `<label for="timezone">` resolved to the *section* — clicking the
                 label focused nothing, and assistive technology had no label for
-                the control at all. */}
+                the control at all.
+
+                Taken as a *function* child rather than an element one, because
+                renaming the id alone did not finish the job. `Field` clones an
+                element child and puts `id` on it — but react-select spends `id`
+                on its container div and takes the input's from `inputId`, so
+                both ended up as "timezone-select" and `<label for>` resolved to
+                the div instead of the section. Same broken outcome, one layer
+                further in. The function form hands the wiring over instead:
+                `id` becomes `inputId`, and the aria attributes go to the input
+                react-select actually renders, which is what gives the combobox
+                its name and reads the hint and error out with it. */}
             <Field
               id="timezone-select"
               label="Your working timezone"
               error={errors.timezone}
               hint="Change it while travelling and your appointments follow — they do not move, the clock does. Other people always see the same appointment converted to their own zone."
             >
-              <TimezoneSelect
-                inputId="timezone-select"
-                value={timezone}
-                onChange={setTimezone}
-                labelStyle="original"
-                timezones={timezonesWithCountry}
-                unstyled
-                classNames={timezoneSelectClassNames}
-                {...timezoneSelectMenuProps}
-              />
+              {({ id, "aria-invalid": invalid, "aria-required": req }, { errorId }) => (
+                <TimezoneSelect
+                  inputId={id}
+                  aria-invalid={invalid}
+                  required={req}
+                  // Not `aria-describedby`: react-select overwrites that with its
+                  // own live region. `aria-errormessage` it does pass through.
+                  aria-errormessage={errorId}
+                  value={timezone}
+                  onChange={setTimezone}
+                  labelStyle="original"
+                  timezones={timezonesWithCountry}
+                  options={timezoneOptions}
+                  filterOption={timezoneFilterOption}
+                  unstyled
+                  classNames={timezoneSelectClassNames}
+                  {...timezoneSelectMenuProps}
+                />
+              )}
             </Field>
 
             <div className="mt-5 flex flex-wrap items-center gap-x-6 gap-y-2 rounded-md border border-line bg-subtle px-4 py-3">

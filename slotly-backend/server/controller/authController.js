@@ -1106,7 +1106,16 @@ export async function updateProfile(req, res) {
       RETURNING id, email, name, phone_number, timezone, bio, qualifications,
                 avatar_url, role, business_name, business_type, currency,
                 country, business_address,
-                cancellation_cutoff_hours
+                cancellation_cutoff_hours,
+                -- Not written by this statement, but returned by it, because
+                -- this response replaces the auth context wholesale and
+                -- getCurrentUser includes it. Left out, saving the profile made
+                -- has_password undefined, and Settings then told a password
+                -- account it had signed in with Google or GitHub and offered to
+                -- add a password -- a form with no current-password field, whose
+                -- submit the server refused with a field error pointing at an
+                -- input that was not on screen.
+                (password_hash IS NOT NULL) AS has_password
     `;
 
     const result = await query(updateSql, [...Object.values(updateData), userId]);

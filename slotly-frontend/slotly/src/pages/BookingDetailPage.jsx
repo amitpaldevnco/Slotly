@@ -73,6 +73,17 @@ export default function BookingDetailPage() {
   const [reason, setReason] = useState("");
   const [working, setWorking] = useState(false);
 
+  // Which outcome is waiting to be confirmed — "completed", "no_show", or null.
+  //
+  // Both are confirmed, because neither can be taken back:
+  // `evaluateProviderTransition` refuses every transition out of a settled
+  // booking, so a second attempt answers 409 BOOKING_NOT_ACTIVE. The two buttons
+  // also sit side by side, which is exactly the arrangement that makes a mis-tap
+  // land on the wrong one. What differs is the wording, not whether to ask — a
+  // no-show is a statement about the client that shows on their record, keeps
+  // the fee out of earnings and blocks their review, so its dialog says so.
+  const [pendingOutcome, setPendingOutcome] = useState(null);
+
   // Set when arriving straight from a successful booking, so the page can lead
   // with a confirmation instead of looking like any other detail view.
   const justBooked = searchParams.get("justBooked") === "1";
@@ -126,6 +137,7 @@ export default function BookingDetailPage() {
     setWorking(true);
     try {
       await bookingsApi.setStatus(bookingId, status);
+      setPendingOutcome(null);
       toast.success(`Marked as ${status.replace("_", "-")}.`);
       load();
     } catch (err) {
@@ -335,7 +347,7 @@ export default function BookingDetailPage() {
                     <>
                       <button
                         type="button"
-                        onClick={() => handleStatusChange("completed")}
+                        onClick={() => setPendingOutcome("completed")}
                         disabled={working}
                         className={secondaryButton}
                       >
@@ -344,7 +356,7 @@ export default function BookingDetailPage() {
                       </button>
                       <button
                         type="button"
-                        onClick={() => handleStatusChange("no_show")}
+                        onClick={() => setPendingOutcome("no_show")}
                         disabled={working}
                         className={secondaryButton}
                       >
@@ -453,6 +465,59 @@ export default function BookingDetailPage() {
             }
           />
         </Field>
+      </Modal>
+
+      {/* One dialog for both outcomes. They are the same decision taken two ways
+          and neither is reversible, so they get the same shape; only the copy and
+          the weight of the confirm button differ. Worded to match the same pair
+          of confirmations on the provider dashboard. */}
+      <Modal
+        open={Boolean(pendingOutcome)}
+        onClose={() => !working && setPendingOutcome(null)}
+        title={
+          pendingOutcome === "no_show"
+            ? "Mark this as a no-show?"
+            : "Mark this appointment as completed?"
+        }
+        description={`${otherParty.name ?? "This client"} · ${booking.service?.name ?? ""}`}
+        footer={
+          <>
+            <button
+              type="button"
+              onClick={() => setPendingOutcome(null)}
+              disabled={working}
+              className={secondaryButton}
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => handleStatusChange(pendingOutcome)}
+              disabled={working}
+              // Completed is the ordinary end of an appointment that happened,
+              // so it does not get the danger treatment a no-show does.
+              className={pendingOutcome === "no_show" ? dangerButton : primaryButton}
+            >
+              {working ? "Saving…" : "Confirm"}
+            </button>
+          </>
+        }
+      >
+        <p className="text-sm leading-relaxed text-ink-2">
+          {pendingOutcome === "no_show" ? (
+            <>
+              Nothing is added to your earnings, the client sees this on their own record, and they
+              cannot review the appointment. If they did attend, choose Completed instead. This
+              cannot be undone.
+            </>
+          ) : (
+            <>
+              Are you sure you want to mark this appointment as completed?{" "}
+              {formatPrice(booking.service.price, booking.service.currency)} is added to your
+              earnings and the client can leave a review. This cannot be undone.
+            </>
+          )}
+        </p>
       </Modal>
 
       <RescheduleDialog

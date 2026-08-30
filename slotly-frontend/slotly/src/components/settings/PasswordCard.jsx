@@ -93,9 +93,20 @@ export default function PasswordCard({ hasPassword }) {
       // The server reports a wrong current password as a 401 carrying the field
       // name, rather than as a validation list, so that it reads the same as any
       // other refusal to confirm a secret. Attached to the input all the same.
-      if (parsed.details?.field) {
-        setErrors({ [parsed.details.field]: parsed.message });
-      } else if (Object.keys(parsed.fieldErrors).length > 0) {
+      // A field error is only worth attaching to a field that is on screen.
+      // `currentPassword` is the one that can be refused while its input is not
+      // rendered — this card hides it whenever `hasPassword` is false — and when
+      // that happened the refusal was set on an input nobody could see, so the
+      // button appeared to do nothing at all. Anything unrenderable falls back
+      // to the form-level message instead of vanishing.
+      const visible = (field) => field !== "currentPassword" || hasPassword;
+
+      const single = parsed.details?.field;
+      const fromList = Object.keys(parsed.fieldErrors);
+
+      if (single && visible(single)) {
+        setErrors({ [single]: parsed.message });
+      } else if (fromList.length > 0 && fromList.every(visible)) {
         setErrors(parsed.fieldErrors);
       } else {
         setFormError(parsed.message);

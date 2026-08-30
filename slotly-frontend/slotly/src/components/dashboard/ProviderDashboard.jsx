@@ -48,6 +48,7 @@ import {
   formatDuration,
   statusStyle,
   zoneName,
+  primaryButton,
   secondaryButton,
   dangerButton,
 } from "../../lib/ui";
@@ -151,13 +152,21 @@ export default function ProviderDashboard({ user }) {
   // the whole panel freezing while one appointment is settled.
   const [settlingId, setSettlingId] = useState(null);
 
-  // The appointment awaiting a no-show confirmation, or null.
+  // The outcome awaiting confirmation: `{booking, status}`, or null.
   //
-  // Only no-show is confirmed. "Completed" is the expected outcome and is
-  // correctable by marking it again; a no-show is a statement about the client
-  // that shows on their record, withholds the fee from earnings and blocks the
-  // review, and it sat one mis-tap away from Completed with no undo.
-  const [pendingNoShow, setPendingNoShow] = useState(null);
+  // Both outcomes are confirmed. Neither can be taken back —
+  // `evaluateProviderTransition` refuses every transition out of a settled
+  // booking, so a second PATCH answers 409 BOOKING_NOT_ACTIVE — and in this
+  // queue the two buttons sit next to each other on every row, which is the
+  // arrangement a mis-tap exploits. Confirming only the more damaging one still
+  // left the other a single irreversible click.
+  //
+  // The copy differs because the outcomes do: Completed is the ordinary end of
+  // an appointment that happened, while a no-show is a statement about the
+  // client that shows on their record, withholds the fee from earnings and
+  // blocks their review. BookingDetailPage offers the same pair and asks the
+  // same two questions.
+  const [pendingOutcome, setPendingOutcome] = useState(null);
   const toast = useToast();
 
   /**
@@ -165,7 +174,7 @@ export default function ProviderDashboard({ user }) {
    * choice moves: the queue itself, the earnings tiles, and the header badge.
    */
   const recordOutcome = async (booking, status) => {
-    setPendingNoShow(null);
+    setPendingOutcome(null);
     setSettlingId(booking.id);
     try {
       await bookingsApi.setStatus(booking.id, status);
@@ -266,7 +275,7 @@ export default function ProviderDashboard({ user }) {
                   <div className="flex shrink-0 gap-2">
                     <button
                       type="button"
-                      onClick={() => recordOutcome(booking, "completed")}
+                      onClick={() => setPendingOutcome({ booking, status: "completed" })}
                       disabled={busy}
                       className="inline-flex items-center gap-1.5 rounded-md bg-primary px-3 py-2 font-caption text-caption font-semibold text-on-primary transition-opacity hover:opacity-90 disabled:opacity-50"
                     >
@@ -275,7 +284,7 @@ export default function ProviderDashboard({ user }) {
                     </button>
                     <button
                       type="button"
-                      onClick={() => setPendingNoShow(booking)}
+                      onClick={() => setPendingOutcome({ booking, status: "no_show" })}
                       disabled={busy}
                       className="inline-flex items-center gap-1.5 rounded-md border border-outline-variant px-3 py-2 font-caption text-caption font-semibold text-on-surface transition-colors hover:bg-surface-container-low disabled:opacity-50"
                     >
@@ -496,41 +505,73 @@ export default function ProviderDashboard({ user }) {
         </div>
       </div>
 
-      <Modal
-        open={Boolean(pendingNoShow)}
-        onClose={() => setPendingNoShow(null)}
-        title="Mark this as a no-show?"
-        description={
-          pendingNoShow
-            ? `${pendingNoShow.client?.name ?? "This client"} · ${pendingNoShow.service?.name ?? ""}`
-            : undefined
-        }
-        footer={
-          <>
-            <button
-              type="button"
-              onClick={() => setPendingNoShow(null)}
-              className={secondaryButton}
-            >
-              Go back
-            </button>
-            <button
-              type="button"
-              onClick={() => recordOutcome(pendingNoShow, "no_show")}
-              disabled={settlingId === pendingNoShow?.id}
-              className={dangerButton}
-            >
-              {settlingId === pendingNoShow?.id ? "Saving…" : "Mark no-show"}
-            </button>
-          </>
-        }
-      >
-        <p className="text-sm leading-relaxed text-ink-2">
-          Nothing is added to your earnings, the client sees this on their own record, and they
-          cannot review the appointment. If they did attend, choose Completed instead.
-        </p>
-      </Modal>
+      <OutcomeConfirmation
+        pending={pendingOutcome}
+        settlingId={settlingId}
+        onCancel={() => setPendingOutcome(null)}
+        onConfirm={recordOutcome}
+      />
     </div>
+  );
+}
+
+/**
+ * The confirmation both outcome buttons go through.
+ *
+ * One component for the two, because they are the same decision taken two ways
+ * and the shape of the question is identical. Only the copy and the weight of
+ * the confirm button change — Completed is the ordinary end of an appointment
+ * that happened, so it does not wear the danger treatment.
+ *
+ * @param {{booking: object, status: "completed"|"no_show"}|null} pending
+ */
+function OutcomeConfirmation({ pending, settlingId, onCancel, onConfirm }) {
+  const booking = pending?.booking ?? null;
+  const isNoShow = pending?.status === "no_show";
+  const saving = Boolean(booking) && settlingId === booking.id;
+
+  return (
+    <Modal
+      open={Boolean(pending)}
+      onClose={() => !saving && onCancel()}
+      title={isNoShow ? "Mark this as a no-show?" : "Mark this appointment as completed?"}
+      description={
+        booking
+          ? `${booking.client?.name ?? "This client"} · ${booking.service?.name ?? ""}`
+          : undefined
+      }
+      footer={
+        <>
+          <button type="button" onClick={onCancel} disabled={saving} className={secondaryButton}>
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => onConfirm(booking, pending.status)}
+            disabled={saving}
+            className={isNoShow ? dangerButton : primaryButton}
+          >
+            {saving ? "Saving…" : "Confirm"}
+          </button>
+        </>
+      }
+    >
+      <p className="text-sm leading-relaxed text-ink-2">
+        {isNoShow ? (
+          <>
+            Nothing is added to your earnings, the client sees this on their own record, and they
+            cannot review the appointment. If they did attend, choose Completed instead. This
+            cannot be undone.
+          </>
+        ) : (
+          <>
+            Are you sure you want to mark this appointment as completed?{" "}
+            {booking ? formatPrice(booking.service.price, booking.service.currency) : "The fee"} is
+            added to your earnings and the client can leave a review. This cannot be undone.
+          </>
+        )}
+      </p>
+    </Modal>
   );
 }
 

@@ -8,6 +8,8 @@ import { parseApiError } from "../api/client";
 import * as authApi from "../api/auth";
 import {
   buildTimezonesWithCountry,
+  buildTimezoneOptions,
+  timezoneFilterOption,
   normalizeTimezone,
   timezoneSelectClassNames,
   timezoneSelectMenuProps,
@@ -28,6 +30,9 @@ export default function CompleteProfilePage() {
   const { refetchUser } = useAuth();
 
   const timezonesWithCountry = useMemo(() => buildTimezonesWithCountry(), []);
+  // The full list, replacing the one-per-offset menu the library would build.
+  // See the note in lib/timezones.js.
+  const timezoneOptions = useMemo(() => buildTimezoneOptions(), []);
 
   const [role, setRole] = useState("client");
   const [phoneNumber, setPhoneNumber] = useState("");
@@ -179,34 +184,50 @@ export default function CompleteProfilePage() {
             </Field>
 
             
+            {/* A function child, not an element one. `Field` clones an element
+                child and sets `id` on it, but react-select puts `id` on its
+                container div and names the input from `inputId` — so passing
+                both spelled the same id twice, `<label for>` matched the div,
+                and the combobox had no accessible name. Handing the wiring over
+                puts every piece of it on the input itself. Settings has the
+                same control and the same treatment. */}
             <Field
               id="timezone"
               label="Your timezone"
               error={errors.timezone}
               hint="Every appointment time you see will be shown in this zone. You can change it later."
             >
-              <TimezoneSelect
-                inputId="timezone"
-                value={timezone}
-                onChange={(next) => {
-                  setTimezone(next);
-                  // Moving the timezone usually means moving the currency too, so
-                  // the guess follows along — until the provider has answered for
-                  // themselves, at which point their choice stands.
-                  const zone = typeof next === "string" ? next : next?.value;
-                  if (!currencyTouched) {
-                    setCurrency(currencyForTimezone(normalizeTimezone(zone)));
-                  }
-                  if (!countryTouched) {
-                    setCountry(countryFromTimezone(normalizeTimezone(zone)));
-                  }
-                }}
-                labelStyle="original"
-                timezones={timezonesWithCountry}
-                unstyled
-                classNames={timezoneSelectClassNames}
-                {...timezoneSelectMenuProps}
-              />
+              {({ id, "aria-invalid": invalid, "aria-required": req }, { errorId }) => (
+                <TimezoneSelect
+                  inputId={id}
+                  aria-invalid={invalid}
+                  required={req}
+                  // Not `aria-describedby`: react-select overwrites that with its
+                  // own live region. `aria-errormessage` it does pass through.
+                  aria-errormessage={errorId}
+                  value={timezone}
+                  onChange={(next) => {
+                    setTimezone(next);
+                    // Moving the timezone usually means moving the currency too, so
+                    // the guess follows along — until the provider has answered for
+                    // themselves, at which point their choice stands.
+                    const zone = typeof next === "string" ? next : next?.value;
+                    if (!currencyTouched) {
+                      setCurrency(currencyForTimezone(normalizeTimezone(zone)));
+                    }
+                    if (!countryTouched) {
+                      setCountry(countryFromTimezone(normalizeTimezone(zone)));
+                    }
+                  }}
+                  labelStyle="original"
+                  timezones={timezonesWithCountry}
+                  options={timezoneOptions}
+                  filterOption={timezoneFilterOption}
+                  unstyled
+                  classNames={timezoneSelectClassNames}
+                  {...timezoneSelectMenuProps}
+                />
+              )}
             </Field>
 
             {/* Directly under the timezone, because it is answering the same

@@ -68,8 +68,14 @@ export default function Field({
           the hint and error paragraphs, and then referenced by nothing at all.
           Sign-in was one of them: its "Email is required" was visible on screen
           and invisible to a screen reader. */}
+      {/* The raw ids go to function children as a second argument, never into
+          `wiring` itself — `wiring` is spread onto a DOM node by the clone path
+          above, and `hintId`/`errorId` are not attributes. A control that cannot
+          take `aria-describedby` needs them: react-select builds its own from
+          its live region and ignores the one it is handed, so the timezone
+          pickers wire the error through `aria-errormessage` instead. */}
       {typeof children === "function"
-        ? children(wiring)
+        ? children(wiring, { hintId, errorId })
         : isValidElement(children)
           ? cloneElement(children, wiring)
           : children}
