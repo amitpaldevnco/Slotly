@@ -21,33 +21,44 @@
  * had just scrolled through. The rows keep their Select buttons and drive the
  * same selection, so either route works and the two always agree.
  *
+ * The other half of that problem is the click itself, and it is answered by
+ * breakpoint. The panel is a third of the way across a desktop and often above
+ * the fold the reader is looking at, so pressing Select on a row two screens
+ * down changed one button's colour and nothing the reader could see — the row
+ * now says where the click landed. Below `lg` there is no panel beside the list
+ * at all; it falls to the foot of the page, past the reviews and the opening
+ * hours, so the same press opens `BookingPanel` in a sheet instead. Both are the
+ * one panel reading the one selection: nothing about what is bookable, by whom,
+ * or on what terms depends on the width of the window.
+ *
  * "Top Rated" and a street address are not reproduced: `GET /providers/:id`
  * returns rating aggregates only where reviews exist, and there is no address
  * column on `users`. The chips carry what is true instead — the category, and
  * whether anything is currently bookable.
  */
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import * as providersApi from "../api/providers";
 import { useApiResource } from "../hooks/useApiResource";
 import { useAuth } from "../context/AuthContext";
 import ServiceDetailsModal from "../components/provider/ServiceDetailsModal";
+import BookingPanel from "../components/provider/BookingPanel";
 import ServiceCover from "../components/provider/ServiceCover";
 import WeeklyHoursSummary from "../components/provider/WeeklyHoursSummary";
 import ProviderReviews from "../components/reviews/ProviderReviews";
 import Avatar from "../components/ui/Avatar";
 import Icon from "../components/ui/Icon";
 import BackLink from "../components/ui/BackLink";
-import EmptyState, { Alert, ErrorState, PageLoader } from "../components/ui/Feedback";
-import { Select } from "../components/ui/Field";
+import EmptyState, { ErrorState, PageLoader } from "../components/ui/Feedback";
+import Modal from "../components/ui/Modal";
 import { container, formatPrice, formatDuration, zoneName } from "../lib/ui";
 import usePageTitle from "../hooks/usePageTitle";
+import useMediaQuery from "../hooks/useMediaQuery";
 import {
   deliveryIcon,
   deliveryLabel,
   scopeIcon,
-  isInPerson,
   isDomestic,
   judgeEligibility,
   countryLabel,
@@ -59,6 +70,48 @@ export default function ProviderPublicProfilePage() {
 
   const [detailsService, setDetailsService] = useState(null);
   const [selectedServiceId, setSelectedServiceId] = useState(null);
+
+  // Below `lg` the two-column layout collapses and the booking panel falls to
+  // the foot of the page, under the whole services list. That is the layout the
+  // sheet exists for, so it is the same breakpoint rather than a second guess at
+  // where "mobile" begins — 1023.98px, so a viewport sitting exactly on 1024px
+  // is desktop to both this query and Tailwind's `lg:`.
+  const isNarrow = useMediaQuery("(max-width: 1023.98px)");
+  const [sheetOpen, setSheetOpen] = useState(false);
+
+  // Whether the reader chose a service themselves, as opposed to the panel
+  // opening on the first bookable one. Only a real choice is worth confirming,
+  // and on load there has been no choice to confirm.
+  const [pickedFromList, setPickedFromList] = useState(false);
+
+  // Widening past `lg` puts the panel back on the right, so the sheet has
+  // nothing left to do. Without this it stays armed, and dragging the window
+  // narrow again would pop open a sheet for a tap made minutes ago on a layout
+  // that no longer exists.
+  useEffect(() => {
+    if (!isNarrow) setSheetOpen(false);
+  }, [isNarrow]);
+
+  // "Compare all N services", from inside the sheet.
+  //
+  // The plain anchor cannot do this one on its own. Its jump runs on the click,
+  // while the sheet is still up and `Modal` still has `overflow: hidden` on the
+  // body — so the browser sets the hash, declines to scroll because the document
+  // cannot scroll, and the sheet closes over a page that has not moved. The
+  // reader is left exactly where they were, having asked to be somewhere else.
+  //
+  // So the jump waits for the sheet to actually go. The ref is set on the click,
+  // the effect below runs after the sheet has unmounted and returned the body's
+  // scrolling, and only then does the page move.
+  const jumpToServices = useRef(false);
+
+  useEffect(() => {
+    if (sheetOpen || !jumpToServices.current) return;
+    jumpToServices.current = false;
+    // `scroll-mt-24` on the section supplies the offset for the sticky top bar,
+    // the same one the anchor relied on.
+    document.getElementById("services")?.scrollIntoView({ behavior: "smooth", block: "start" });
+  }, [sheetOpen]);
 
   const { data, loading, error, errorCode, reload } = useApiResource(
     async ({ signal }) => {
@@ -84,6 +137,20 @@ export default function ProviderPublicProfilePage() {
   // Taken from the server's answer rather than compared client-side.
   const isOwner = Boolean(provider?.isOwner);
   const canBook = user?.role === "client";
+
+  // Selecting from a row in the list. The panel's own dropdown calls
+  // `setSelectedServiceId` directly: it is already the panel, so it has nothing
+  // to point at and nothing to open.
+  //
+  // Neither the sheet nor the desktop note fires for the owner. Their panel says
+  // there is nothing to book here, and raising that over the page — or telling
+  // them to go and choose a slot — would be answering a question they did not
+  // ask. Selecting still works: it drives the details they came to check.
+  const chooseFromList = (serviceId) => {
+    setSelectedServiceId(serviceId);
+    setPickedFromList(!isOwner);
+    if (isNarrow && !isOwner) setSheetOpen(true);
+  };
 
   // A retired service is visible only to its owner: it exists for reconciling
   // against booking history, and a client cannot book it.
@@ -446,128 +513,148 @@ export default function ProviderPublicProfilePage() {
                   return (
                     <div
                       key={service.id}
-                      className="group flex flex-col items-start justify-between gap-4 p-6 transition-colors hover:bg-surface-bright sm:flex-row sm:items-center"
+                      className="group p-6 transition-colors hover:bg-surface-bright"
                     >
-                      {/* The service's own cover, which this list previously did
-                          not draw at all — a provider could upload one, see it on
-                          their management page, and find it nowhere on the page
-                          clients actually read. Landscape rather than the square
-                          tile used in the management grid, because these rows are
-                          wide and a photo of a room reads better than a crop of
-                          it. `ServiceCover` supplies the glyph for a service with
-                          no cover, so rows stay aligned either way. */}
-                      <div className="flex min-w-0 flex-grow items-start gap-4">
-                        <ServiceCover
-                          coverImage={service.coverImage}
-                          name={service.name}
-                          iconSize={32}
-                          // 148x92, measured off the reference. Exact pixels
-                          // rather than a spacing-scale pair, because the
-                          // design's 1.6:1 landscape crop does not land on any
-                          // two steps of the scale, and rounding it to
-                          // h-24/w-36 would visibly shorten the thumbnail
-                          // against the three lines of text beside it.
-                          //
-                          // The radius stays on the token scale even though the
-                          // dimensions do not: the reference corner is about
-                          // 6px, this theme jumps 4px -> 8px, and 8px is both
-                          // the closer of the two and a value the rest of the
-                          // app already uses. A one-off 6px would be an
-                          // invented token for a difference nobody can see.
-                          className="h-[92px] w-[148px] rounded-lg"
-                        />
+                      <div className="flex flex-col items-start justify-between gap-4 sm:flex-row sm:items-center">
+                        {/* The service's own cover, which this list previously did
+                            not draw at all — a provider could upload one, see it on
+                            their management page, and find it nowhere on the page
+                            clients actually read. Landscape rather than the square
+                            tile used in the management grid, because these rows are
+                            wide and a photo of a room reads better than a crop of
+                            it. `ServiceCover` supplies the glyph for a service with
+                            no cover, so rows stay aligned either way. */}
+                        <div className="flex min-w-0 flex-grow items-start gap-4">
+                          <ServiceCover
+                            coverImage={service.coverImage}
+                            name={service.name}
+                            iconSize={32}
+                            // 148x92, measured off the reference. Exact pixels
+                            // rather than a spacing-scale pair, because the
+                            // design's 1.6:1 landscape crop does not land on any
+                            // two steps of the scale, and rounding it to
+                            // h-24/w-36 would visibly shorten the thumbnail
+                            // against the three lines of text beside it.
+                            //
+                            // The radius stays on the token scale even though the
+                            // dimensions do not: the reference corner is about
+                            // 6px, this theme jumps 4px -> 8px, and 8px is both
+                            // the closer of the two and a value the rest of the
+                            // app already uses. A one-off 6px would be an
+                            // invented token for a difference nobody can see.
+                            className="h-[92px] w-[148px] rounded-lg"
+                          />
 
-                        <div className="min-w-0 flex-grow">
-                          <h3 className="mb-1 font-h3 text-[20px] font-semibold text-primary">
-                            {service.name}
-                          </h3>
-                          {/* Two lines, matching the reference. A service with a
-                              long description used to push the price and the
-                              Select button hundreds of pixels down the page and
-                              swamp every other service in the list — the one
-                              thing a list of services exists to let you compare.
-                              `Details` opens the full text. */}
-                          {service.description && (
-                            <p className="mb-2 line-clamp-2 font-body text-body text-on-surface-variant">
-                              {service.description}
-                            </p>
-                          )}
-                          <div className="flex flex-wrap items-center gap-4 font-small text-small text-on-surface-variant">
-                            <span className="flex items-center gap-1">
-                              <Icon name="schedule" size={16} />
-                              {formatDuration(service.duration)}
-                            </span>
-                            {/* In the meta row rather than as a separate line,
-                                because "where" and "how long" are the same kind
-                                of fact about a service and a client comparing
-                                three of them reads them together. */}
-                            <span className="flex items-center gap-1">
-                              <Icon name={deliveryIcon(service.deliveryType)} size={16} />
-                              {deliveryLabel(service.deliveryType)}
-                            </span>
-                            {isDomestic(service) && (
-                              <span className="flex items-center gap-1">
-                                <Icon name={scopeIcon(service.bookingScope)} size={16} />
-                                {countryLabel(service.location?.country ?? provider.country) ||
-                                  "One country"}{" "}
-                                only
-                              </span>
+                          <div className="min-w-0 flex-grow">
+                            <h3 className="mb-1 font-h3 text-[20px] font-semibold text-primary">
+                              {service.name}
+                            </h3>
+                            {/* Two lines, matching the reference. A service with a
+                                long description used to push the price and the
+                                Select button hundreds of pixels down the page and
+                                swamp every other service in the list — the one
+                                thing a list of services exists to let you compare.
+                                `Details` opens the full text. */}
+                            {service.description && (
+                              <p className="mb-2 line-clamp-2 font-body text-body text-on-surface-variant">
+                                {service.description}
+                              </p>
                             )}
-                            {/* Drawn as a sibling of the duration above, because
-                                that is what it sits beside in the reference. It
-                                used to carry a permanent underline that ran
-                                under the icon as well as the label, which read
-                                as a stray hyperlink rather than part of the meta
-                                row.
+                            <div className="flex flex-wrap items-center gap-4 font-small text-small text-on-surface-variant">
+                              <span className="flex items-center gap-1">
+                                <Icon name="schedule" size={16} />
+                                {formatDuration(service.duration)}
+                              </span>
+                              {/* In the meta row rather than as a separate line,
+                                  because "where" and "how long" are the same kind
+                                  of fact about a service and a client comparing
+                                  three of them reads them together. */}
+                              <span className="flex items-center gap-1">
+                                <Icon name={deliveryIcon(service.deliveryType)} size={16} />
+                                {deliveryLabel(service.deliveryType)}
+                              </span>
+                              {isDomestic(service) && (
+                                <span className="flex items-center gap-1">
+                                  <Icon name={scopeIcon(service.bookingScope)} size={16} />
+                                  {countryLabel(service.location?.country ?? provider.country) ||
+                                    "One country"}{" "}
+                                  only
+                                </span>
+                              )}
+                              {/* Drawn as a sibling of the duration above, because
+                                  that is what it sits beside in the reference. It
+                                  used to carry a permanent underline that ran
+                                  under the icon as well as the label, which read
+                                  as a stray hyperlink rather than part of the meta
+                                  row.
 
-                                The underline moves to hover instead of
-                                disappearing: this is the only control in the
-                                row, and with no affordance at all it would look
-                                like the static text it now matches. Only the
-                                label is underlined, never the glyph. */}
+                                  The underline moves to hover instead of
+                                  disappearing: this is the only control in the
+                                  row, and with no affordance at all it would look
+                                  like the static text it now matches. Only the
+                                  label is underlined, never the glyph. */}
+                              <button
+                                type="button"
+                                onClick={() => setDetailsService(service)}
+                                aria-label={`See full details of ${service.name}`}
+                                className="group/details flex cursor-pointer items-center gap-1 rounded transition-colors hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                              >
+                                <Icon name="info" size={16} />
+                                <span className="underline-offset-2 group-hover/details:underline">
+                                  Details
+                                </span>
+                              </button>
+                              {retired && (
+                                <span className="rounded-full bg-surface-variant px-2 py-0.5 font-caption text-caption font-bold uppercase tracking-wider">
+                                  Inactive
+                                </span>
+                              )}
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="flex w-full min-w-[120px] flex-col items-end gap-3 sm:w-auto">
+                          <span className="font-h3 text-[22px] font-bold text-primary">
+                            {formatPrice(service.price, service.currency)}
+                          </span>
+
+                          {retired ? (
+                            <span className="font-caption text-caption text-on-surface-variant">
+                              No longer offered
+                            </span>
+                          ) : (
                             <button
                               type="button"
-                              onClick={() => setDetailsService(service)}
-                              aria-label={`See full details of ${service.name}`}
-                              className="group/details flex cursor-pointer items-center gap-1 rounded transition-colors hover:text-primary focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-primary"
+                              onClick={() => chooseFromList(service.id)}
+                              className={`h-10 w-full rounded-md font-small text-small font-medium transition-colors ${
+                                selected
+                                  ? "bg-primary text-on-primary hover:bg-primary/90"
+                                  : "border border-primary bg-transparent text-primary hover:bg-surface-variant"
+                              }`}
                             >
-                              <Icon name="info" size={16} />
-                              <span className="underline-offset-2 group-hover/details:underline">
-                                Details
-                              </span>
+                              {selected ? "Selected" : "Select"}
                             </button>
-                            {retired && (
-                              <span className="rounded-full bg-surface-variant px-2 py-0.5 font-caption text-caption font-bold uppercase tracking-wider">
-                                Inactive
-                              </span>
-                            )}
-                          </div>
+                          )}
                         </div>
                       </div>
 
-                      <div className="flex w-full min-w-[120px] flex-col items-end gap-3 sm:w-auto">
-                        <span className="font-h3 text-[22px] font-bold text-primary">
-                          {formatPrice(service.price, service.currency)}
-                        </span>
+                      {/* Desktop only, and only for a service the reader chose
+                          themselves. The panel that reacted to the click is a
+                          third of the way across the page and often above the
+                          fold the reader is looking at, so on a wide screen the
+                          only feedback for a click down here was a button
+                          changing colour. This says where the click landed.
 
-                        {retired ? (
-                          <span className="font-caption text-caption text-on-surface-variant">
-                            No longer offered
-                          </span>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => setSelectedServiceId(service.id)}
-                            className={`h-10 w-full rounded-md font-small text-small font-medium transition-colors ${
-                              selected
-                                ? "bg-primary text-on-primary hover:bg-primary/90"
-                                : "border border-primary bg-transparent text-primary hover:bg-surface-variant"
-                            }`}
-                          >
-                            {selected ? "Selected" : "Select"}
-                          </button>
-                        )}
-                      </div>
+                          Below `lg` there is no panel on the right to point at —
+                          the sheet has already opened over this row — so it is
+                          hidden rather than reworded. */}
+                      {selected && pickedFromList && (
+                        <p className="mt-4 hidden items-center gap-2 rounded-md border border-outline-variant bg-surface-container-low px-4 py-3 font-small text-small text-on-surface-variant lg:flex">
+                          <Icon name="check_circle" size={16} className="shrink-0 text-primary" />
+                          Service selected — use the Book an Appointment panel on
+                          the right to choose your slot.
+                        </p>
+                      )}
                     </div>
                   );
                 })}
@@ -594,200 +681,71 @@ export default function ProviderPublicProfilePage() {
                 Book an Appointment
               </h3>
 
-              {bookable.length === 0 ? (
-                <p className="font-body text-body text-on-surface-variant">
-                  Nothing is bookable here yet.
-                </p>
-              ) : (
-                <div className="space-y-5">
-                  {/* The service is chosen here, in the panel that books it.
-
-                      This was a read-only box under the words "Pick a different
-                      one from the Services list" — an instruction the panel gave
-                      and then could not help with. The list is most of a screen
-                      further down the left column, and the panel is `sticky`, so
-                      on a desktop the reader had to scroll away from the thing
-                      they were being told to change, click Select on a row, then
-                      scroll back to a panel that had never moved. On a phone the
-                      panel sits below the whole list, so the instruction pointed
-                      backwards past everything they had already scrolled through.
-
-                      A dropdown is the smaller of the two changes the panel
-                      needed: the rows below keep their Select buttons and still
-                      drive the same state, so choosing from either place works
-                      and the two always agree. */}
-                  <div>
-                    {bookable.length > 1 ? (
-                      <>
-                        <label
-                          htmlFor="booking-service"
-                          className="mb-1 block font-small text-small font-medium text-on-surface"
-                        >
-                          Selected Service
-                        </label>
-                        {/* Name and price in the option text, because a native
-                            option cannot be laid out — and the price is the
-                            other half of what someone is choosing between. */}
-                        <Select
-                          id="booking-service"
-                          value={selectedService?.id ?? ""}
-                          onChange={(event) => setSelectedServiceId(Number(event.target.value))}
-                        >
-                          {bookable.map((service) => (
-                            <option key={service.id} value={service.id}>
-                              {service.name} — {formatPrice(service.price, service.currency)}
-                            </option>
-                          ))}
-                        </Select>
-
-                        <a
-                          href="#services"
-                          className="mt-2 inline-flex items-center gap-1 font-caption text-caption text-primary underline-offset-2 hover:underline"
-                        >
-                          Compare all {bookable.length} services
-                          <Icon name="chevronDown" size={14} />
-                        </a>
-                      </>
-                    ) : (
-                      <>
-                        <p className="mb-1 block font-small text-small font-medium text-on-surface">
-                          Selected Service
-                        </p>
-                        {/* One service, so there is nothing to choose between and
-                            no control to offer. The old hint was wrong here in
-                            its own right: it told the reader to pick a different
-                            one when there was no different one to pick. */}
-                        <div className="flex items-center justify-between gap-3 rounded-md border border-outline-variant bg-surface-container-low p-3 font-body text-body text-on-surface">
-                          <span className="min-w-0 truncate">
-                            {selectedService?.name ?? "Choose a service"}
-                          </span>
-                          {selectedService && (
-                            <span className="shrink-0 font-bold">
-                              {formatPrice(selectedService.price, selectedService.currency)}
-                            </span>
-                          )}
-                        </div>
-                      </>
-                    )}
-                  </div>
-
-                  {selectedService && (
-                    <dl className="flex flex-wrap gap-x-6 gap-y-2 border-t border-outline-variant pt-4 font-small text-small">
-                      <div className="flex items-center gap-2">
-                        <dt className="text-on-surface-variant">Duration</dt>
-                        <dd className="font-semibold text-on-surface">
-                          {formatDuration(selectedService.duration)}
-                        </dd>
-                      </div>
-                      {provider.timezone && (
-                        <div className="flex items-center gap-2">
-                          <dt className="text-on-surface-variant">
-                            Their zone
-                          </dt>
-                          <dd className="font-semibold text-on-surface">
-                            {zoneName(provider.timezone)}
-                          </dd>
-                        </div>
-                      )}
-                      <div className="flex items-center gap-2">
-                        <dt className="text-on-surface-variant">Delivery</dt>
-                        <dd className="flex items-center gap-1 font-semibold text-on-surface">
-                          <Icon name={deliveryIcon(selectedService.deliveryType)} size={15} />
-                          {deliveryLabel(selectedService.deliveryType)}
-                        </dd>
-                      </div>
-                    </dl>
-                  )}
-
-                  {/* The address, before the client commits to anything.
-                      An in-person appointment is a journey, and the moment to
-                      learn where to is while choosing the service — not on a
-                      confirmation screen after picking a time. Drawn from the
-                      service rather than the provider so a virtual service never
-                      shows one, even though this provider has an address on
-                      file. */}
-                  {selectedService && isInPerson(selectedService) && selectedService.location?.address && (
-                    <div className="flex items-start gap-2 rounded-md border border-outline-variant bg-surface-container-low p-3">
-                      <Icon name="place" size={16} className="mt-0.5 shrink-0 text-on-surface-variant" />
-                      <div className="min-w-0">
-                        <p className="font-caption text-caption font-semibold uppercase tracking-wider text-on-surface-variant">
-                          Where
-                        </p>
-                        {/* whitespace-pre-line because the address is one free-text
-                            field and providers type it as they would write it on an
-                            envelope. Collapsing the newlines would run a
-                            three-line address into one unreadable string. */}
-                        <p className="whitespace-pre-line font-small text-small text-on-surface">
-                          {selectedService.location.address}
-                        </p>
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Whether this reader may book it at all.
-                      Rendered here, on the panel that holds the button, rather
-                      than on the card — a client who has selected a service they
-                      cannot book should be told beside the control that is about
-                      to refuse them. Advisory: the API re-checks it, and both
-                      say the same thing because both fail open on an unknown
-                      country. */}
-                  {selectedService && !selectedEligibility.eligible && (
-                    <Alert tone="warn">{selectedEligibility.reason}</Alert>
-                  )}
-
-                  {isOwner ? (
-                    <p className="rounded-md border border-outline-variant bg-surface-container-low p-3 font-caption text-caption text-on-surface-variant">
-                      This is your own page, so there is nothing to book here.
-                    </p>
-                  ) : canBook && selectedService && !selectedEligibility.eligible ? (
-                    /* Ineligible: the button is inert rather than a link into a
-                       page that can only refuse. The reason is already stated
-                       above it, so the honest thing is to stop offering the
-                       action — a live "Choose a time" that leads to "not
-                       available in your country" spends the client's click to
-                       tell them something this panel has already said.
-
-                       Still rendered, and still the same size, so the panel does
-                       not change shape between an eligible and an ineligible
-                       service and the reason is what draws the eye. */
-                    <button
-                      type="button"
-                      disabled
-                      className="flex h-12 w-full cursor-not-allowed items-center justify-center gap-2 rounded-md bg-surface-variant font-small text-small font-medium text-on-surface-variant"
-                    >
-                      Not available in your country
-                    </button>
-                  ) : canBook && selectedService ? (
-                    <Link
-                      to={`/providers/${providerId}/book/${selectedService.id}`}
-                      className="flex h-12 w-full items-center justify-center gap-2 rounded-md bg-primary font-small text-small font-medium text-on-primary transition-colors hover:bg-primary/90"
-                    >
-                      Choose a time
-                      <Icon name="arrow_forward" size={18} />
-                    </Link>
-                  ) : (
-                    <>
-                      <Link
-                        to="/login"
-                        state={{ from: `/providers/${providerId}` }}
-                        className="flex h-12 w-full items-center justify-center rounded-md bg-primary font-small text-small font-medium text-on-primary transition-colors hover:bg-primary/90"
-                      >
-                        Sign in to book
-                      </Link>
-                      <p className="font-caption text-caption text-on-surface-variant">
-                        Sign in and you will see every time converted to your
-                        own timezone before you choose.
-                      </p>
-                    </>
-                  )}
-                </div>
-              )}
+              <BookingPanel
+                bookable={bookable}
+                selectedService={selectedService}
+                onSelectService={setSelectedServiceId}
+                eligibility={selectedEligibility}
+                provider={provider}
+                providerId={providerId}
+                isOwner={isOwner}
+                canBook={canBook}
+              />
             </div>
 
             {availability && <WeeklyHoursSummary availability={availability} />}
           </div>
         </div>
       </div>
+
+      {/* The mobile answer to a tap on Select.
+
+          Below `lg` the booking panel is not beside the list, it is after it —
+          past every service, the reviews and the weekly hours. A reader who
+          tapped Select got a button that changed colour and nothing else, and
+          had no way to know that the thing they had just chosen was waiting a
+          screen and a half further down. The sheet brings that panel to the tap.
+
+          The same `Modal` every other dialog uses, so it is already a sheet on a
+          narrow screen — bottom-anchored, full width, rounded at the top — with
+          the focus trap, the Escape key, the backdrop and the close button that
+          come with it, and nothing new to keep in step with them.
+
+          Mounted only while `isNarrow`, not hidden with a class: this is a focus
+          trap that locks body scroll, so a hidden copy on a desktop would still
+          swallow Tab and freeze the page behind it.
+
+          It renders the same `BookingPanel` off the same props as the panel
+          below, so there is one selection and one CTA — the sheet is a second
+          view of the panel, not a second panel. */}
+      {isNarrow && (
+        <Modal
+          open={sheetOpen}
+          onClose={() => setSheetOpen(false)}
+          title="Book an Appointment"
+          size="lg"
+        >
+          <BookingPanel
+            bookable={bookable}
+            selectedService={selectedService}
+            onSelectService={setSelectedServiceId}
+            eligibility={selectedEligibility}
+            provider={provider}
+            providerId={providerId}
+            isOwner={isOwner}
+            canBook={canBook}
+            onCompare={(event) => {
+              event.preventDefault();
+              jumpToServices.current = true;
+              setSheetOpen(false);
+            }}
+            // The panel at the foot of the page is in the document at the same
+            // time as this one, and two `booking-service` ids would tie both
+            // labels to the same select.
+            fieldId="sheet-booking-service"
+          />
+        </Modal>
+      )}
 
       <ServiceDetailsModal
         service={detailsService}
