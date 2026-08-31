@@ -38,6 +38,7 @@ import Icon from "../ui/Icon";
 import Field, { Textarea, CharCount } from "../ui/Field";
 import { Refreshing, SkeletonRows } from "../ui/Feedback";
 import { addDaysToDate, friendlyDateHeading, todayIn } from "../../lib/time";
+import { bookingNoticeBody } from "../../lib/bookingNotice";
 import {
   primaryButton,
   secondaryButton,
@@ -231,7 +232,13 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
 
     setSaving(true);
     try {
-      await bookingsApi.reschedule(booking.id, {
+      // The response is the moved booking, and it is what the message below is
+      // built from — not the local `selected` slot or the stale `booking` prop.
+      // That is what makes the notification carry the *latest* appointment: the
+      // handler re-selects through BOOKING_SELECT after the write, so the venue
+      // it returns is the provider's current address (or the service's current
+      // meeting link) rather than whatever was on screen when the dialog opened.
+      const moved = await bookingsApi.reschedule(booking.id, {
         startsAt: selected.startsAt,
         // Omitted entirely rather than sent empty, so the timeline records no
         // reason instead of a blank one.
@@ -241,11 +248,21 @@ export default function RescheduleDialog({ open, booking, onClose, onRescheduled
         // real rather than a checkbox this dialog could forget to tick.
         ...(accepted ? { acceptChanges: true } : {}),
       });
-      toast.success(
-        isClient
-          ? "Appointment moved. The provider can see your new time."
-          : "Appointment moved. The client can see the new time and why it changed."
-      );
+
+      // A move is the one change where restating everything earns its space: the
+      // reader has just replaced the time they had memorised, so the message
+      // names the appointment, the new moment and where it happens. Previously
+      // it said only that the *other* party could see the new time, which is the
+      // one fact the person reading it did not need.
+      const detail = bookingNoticeBody({ booking: moved, viewerZone });
+      const audience = isClient
+        ? "The provider can see your new time."
+        : "The client can see the new time and why it changed.";
+
+      toast.success(detail ? `${detail}\n${audience}` : audience, {
+        title: "Appointment moved",
+        duration: 11000,
+      });
       onRescheduled();
     } catch (err) {
       const parsed = parseApiError(err, "Could not move this appointment.");

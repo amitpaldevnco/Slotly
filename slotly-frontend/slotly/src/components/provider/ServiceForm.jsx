@@ -38,6 +38,7 @@ import {
   SCOPE_OPTIONS,
   DEFAULT_DELIVERY_TYPE,
   DEFAULT_BOOKING_SCOPE,
+  MEETING_LINK_MAX,
 } from "../../lib/serviceScope";
 import { Link } from "react-router-dom";
 
@@ -54,6 +55,9 @@ const emptyForm = {
   // on its own — the form agrees with the schema instead of racing it.
   deliveryType: DEFAULT_DELIVERY_TYPE,
   bookingScope: DEFAULT_BOOKING_SCOPE,
+  // Only meaningful for a virtual service. Kept in the form state regardless so
+  // toggling between the two delivery types does not lose what was typed.
+  meetingLink: "",
 };
 
 const MAX_DESCRIPTION = 2000;
@@ -149,6 +153,9 @@ export default function ServiceForm({ existingService, onSaved, onCancel, formId
         slotInterval: String(existingService.slotInterval ?? 30),
         deliveryType: existingService.deliveryType ?? DEFAULT_DELIVERY_TYPE,
         bookingScope: existingService.bookingScope ?? DEFAULT_BOOKING_SCOPE,
+        // Read from `location`, which is where the API puts a virtual service's
+        // venue — the same field an in-person one carries its address in.
+        meetingLink: existingService.location?.meetingLink ?? "",
       });
       setCoverImagePreview(imageUrl(existingService.coverImage) || "");
     } else {
@@ -203,6 +210,14 @@ export default function ServiceForm({ existingService, onSaved, onCancel, formId
       if (fields.slotInterval !== "") formData.append("slotInterval", fields.slotInterval);
       formData.append("deliveryType", fields.deliveryType);
       formData.append("bookingScope", fields.bookingScope);
+      // Sent for a virtual service, and sent *empty* for an in-person one so a
+      // service switched from virtual does not keep a link the client would then
+      // be shown alongside an address. Empty means "clear it" to the API, which
+      // is why this is unconditional rather than guarded by the delivery type.
+      formData.append(
+        "meetingLink",
+        fields.deliveryType === "virtual" ? fields.meetingLink.trim() : ""
+      );
       if (coverImage) formData.append("coverImage", coverImage);
 
       const saved = isEditing
@@ -410,6 +425,41 @@ export default function ServiceForm({ existingService, onSaved, onCancel, formId
                     </Link>
                     , or choose Virtual.
                   </Alert>
+                )}
+
+                {/* The room a virtual client joins, shown only once Virtual is
+                    chosen — an in-person service has no use for it, and the API
+                    refuses to surface one on it either.
+
+                    Optional on purpose, and not the mirror image of the address
+                    an In-Person service demands. A client told to travel needs
+                    somewhere to travel to before the service may be published;
+                    a virtual one is publishable without a link because plenty of
+                    providers send joining details by hand once they have seen who
+                    booked. When it is empty the client is told the provider will
+                    confirm how to join, which is true, rather than being shown a
+                    blank where the venue goes. */}
+                {fields.deliveryType === "virtual" && (
+                  <div className="mt-3">
+                    <Field
+                      id="service-meeting-link"
+                      label="Meeting link"
+                      optional
+                      error={errors.meetingLink}
+                      hint="Shared with clients who book. Leave blank to send it yourself."
+                    >
+                      <Input
+                        id="service-meeting-link"
+                        type="url"
+                        inputMode="url"
+                        maxLength={MEETING_LINK_MAX}
+                        value={fields.meetingLink}
+                        onChange={handleChange("meetingLink")}
+                        placeholder="https://meet.example.com/your-room"
+                        aria-invalid={errors.meetingLink ? "true" : undefined}
+                      />
+                    </Field>
+                  </div>
                 )}
               </fieldset>
 

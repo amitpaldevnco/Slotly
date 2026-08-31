@@ -57,7 +57,8 @@ import {
   zoneName,
 } from "../lib/ui";
 import usePageTitle from "../hooks/usePageTitle";
-import { deliveryLabel } from "../lib/serviceScope";
+import { deliveryLabel, describeLocation } from "../lib/serviceScope";
+import { bookingNoticeBody } from "../lib/bookingNotice";
 
 const MAX_REASON = 500;
 
@@ -104,7 +105,18 @@ export default function BookingDetailPage() {
       await bookingsApi.cancel(bookingId, reason.trim());
       setCancelOpen(false);
       setReason("");
-      toast.success("Booking cancelled. The slot is free again.");
+      // Names which appointment was cancelled, not just that one was. A client
+      // with several bookings with the same provider had no way to tell from
+      // "Booking cancelled." that the right one had gone — and the venue is
+      // included because it is the line that distinguishes two appointments for
+      // the same service at different places.
+      const detail = bookingNoticeBody({ booking, viewerZone });
+      toast.success(
+        detail
+          ? `${detail}\nThe slot is free again.`
+          : "Booking cancelled. The slot is free again.",
+        { title: "Booking cancelled", duration: 9000 }
+      );
       load();
     } catch (err) {
       const parsed = parseApiError(err, "Could not cancel this booking.");
@@ -138,7 +150,16 @@ export default function BookingDetailPage() {
     try {
       await bookingsApi.setStatus(bookingId, status);
       setPendingOutcome(null);
-      toast.success(`Marked as ${status.replace("_", "-")}.`);
+      // The outcome is a statement about a specific appointment, so it names
+      // one — a provider settling several finished appointments in a row was
+      // otherwise shown the same four words each time with nothing to confirm
+      // which had just been recorded.
+      const detail = bookingNoticeBody({ booking, viewerZone });
+      const label = status.replace("_", "-");
+      toast.success(detail || `Marked as ${label}.`, {
+        title: `Marked as ${label}`,
+        duration: 9000,
+      });
       load();
     } catch (err) {
       toast.error(parseApiError(err, "Could not update this booking.").message);
@@ -178,6 +199,11 @@ export default function BookingDetailPage() {
   // Whichever party is looking, rendered in *their* current timezone. Derived once
   // here so the timeline, the review and the conversation cannot disagree.
   const viewerZone = isClient ? booking.client.timezone : booking.provider.timezone;
+
+  // Where this appointment happens. Same helper the booking page uses, so the
+  // screen that took the booking and the screen that shows it afterwards answer
+  // the question in the same words.
+  const venue = describeLocation(booking.service);
 
   return (
     <Page>
@@ -235,15 +261,32 @@ export default function BookingDetailPage() {
                     booking, so a clinic that has moved shows its new address on
                     appointments it took before the move — an address is a fact
                     about where they are now, unlike the price, which is a term
-                    of the agreement and must not move. Absent for a virtual
-                    appointment, which does not happen anywhere. */}
-                {booking.service.location?.address && (
+                    of the agreement and must not move.
+
+                    A virtual appointment now answers the question too. It has no
+                    address by design, and the row used to be hidden entirely on
+                    one — so the page a client opens on the day said "Virtual"
+                    under Delivery and then stopped, leaving "where is this?"
+                    unanswered at the moment it matters most. Same wording as the
+                    booking page, from the same helper, so the screen that took
+                    the booking and the screen that shows it cannot drift. */}
+                {venue.text && (
                   <DetailRow
-                    label="Where"
+                    label={venue.term}
                     value={
-                      <span className="whitespace-pre-line">
-                        {booking.service.location.address}
-                      </span>
+                      <>
+                        <span className="whitespace-pre-line">{venue.text}</span>
+                        {venue.meetingLink && (
+                          <a
+                            href={venue.meetingLink}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="mt-1 block break-all text-primary underline decoration-line-strong underline-offset-2 hover:text-ink"
+                          >
+                            {venue.meetingLink}
+                          </a>
+                        )}
+                      </>
                     }
                   />
                 )}
@@ -303,7 +346,7 @@ export default function BookingDetailPage() {
               otherPartyName={otherParty.businessName || otherParty.name}
             />
 
-            <BookingTimeline timeline={booking.timeline} viewerZone={viewerZone} />
+            <BookingTimeline timeline={booking.timeline} viewerZone={viewerZone} venue={venue} />
           </>
         }
       >

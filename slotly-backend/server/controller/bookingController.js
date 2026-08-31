@@ -33,7 +33,7 @@ import {
 } from "../services/slotEngine.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
 import { parseId } from "../middleware/validateParams.js";
-import { evaluateBookingScope } from "../services/bookingScope.js";
+import { evaluateBookingScope, buildVenue } from "../services/bookingScope.js";
 import {
   evaluateClientCancellation,
   evaluateClientReschedule,
@@ -126,18 +126,22 @@ function serialiseBooking(row, { viewerRole } = {}) {
 
       // How this appointment is delivered, and where.
       //
-      // `location` is null for a virtual appointment even when the provider has
-      // an address on file: an online session does not happen at their clinic,
-      // and printing the clinic's address on it would be telling the client to
-      // travel somewhere they should not go. Null for an in-person appointment
-      // whose provider has no address on file either — which is a gap the
-      // provider is told about, not something to paper over here.
+      // `location` answers "where is this?" for both kinds: the provider's
+      // address for an in-person appointment, the meeting link for a virtual
+      // one. Null when there is nothing to show — a virtual appointment with no
+      // link yet, or an in-person one whose provider has no address on file.
+      // Both are real gaps the provider is told about, not things to paper over
+      // here. See `buildVenue` for why neither kind ever carries the other's
+      // value.
+      //
+      // Read live from the provider rather than snapshotted beside
+      // `price_snapshot`: an address is a fact about where they are now, so a
+      // clinic that has moved shows its new address on appointments it took
+      // before the move. That is also what makes a reschedule response carry the
+      // current venue rather than a stale one.
       deliveryType: row.delivery_type ?? "in_person",
       bookingScope: row.booking_scope ?? "international",
-      location:
-        (row.delivery_type ?? "in_person") === "in_person" && row.provider_address
-          ? { address: row.provider_address, country: trimCountry(row.provider_country) }
-          : null,
+      location: buildVenue(row, trimCountry),
     },
     client: {
       id: row.client_id,
@@ -262,7 +266,7 @@ const BOOKING_SELECT = `
          p.timezone AS provider_timezone_now,
          p.currency AS provider_currency,
          s.cover_image, s.is_active AS service_is_active,
-         s.delivery_type, s.booking_scope,
+         s.delivery_type, s.booking_scope, s.meeting_link,
          -- Where an in-person appointment happens, and the two countries the
          -- domestic rule compares. Read live from the users rows rather than
          -- snapshotted onto the booking: an address is a fact about where the
@@ -973,7 +977,7 @@ export const rescheduleBooking = async (req, res) => {
     // times the write path then rejected as outside availability.
     const existing = await query(
       `SELECT b.*, s.price, s.duration, s.buffer_before, s.buffer_after, s.slot_interval,
-              s.delivery_type, s.booking_scope,
+              s.delivery_type, s.booking_scope, s.meeting_link,
               p.timezone AS provider_timezone_now, p.currency AS provider_currency,
               p.country AS provider_country, c.country AS client_country
        FROM bookings b

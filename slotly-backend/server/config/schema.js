@@ -250,6 +250,25 @@ export async function initSchema() {
       booking_scope VARCHAR(20) NOT NULL DEFAULT 'international'
                       CHECK (booking_scope IN ('domestic', 'international')),
 
+      -- Where a virtual appointment is attended: the room the client joins.
+      --
+      -- Nullable, and deliberately not the mirror image of business_address.
+      -- An in-person service cannot be published without an address, because a
+      -- client told to travel needs somewhere to travel to; a virtual one is
+      -- publishable without a link, because plenty of providers send the link
+      -- by hand once they have seen who booked. So this is optional and the UI
+      -- says "the provider will confirm how to join" when it is empty, rather
+      -- than blocking the service.
+      --
+      -- On the service and not on users, unlike the address: an address is where
+      -- the business is and there is one of them, whereas a provider running two
+      -- virtual services can legitimately hold two different rooms open.
+      --
+      -- Length only, no URL CHECK. Validated in serviceController against the
+      -- WHATWG parser, for the reason users_currency_format defers to ICU: a
+      -- regex in SQL would be a second, worse opinion about what a URL is.
+      meeting_link  VARCHAR(500),
+
       -- True once this service has its own weekly hours/exceptions instead of
       -- inheriting the provider's default ones. A dedicated flag rather than
       -- "does it have any rule rows" because a service can legitimately have
@@ -287,6 +306,14 @@ export async function initSchema() {
   await exec(`
     ALTER TABLE services
       ADD COLUMN IF NOT EXISTS booking_scope VARCHAR(20) NOT NULL DEFAULT 'international';
+  `);
+
+  // Nullable, so existing rows need no backfill and nothing about how they
+  // already behave changes: every service that predates this column has no
+  // meeting link, which is exactly what an absent one means.
+  await exec(`
+    ALTER TABLE services
+      ADD COLUMN IF NOT EXISTS meeting_link VARCHAR(500);
   `);
   await exec(`ALTER TABLE services DROP CONSTRAINT IF EXISTS services_delivery_type_known;`);
   await exec(`

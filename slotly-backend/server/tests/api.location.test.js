@@ -360,6 +360,187 @@ describe("the venue reaches the client", () => {
       expect(service.location).toBeNull();
     });
   });
+
+  it("marks a virtual booking as virtual, so the client can be told where to attend", async () => {
+    // The address being absent is correct, but absence is not an answer on its
+    // own: the UI has to be able to say "virtual meeting" rather than render a
+    // blank where the venue goes. `deliveryType` is what carries that, so it has
+    // to survive onto the booking and not only onto the service.
+    const service = await createService(sameCountryProvider, {
+      service_name: "Online Session Booked",
+      deliveryType: "virtual",
+    });
+    const slots = await fetchSlots(sameCountryClient.agent, sameCountryProvider.id, service.id);
+    const booked = await sameCountryClient.agent
+      .post("/api/bookings")
+      .send({ serviceId: service.id, startsAt: slots[0].startsAt });
+
+    expect(booked.status).toBe(201);
+    expect(booked.body.data.service.deliveryType).toBe("virtual");
+    expect(booked.body.data.service.location).toBeNull();
+  });
+
+  it("still carries the venue after a reschedule, read fresh rather than stale", async () => {
+    // The reschedule response is what the client sees immediately after moving an
+    // appointment, and it is where a "your appointment has moved" message gets
+    // its facts. It has to carry the venue, and it has to carry the *current*
+    // one: the handler re-selects the booking through BOOKING_SELECT, which reads
+    // `business_address` live from the provider, so an address edited between the
+    // booking and the move shows the new value on both.
+    // Its own provider, because this test *edits* the address and the fixtures
+    // above are shared in file order — mutating one of those would reach into
+    // whichever later test asserted on the original value.
+    const mover = await createUser({ role: "provider", label: "locmover", country: "GB" });
+    await setWeeklyHours(mover);
+
+    const service = await createService(mover, {
+      service_name: "Moved And Still Somewhere",
+      deliveryType: "in_person",
+    });
+    const slots = await fetchSlots(sameCountryClient.agent, mover.id, service.id);
+    const booked = await sameCountryClient.agent
+      .post("/api/bookings")
+      .send({ serviceId: service.id, startsAt: slots[0].startsAt });
+    expect(booked.status).toBe(201);
+    expect(booked.body.data.service.location.address).toContain("Test Street");
+
+    const relocated = "9 Moved Lane\nNew Town NT1 1NT";
+    const edited = await mover.agent
+      .patch("/api/auth/profile")
+      .send({ businessAddress: relocated });
+    expect(edited.status).toBe(200);
+
+    const moved = await sameCountryClient.agent
+      .post(`/api/bookings/${booked.body.data.id}/reschedule`)
+      .send({ startsAt: slots[2].startsAt });
+
+    expect(moved.status).toBe(200);
+    // The new time...
+    expect(moved.body.data.startsAt).not.toBe(booked.body.data.startsAt);
+    // ...and the venue alongside it, at its current value rather than the one in
+    // force when the booking was taken.
+    expect(moved.body.data.service.deliveryType).toBe("in_person");
+    expect(moved.body.data.service.location.address).toBe(relocated);
+    // The service name a reschedule message needs, still snapshotted.
+    expect(moved.body.data.service.name).toBe("Moved And Still Somewhere");
+  });
+});
+
+describe("a virtual appointment's venue is its meeting link", () => {
+  it("carries the link as the venue, with no address beside it", async () => {
+    const service = await createService(sameCountryProvider, {
+      service_name: "Online With A Room",
+      deliveryType: "virtual",
+      meetingLink: "https://meet.example.test/room/abc",
+    });
+
+    expect(service.deliveryType).toBe("virtual");
+    expect(service.location.meetingLink).toBe("https://meet.example.test/room/abc");
+    // The provider has a clinic on file; a virtual session still must not quote it.
+    expect(service.location.address).toBeNull();
+  });
+
+  it("stays null when a virtual service has no link, so callers keep one shape", async () => {
+    // The link is optional by design: plenty of providers send joining details by
+    // hand once they have seen who booked. Absent `location` continues to mean
+    // "nothing to show here", which is what every existing caller relies on.
+    const service = await createService(sameCountryProvider, {
+      service_name: "Online No Room Yet",
+      deliveryType: "virtual",
+    });
+
+    expect(service.location).toBeNull();
+  });
+
+  it("never surfaces a link on an in-person service, even if one is stored", async () => {
+    // The converse of not printing an address on a virtual appointment: a link on
+    // one the client is expected to travel to would tell them they could stay home.
+    const service = await createService(sameCountryProvider, {
+      service_name: "In Person With A Stray Link",
+      deliveryType: "in_person",
+      meetingLink: "https://meet.example.test/room/stray",
+    });
+
+    expect(service.location.address).toContain("Test Street");
+    expect(service.location.meetingLink).toBeNull();
+  });
+
+  it("refuses a link that is not a followable http(s) URL", async () => {
+    // The value is rendered as an href a client clicks, so the scheme matters:
+    // `javascript:` here would be a provider-supplied script on the client's page.
+    for (const bad of ["javascript:alert(1)", "data:text/html,x", "not a url", "ftp://x.test/a"]) {
+      const response = await sameCountryProvider.agent.post("/api/services").send({
+        service_name: "Bad Link",
+        price: 10,
+        duration: 30,
+        deliveryType: "virtual",
+        meetingLink: bad,
+      });
+
+      expect(response.status).toBe(400);
+      expect(response.body.details.some((d) => d.field === "meetingLink")).toBe(true);
+    }
+  });
+
+  it("lets a provider clear the link by submitting an empty string", async () => {
+    // Empty is meaningful here, unlike delivery type and scope where it means
+    // "not mentioned" — it is how the form removes a link that was set.
+    const service = await createService(sameCountryProvider, {
+      service_name: "Room To Be Removed",
+      deliveryType: "virtual",
+      meetingLink: "https://meet.example.test/room/gone",
+    });
+    expect(service.location.meetingLink).toBeTruthy();
+
+    const cleared = await sameCountryProvider.agent
+      .put(`/api/services/${service.id}`)
+      .send({ meetingLink: "" });
+
+    expect(cleared.status).toBe(200);
+    expect(cleared.body.data.location).toBeNull();
+  });
+
+  it("reaches the client on the booking and survives a reschedule", async () => {
+    // The whole point of the field: the client has to be able to see where to
+    // attend, on the booking itself and still after it has been moved.
+    const service = await createService(sameCountryProvider, {
+      service_name: "Online And Movable",
+      deliveryType: "virtual",
+      meetingLink: "https://meet.example.test/room/keep",
+    });
+    const slots = await fetchSlots(sameCountryClient.agent, sameCountryProvider.id, service.id);
+    const booked = await sameCountryClient.agent
+      .post("/api/bookings")
+      .send({ serviceId: service.id, startsAt: slots[0].startsAt });
+
+    expect(booked.status).toBe(201);
+    expect(booked.body.data.service.location.meetingLink).toBe("https://meet.example.test/room/keep");
+
+    const moved = await sameCountryClient.agent
+      .post(`/api/bookings/${booked.body.data.id}/reschedule`)
+      .send({ startsAt: slots[2].startsAt });
+
+    expect(moved.status).toBe(200);
+    expect(moved.body.data.service.deliveryType).toBe("virtual");
+    expect(moved.body.data.service.location.meetingLink).toBe("https://meet.example.test/room/keep");
+  });
+
+  it("is offered on the slot list too, before the client picks a time", async () => {
+    const service = await createService(sameCountryProvider, {
+      service_name: "Online Slots Carry It",
+      deliveryType: "virtual",
+      meetingLink: "https://meet.example.test/room/slots",
+    });
+
+    const response = await sameCountryClient.agent
+      .get(`/api/providers/${sameCountryProvider.id}/slots`)
+      .query({ serviceId: service.id, ...futureRange() });
+
+    expect(response.status).toBe(200);
+    expect(response.body.data.service.location.meetingLink).toBe(
+      "https://meet.example.test/room/slots"
+    );
+  });
 });
 
 describe("the directory filters on what it says it filters on", () => {

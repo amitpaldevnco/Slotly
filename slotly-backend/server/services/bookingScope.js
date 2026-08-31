@@ -209,3 +209,97 @@ function normaliseStored(code) {
   const trimmed = code.trim().toUpperCase();
   return /^[A-Z]{2}$/.test(trimmed) ? trimmed : null;
 }
+
+/**
+ * How long a meeting link may be. Matches `services.meeting_link`.
+ */
+export const MEETING_LINK_MAX = 500;
+
+/**
+ * Validates and normalises a meeting link.
+ *
+ * Parsed with the WHATWG URL parser rather than matched against a regex, for the
+ * reason `normaliseCurrency` defers to ICU and `isValidTimezone` defers to
+ * Luxon: the runtime already knows what a URL is, and a hand-written pattern
+ * would be a second and worse opinion that rejects valid links.
+ *
+ * Restricted to http and https on purpose. The value is rendered as an `href` a
+ * client clicks, so admitting other schemes would let a provider put
+ * `javascript:` or `data:` in front of them — the link is the one field here
+ * whose whole purpose is to be followed.
+ *
+ * @param {unknown} value
+ * @returns {{ok: true, value: string|null} | {ok: false, message: string}}
+ *   `value: null` for a blank submission, which is how a provider clears it.
+ */
+export function normaliseMeetingLink(value) {
+  if (value === null || value === undefined) return { ok: true, value: null };
+  if (typeof value !== "string") return { ok: false, message: "Enter a valid link" };
+
+  const trimmed = value.trim();
+  if (!trimmed) return { ok: true, value: null };
+
+  if (trimmed.length > MEETING_LINK_MAX) {
+    return { ok: false, message: `Keep the link under ${MEETING_LINK_MAX} characters` };
+  }
+
+  let parsed;
+  try {
+    parsed = new URL(trimmed);
+  } catch {
+    return { ok: false, message: "Enter a full link, starting with https://" };
+  }
+
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return { ok: false, message: "Only http and https links can be used" };
+  }
+
+  return { ok: true, value: trimmed };
+}
+
+/**
+ * The venue for one service row, whichever kind of appointment it is.
+ *
+ * One field answering "where is this?" rather than two the caller has to choose
+ * between: an in-person appointment resolves to the provider's address, a
+ * virtual one to its meeting link. Shared by the service, booking and slot
+ * serialisers, because a client reading the same appointment on three screens
+ * must not be told three different things about where it happens.
+ *
+ * Null when there is nothing to show — a virtual service with no link yet, or an
+ * in-person one whose provider has no address on file. Both are real gaps rather
+ * than values to invent, and both are already reported to the provider by their
+ * own availability health report. Callers treat an absent `location` as "say
+ * nothing here", which is the shape they relied on before this function existed.
+ *
+ * A virtual appointment never carries the provider's address, even when they
+ * have one: an online session does not happen at their clinic, and printing it
+ * would be telling the client to travel somewhere they should not go. The
+ * converse holds too — an in-person appointment never carries a link, which
+ * would tell them they could stay home.
+ *
+ * @param {{delivery_type?: string, meeting_link?: string|null,
+ *          provider_address?: string|null, provider_country?: string|null}} row
+ *   A joined service/booking row.
+ * @param {(code: string|null|undefined) => string|null} normaliseCountry
+ *   Passed in rather than imported, because the two callers already hold their
+ *   own copy and duplicating the import here would be a third.
+ * @returns {{address: string|null, country: string|null,
+ *            meetingLink: string|null} | null}
+ */
+export function buildVenue(row, normaliseCountry) {
+  const deliveryType = row.delivery_type ?? "in_person";
+
+  if (deliveryType === "virtual") {
+    const link = row.meeting_link ?? null;
+    return link ? { address: null, country: null, meetingLink: link } : null;
+  }
+
+  return row.provider_address
+    ? {
+        address: row.provider_address,
+        country: normaliseCountry(row.provider_country) ?? null,
+        meetingLink: null,
+      }
+    : null;
+}

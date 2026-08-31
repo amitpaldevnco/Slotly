@@ -96,8 +96,14 @@ export function ToastProvider({ children }) {
 
               <div className="min-w-0 flex-1">
                 {toast.title && <p className="text-sm font-semibold">{toast.title}</p>}
+                {/* `whitespace-pre-line` so a message can be a few short facts
+                    on their own lines rather than one run-on sentence. The
+                    booking messages built by `lib/bookingNotice` are three:
+                    which appointment, when, and where — and a client scanning a
+                    toast that is about to disappear reads a list where they skip
+                    a paragraph. Single-line messages are unaffected. */}
                 <p
-                  className={`break-words leading-snug ${
+                  className={`whitespace-pre-line break-words leading-snug ${
                     toast.title ? "mt-0.5 text-[0.8125rem]" : "text-sm"
                   }`}
                 >

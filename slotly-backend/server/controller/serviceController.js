@@ -29,6 +29,8 @@ import {
   normaliseDeliveryType,
   normaliseBookingScope,
   checkProviderLocation,
+  buildVenue,
+  normaliseMeetingLink,
 } from "../services/bookingScope.js";
 import { normaliseCountry } from "../utils/geography.js";
 
@@ -84,20 +86,14 @@ export function serialiseService(row, { includeStats = false } = {}) {
     deliveryType: row.delivery_type ?? "in_person",
     bookingScope: row.booking_scope ?? "international",
 
-    // The provider's location, carried on the service for the same reason
-    // `currency` is: it lives on the provider, arrives here by join, and is
-    // present so anything holding a service can show a client where to go
-    // without also having to hold the provider. Null for a virtual service even
-    // when the provider has an address — an online appointment does not happen
-    // at their clinic, and printing the clinic's address beside it would be
-    // telling the client to travel somewhere they should not go.
-    location:
-      (row.delivery_type ?? "in_person") === "in_person"
-        ? {
-            address: row.provider_address ?? null,
-            country: normaliseCountry(row.provider_country) ?? null,
-          }
-        : null,
+    // Where it happens — the provider's address for an in-person service, the
+    // meeting link for a virtual one. One field answering "where is this?"
+    // whichever kind it is, rather than two the caller has to choose between.
+    // Carried on the service for the same reason `currency` is: half of it lives
+    // on the provider and arrives by join, and anything holding a service can
+    // then tell a client where to go without also having to hold the provider.
+    // See `buildVenue` for why each kind never carries the other's value.
+    location: buildVenue(row, normaliseCountry),
 
     createdAt: row.created_at,
   };
@@ -267,6 +263,22 @@ function validateServiceFields(body, { partial }) {
       });
     } else {
       values.booking_scope = canonical;
+    }
+  }
+
+  // The room a virtual client joins.
+  //
+  // Unlike the two above, an empty string is meaningful here rather than
+  // something to ignore: it is how the form clears a link that was set. So this
+  // tests only for `undefined` — "the request did not mention it" — and lets
+  // `normaliseMeetingLink` turn blank into null.
+  const meetingLink = field(body, "meetingLink", "meeting_link");
+  if (meetingLink !== undefined) {
+    const parsed = normaliseMeetingLink(meetingLink);
+    if (!parsed.ok) {
+      errors.push({ field: "meetingLink", message: parsed.message });
+    } else {
+      values.meeting_link = parsed.value;
     }
   }
 
@@ -455,9 +467,9 @@ export const createService = async (req, res) => {
       `INSERT INTO services
          (provider_id, service_name, description, price, duration,
           buffer_before, buffer_after, slot_interval, cover_image,
-          delivery_type, booking_scope)
+          delivery_type, booking_scope, meeting_link)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9,
-               COALESCE($10, 'in_person'), COALESCE($11, 'international'))
+               COALESCE($10, 'in_person'), COALESCE($11, 'international'), $12)
        RETURNING *, ${providerColumnsFor("services")}`,
       [
         req.user.userId,
@@ -474,6 +486,10 @@ export const createService = async (req, res) => {
         // copy here that can drift from it.
         values.delivery_type ?? null,
         values.booking_scope ?? null,
+        // Nullable in its own right, so there is no default to COALESCE onto:
+        // absent and "cleared" are the same state, and both mean the provider
+        // will send the joining details themselves.
+        values.meeting_link ?? null,
       ]
     );
 

@@ -98,7 +98,13 @@ import {
   zoneName,
 } from "../lib/ui";
 import usePageTitle from "../hooks/usePageTitle";
-import { countryLabel, deliveryIcon, deliveryLabel, isInPerson } from "../lib/serviceScope";
+import {
+  countryLabel,
+  deliveryIcon,
+  deliveryLabel,
+  describeLocation,
+} from "../lib/serviceScope";
+import { bookingNoticeBody } from "../lib/bookingNotice";
 
 /** Longest a note may be, matching the API's own validation. */
 const MAX_NOTE = 500;
@@ -411,7 +417,16 @@ export default function BookServicePage() {
       setReviewing(false);
       setSelectedSlot(null);
       setNote("");
-      toast.success("Booking confirmed.", { title: "You're booked in" });
+      // The confirmation restates the appointment rather than only announcing
+      // that one exists. "Booking confirmed." told the client nothing they could
+      // check, and the venue in particular is the fact they are most likely to
+      // want a moment after agreeing — especially for a virtual appointment,
+      // where there is no address to fall back on remembering.
+      toast.success(
+        bookingNoticeBody({ booking: created, viewerZone: data?.clientTimezone }) ||
+          "Booking confirmed.",
+        { title: "You're booked in", duration: 9000 }
+      );
       navigate(`/bookings/${created.id}?justBooked=1`);
     } catch (err) {
       const parsed = parseApiError(err, "Could not complete that booking.");
@@ -495,6 +510,12 @@ export default function BookServicePage() {
   })();
   const differentZones =
     data?.clientTimezone && data?.providerTimezone && data.clientTimezone !== data.providerTimezone;
+
+  // Where this appointment happens, resolved once and read by both the side
+  // panel and the confirmation dialog — the two places that have to agree about
+  // it, and previously did not: the panel showed an address and the dialog
+  // showed nothing at all.
+  const venue = describeLocation(service);
 
   return (
     <Page>
@@ -591,17 +612,36 @@ export default function BookServicePage() {
                 {deliveryLabel(service?.deliveryType)}
               </DetailRow>
 
-              {/* The address, in the panel the client reads before choosing a
+              {/* The venue, in the panel the client reads before choosing a
                   time. An in-person appointment is a journey and this is the
                   screen where it is being planned; leaving the address to the
                   confirmation dialog would mean the client picks a time before
                   finding out whether they can get there.
 
+                  Now answered for a virtual appointment too. This row used to
+                  render only for `in_person`, so an online session said
+                  "Delivery: Virtual" and then nothing — the question "where is
+                  this?" went unanswered on the screen where it is asked, and the
+                  client was left to infer that a missing address meant online.
+
                   whitespace-pre-line because the address is one free-text field
                   and providers write it as they would on an envelope. */}
-              {isInPerson(service) && service?.location?.address && (
-                <DetailRow icon="place" term="Where">
-                  <span className="whitespace-pre-line">{service.location.address}</span>
+              {venue.text && (
+                <DetailRow
+                  icon={venue.isVirtual ? "videocam" : "place"}
+                  term={venue.term}
+                >
+                  <span className="whitespace-pre-line">{venue.text}</span>
+                  {venue.meetingLink && (
+                    <a
+                      href={venue.meetingLink}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="mt-1 block break-all font-caption text-caption text-primary underline decoration-line-strong underline-offset-2 hover:text-ink"
+                    >
+                      {venue.meetingLink}
+                    </a>
+                  )}
                 </DetailRow>
               )}
             </dl>
@@ -1000,6 +1040,38 @@ export default function BookServicePage() {
                   </span>
                 </ReviewRow>
               )}
+
+              {/* Where it happens, on the dialog that commits to it.
+                  
+                  This was the one fact the confirmation step left out. The side
+                  panel carries it, but that column is scrolled past on the way
+                  to the calendar and is off-screen entirely on a phone by the
+                  time this dialog opens — so the last thing a client saw before
+                  agreeing was a time, with the venue several screens behind
+                  them. Stated again here for the same reason both clocks are:
+                  the moment of commitment is where a fact has to be legible,
+                  not merely available. */}
+              <ReviewRow term={venue.term}>
+                <span className="whitespace-pre-line font-semibold text-on-surface">
+                  {venue.text ?? "The provider has not published an address yet."}
+                </span>
+                {venue.meetingLink ? (
+                  <a
+                    href={venue.meetingLink}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="mt-0.5 block break-all text-primary underline decoration-line-strong underline-offset-2 hover:text-ink"
+                  >
+                    {venue.meetingLink}
+                  </a>
+                ) : (
+                  <span className="mt-0.5 block text-on-surface-variant">
+                    {venue.isVirtual
+                      ? "The provider will confirm how to join."
+                      : deliveryLabel(service?.deliveryType)}
+                  </span>
+                )}
+              </ReviewRow>
             </dl>
 
             {/* The cancellation terms, as a fact about this booking rather than

@@ -28,7 +28,7 @@ function describeEvent(event) {
   }
 }
 
-export default function BookingTimeline({ timeline, viewerZone }) {
+export default function BookingTimeline({ timeline, viewerZone, venue }) {
   const [open, setOpen] = useState(false);
 
   if (!timeline?.length) return null;
@@ -64,6 +64,7 @@ export default function BookingTimeline({ timeline, viewerZone }) {
             key={event.id}
             event={event}
             viewerZone={viewerZone}
+            venue={venue}
             isLast={index === shown.length - 1}
           />
         ))}
@@ -72,7 +73,7 @@ export default function BookingTimeline({ timeline, viewerZone }) {
   );
 }
 
-function Entry({ event, viewerZone, isLast }) {
+function Entry({ event, viewerZone, venue, isLast }) {
   const style = statusStyle(event.toStatus);
 
   return (
@@ -104,6 +105,50 @@ function Entry({ event, viewerZone, isLast }) {
               {formatDateTime(event.fromStartsAt, viewerZone)}
             </span>{" "}
             → <span className="font-medium text-ink">{formatDateTime(event.toStartsAt, viewerZone)}</span>
+          </p>
+        )}
+
+        {/* Where the appointment happens, on the entry that moved it.
+            
+            A move replaces the one detail the reader had memorised, so the
+            record of it is the place a self-contained answer is worth repeating:
+            the new time is directly above, and this is the other half of "so
+            where and when am I going?".
+
+            Only on a reschedule, and only ever the *current* venue — which is
+            not a historic claim, because moving an appointment does not move it:
+            the service and the provider are unchanged, so the venue on the
+            booking now is the venue this move led to. Rendered from the booking
+            rather than stored on the event for exactly that reason, and so that
+            a provider who later corrects their address does not leave a stale
+            one printed in the history.
+
+            Deliberately not folded into `event.reason`: that field holds the
+            words the other party wrote, and appending a venue to "Can't make
+            Tuesday" would put our sentence inside their quotation. */}
+        {event.toStatus === "rescheduled" && venue?.text && (
+          <p className="mt-1 flex items-start gap-1 text-xs text-ink-3">
+            <Icon
+              name={venue.isVirtual ? "videocam" : "place"}
+              size={13}
+              className="mt-0.5 shrink-0"
+            />
+            {/* The link on its own line rather than trailing the sentence: a
+                margin gives sighted readers the gap, but anything reading the
+                text content runs "…the provider" straight into "https://…". */}
+            <span>
+              <span className="whitespace-pre-line">{`${venue.term}: ${venue.text}`}</span>
+              {venue.meetingLink && (
+                <a
+                  href={venue.meetingLink}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="mt-0.5 block break-all text-primary underline decoration-line-strong underline-offset-2 hover:text-ink"
+                >
+                  {venue.meetingLink}
+                </a>
+              )}
+            </span>
           </p>
         )}
 

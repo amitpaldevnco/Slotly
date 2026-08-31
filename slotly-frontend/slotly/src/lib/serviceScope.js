@@ -212,3 +212,78 @@ export function normaliseCountryCode(code) {
   const trimmed = code.trim().toUpperCase();
   return /^[A-Z]{2}$/.test(trimmed) ? trimmed : null;
 }
+
+/**
+ * What a virtual appointment's venue line says.
+ *
+ * A virtual appointment has no address by design — `serialiseBooking` returns
+ * `location: null` for one even when the provider has a clinic on file, because
+ * printing the clinic beside an online session would be telling the client to
+ * travel somewhere they should not go. But "no address" was being rendered as
+ * *nothing*, so the one screen a client opens on the day answered "where is
+ * this?" with silence and left them to infer it from a "Virtual" label
+ * elsewhere on the page. Saying it plainly is the whole point.
+ */
+export const VIRTUAL_LOCATION_TEXT = "Virtual meeting with the provider";
+
+/**
+ * Longest meeting link the form accepts. Mirrors `services.meeting_link`, and
+ * the server's `MEETING_LINK_MAX` in `services/bookingScope.js`.
+ *
+ * A `maxLength` on the input rather than a validation rule: the server is what
+ * decides, and stopping the keystroke is friendlier than accepting 600
+ * characters and returning a 400 about the last hundred.
+ */
+export const MEETING_LINK_MAX = 500;
+
+/**
+ * The venue for one appointment, as a sentence and its label.
+ *
+ * Lives here with the delivery labels, and for the same reason given at the top
+ * of this file: the booking page's side panel, its confirmation dialog and the
+ * booking detail page all have to answer "where is this?" identically. Three
+ * copies of the wording is three chances for one screen to say "Where" and read
+ * as a different question from "Where to meet".
+ *
+ * The two headings are deliberately different verbs. "Where to meet" is a place
+ * to travel to; "Where to attend" is a thing to join. A single "Where" for both
+ * made a virtual session read like a venue whose address was missing.
+ *
+ * @param {{deliveryType?: string, location?: {address?: string|null,
+ *          meetingLink?: string|null}|null}|null|undefined} service
+ *   A service, or a booking's `service` — both carry the same shape from the
+ *   API, which is why one function serves both pages.
+ * @returns {{term: string, isVirtual: boolean, text: string|null,
+ *            address: string|null, meetingLink: string|null}}
+ *   `text` is null only for an in-person appointment whose provider has no
+ *   address on file. That is a real gap rather than something to invent a
+ *   sentence for — the provider is told about it by their own availability
+ *   health report — so callers render nothing in that case.
+ */
+export function describeLocation(service) {
+  if (!isInPerson(service)) {
+    return {
+      term: "Where to attend",
+      isVirtual: true,
+      text: VIRTUAL_LOCATION_TEXT,
+      address: null,
+      // Read through `location` rather than off the service directly, so
+      // whichever column eventually backs it is a change to the serialiser and
+      // not to every screen. Null today: nothing stores a link yet, and the
+      // requirement is to show one "if one exists".
+      meetingLink: service?.location?.meetingLink ?? null,
+    };
+  }
+
+  const address = service?.location?.address ?? null;
+
+  return {
+    term: "Where to meet",
+    isVirtual: false,
+    text: address,
+    address,
+    // An in-person appointment happens at an address. A link on one would be
+    // contradictory, so it is not surfaced even if a row somehow carried one.
+    meetingLink: null,
+  };
+}

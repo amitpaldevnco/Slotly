@@ -13,6 +13,8 @@
 import { describe, it, expect } from "vitest";
 import {
   judgeEligibility,
+  describeLocation,
+  VIRTUAL_LOCATION_TEXT,
   isInPerson,
   isDomestic,
   deliveryLabel,
@@ -198,5 +200,84 @@ describe("countryLabel", () => {
     expect(countryLabel(null)).toBe("");
     expect(countryLabel("")).toBe("");
     expect(countryLabel("nonsense")).toBe("");
+  });
+});
+
+describe("describeLocation", () => {
+  it("answers the question for a virtual appointment instead of going quiet", () => {
+    // The bug this exists to prevent: a virtual appointment has no address by
+    // design, and the venue row used to be hidden entirely on one — so the page
+    // a client opens on the day said "Virtual" and then nothing.
+    const venue = describeLocation({ deliveryType: "virtual" });
+
+    expect(venue.isVirtual).toBe(true);
+    expect(venue.term).toBe("Where to attend");
+    expect(venue.text).toBe(VIRTUAL_LOCATION_TEXT);
+    expect(venue.text).toMatch(/virtual meeting/i);
+    expect(venue.address).toBeNull();
+  });
+
+  it("names the address for an in-person appointment", () => {
+    const venue = describeLocation({
+      deliveryType: "in_person",
+      location: { address: "Unit 4, 118 Great Portland Street\nLondon W1W 6PP", country: "GB" },
+    });
+
+    expect(venue.isVirtual).toBe(false);
+    expect(venue.term).toBe("Where to meet");
+    expect(venue.address).toContain("Great Portland Street");
+    expect(venue.text).toBe(venue.address);
+  });
+
+  it("uses different verbs for the two, so neither reads as the other", () => {
+    // "Where to meet" is somewhere to travel to; "Where to attend" is something
+    // to join. A single "Where" for both made a virtual session read like a
+    // venue whose address had gone missing.
+    const meet = describeLocation({ deliveryType: "in_person", location: { address: "x" } });
+    const attend = describeLocation({ deliveryType: "virtual" });
+
+    expect(meet.term).not.toBe(attend.term);
+  });
+
+  it("returns no text for an in-person appointment with no address on file", () => {
+    // A real gap rather than something to invent a sentence for: the provider is
+    // told about it by their own availability health report, and the caller
+    // renders nothing. Asserted so a future default cannot quietly paper over it.
+    for (const service of [
+      { deliveryType: "in_person", location: null },
+      { deliveryType: "in_person" },
+      null,
+      undefined,
+    ]) {
+      expect(describeLocation(service).text).toBeNull();
+    }
+  });
+
+  it("treats an absent delivery type as in-person, matching the column default", () => {
+    expect(describeLocation({ location: { address: "x" } }).isVirtual).toBe(false);
+    expect(describeLocation({ location: { address: "x" } }).term).toBe("Where to meet");
+  });
+
+  it("surfaces a meeting link on a virtual appointment when one is stored", () => {
+    // Nothing populates this yet — no column backs it. The conditional is here
+    // so the screens already work the day one does, and so that the link is read
+    // through `location` and not off six different screens.
+    const venue = describeLocation({
+      deliveryType: "virtual",
+      location: { meetingLink: "https://example.test/room/abc" },
+    });
+
+    expect(venue.meetingLink).toBe("https://example.test/room/abc");
+  });
+
+  it("never surfaces a meeting link on an in-person appointment", () => {
+    // A link on a journey is contradictory: it would tell the client they could
+    // join from home an appointment they are expected to travel to.
+    const venue = describeLocation({
+      deliveryType: "in_person",
+      location: { address: "x", meetingLink: "https://example.test/room/abc" },
+    });
+
+    expect(venue.meetingLink).toBeNull();
   });
 });

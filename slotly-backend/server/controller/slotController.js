@@ -21,7 +21,7 @@ import { generateSlots, MAX_RANGE_DAYS } from "../services/slotEngine.js";
 import { getEffectiveAvailability } from "../services/availabilityResolver.js";
 import { TIME_FORMAT, ACTIVE_STATUSES, describeRescheduleTerms } from "../services/bookingRules.js";
 import { parseId } from "../middleware/validateParams.js";
-import { evaluateBookingScope } from "../services/bookingScope.js";
+import { evaluateBookingScope, buildVenue } from "../services/bookingScope.js";
 
 /**
  * GET /api/providers/:providerId/slots — public.
@@ -290,14 +290,15 @@ export const getAvailableSlots = async (req, res) => {
         bufferBefore: row.buffer_before,
         bufferAfter: row.buffer_after,
         // How the appointment is delivered, and where. The booking page needs
-        // both: an in-person slot has an address the client is about to travel
-        // to, and a virtual one deliberately has none.
+        // both, and needs them before the client picks a time: an in-person slot
+        // has an address they are about to plan a journey to, and a virtual one
+        // has a room to join instead. Same shape and same rules as the service
+        // and booking serialisers, from the same function, so the page that
+        // takes the booking cannot describe the venue differently from the page
+        // that shows it afterwards.
         deliveryType: row.delivery_type ?? "in_person",
         bookingScope: row.booking_scope ?? "international",
-        location:
-          (row.delivery_type ?? "in_person") === "in_person" && row.provider_address
-            ? { address: row.provider_address, country: (row.provider_country ?? "").trim() || null }
-            : null,
+        location: buildVenue(row, (code) => (code ?? "").trim() || null),
       },
       clientTimezone: viewerTimezone,
       providerTimezone: row.provider_timezone,
