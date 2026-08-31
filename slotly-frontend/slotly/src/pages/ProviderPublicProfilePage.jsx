@@ -138,6 +138,11 @@ export default function ProviderPublicProfilePage() {
   const isOwner = Boolean(provider?.isOwner);
   const canBook = user?.role === "client";
 
+  // Distinct from `!canBook`: a provider reading another provider's page is
+  // signed in and still cannot book, and the panel owes those two readers
+  // different sentences.
+  const isSignedIn = Boolean(user);
+
   // Selecting from a row in the list. The panel's own dropdown calls
   // `setSelectedServiceId` directly: it is already the panel, so it has nothing
   // to point at and nothing to open.
@@ -169,8 +174,31 @@ export default function ProviderPublicProfilePage() {
   // value matching none of its own options. Falling back here means the panel is
   // right on the frame it first appears, and `selectedServiceId` holds only what
   // the reader actually picked.
+  // Judges one service for this reader. Same call the panel's sentence uses, so
+  // the service the panel opens on and the verdict it prints cannot disagree.
+  const judge = (service) =>
+    judgeEligibility({
+      service,
+      clientCountry: user?.country,
+      providerCountry: service?.location?.country ?? provider?.country ?? null,
+    });
+
+  // The first service this reader can actually book, falling back to the first
+  // bookable one.
+  //
+  // Plain `bookable[0]` opened the panel on whatever came first, which for a
+  // provider whose first service is domestic meant every out-of-country visitor
+  // arrived at an inert "Not available in your country" — while two other
+  // services on the same page were open to them. The refusal is still reachable
+  // and still worded the same way; it is just no longer the default.
+  //
+  // Only the *opening* selection is affected. Once the reader picks something,
+  // `selectedServiceId` wins, including when they pick one they cannot book.
+  const defaultService =
+    bookable.find((s) => judge(s).eligible) || bookable[0] || null;
+
   const selectedService =
-    bookable.find((s) => s.id === selectedServiceId) || bookable[0] || null;
+    bookable.find((s) => s.id === selectedServiceId) || defaultService;
 
   // Whether the signed-in reader may book the selected service.
   //
@@ -178,11 +206,31 @@ export default function ProviderPublicProfilePage() {
   // against the row it is about to write, and `judgeEligibility` mirrors the
   // server's permissiveness exactly — including allowing an unknown country
   // through — so the two can never disagree about who is turned away.
-  const selectedEligibility = judgeEligibility({
-    service: selectedService,
-    clientCountry: user?.country,
-    providerCountry: selectedService?.location?.country ?? data?.provider?.country ?? null,
-  });
+  const selectedEligibility = judge(selectedService);
+
+  // Whether the badge may say "Accepting bookings".
+  //
+  // An active service is necessary and was being treated as sufficient, so a
+  // provider who had published a service but no hours advertised that they were
+  // accepting bookings while every date in the picker came back empty. Hours are
+  // the other half of a bookable slot — the engine starts from the weekly
+  // pattern, so with nothing in it there is nothing to subtract from.
+  //
+  // A future `open` exception counts on its own: it is a one-off outside the
+  // usual week, and a provider with no weekly pattern and one open Saturday is
+  // genuinely bookable that Saturday. Past exceptions cannot reach this — the
+  // endpoint already drops anything that ended before today.
+  //
+  // `availability` is null when that request failed (it is fetched with a
+  // `.catch`), and a network hiccup is not evidence that a provider has closed.
+  // In that case the badge keeps its previous meaning rather than accusing them
+  // of having no hours.
+  const hasPublishedHours =
+    availability == null ||
+    availability.rules?.length > 0 ||
+    (availability.exceptions ?? []).some((exception) => exception.kind === "open");
+
+  const acceptingBookings = bookable.length > 0 && hasPublishedHours;
 
   if (loading) return <PageLoader label="Loading provider…" />;
 
@@ -332,7 +380,7 @@ export default function ProviderPublicProfilePage() {
                   </span>
                 )}
                 <span className="rounded-full bg-surface-variant px-3 py-1 font-caption text-caption font-bold uppercase tracking-wider text-on-surface">
-                  {bookable.length > 0
+                  {acceptingBookings
                     ? "Accepting bookings"
                     : "Not accepting bookings"}
                 </span>
@@ -690,6 +738,7 @@ export default function ProviderPublicProfilePage() {
                 providerId={providerId}
                 isOwner={isOwner}
                 canBook={canBook}
+                isSignedIn={isSignedIn}
               />
             </div>
 
@@ -734,6 +783,7 @@ export default function ProviderPublicProfilePage() {
             providerId={providerId}
             isOwner={isOwner}
             canBook={canBook}
+            isSignedIn={isSignedIn}
             onCompare={(event) => {
               event.preventDefault();
               jumpToServices.current = true;

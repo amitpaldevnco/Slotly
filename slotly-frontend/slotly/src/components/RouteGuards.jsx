@@ -32,6 +32,7 @@
 import { Navigate, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { ErrorState, PageLoader } from "./ui/Feedback";
+import { safeReturnTo } from "../lib/returnTo";
 
 /**
  * Shown when the session could not be read because the server did not answer.
@@ -145,15 +146,30 @@ export function CompleteProfileRoute() {
  *
  * Sends a signed-in user onward rather than showing them a login form they have
  * already used, and picks the destination by how far through setup they are.
+ *
+ * ## Why this guard reads `state.from` too
+ *
+ * It has to agree with `LoginPage` about where a successful sign-in lands,
+ * because the two race and this one wins. Always sending people to `/dashboard`
+ * silently overrode every `state.from` the three guards above had just taken
+ * care to record. See `lib/returnTo` for the full account.
  */
 export function GuestOnlyRoute() {
   const { user, loading } = useAuth();
+  const location = useLocation();
 
   // The same label as the three guards above it. All four are waiting on the
     // same `/auth/me` call, and this one alone said "Loading…" — so which of two
     // sentences a reader saw depended on which route they happened to open.
   if (loading) return <PageLoader label="Checking your session…" />;
-  if (user) return <Navigate to={user.role ? "/dashboard" : "/complete-profile"} replace />;
+
+  if (user) {
+    // A half-registered account still has to finish choosing a role first —
+    // `state.from` is a page that would only bounce them back here.
+    if (!user.role) return <Navigate to="/complete-profile" replace />;
+    return <Navigate to={safeReturnTo(location.state?.from)} replace />;
+  }
 
   return <Outlet />;
 }
+

@@ -124,3 +124,90 @@ export function categoryOptions(current) {
 
   return [{ value: trimmed, label: `${trimmed} (not a listed category)` }, ...canonical];
 }
+
+/**
+ * Material Symbols glyph per business type, so a list of categories is
+ * scannable rather than a column of identical tags.
+ *
+ * Keys are matched as casefolded *substrings*, which is what lets one entry
+ * cover the canonical name and the legacy free-text values that normalise onto
+ * it — "Physiotherapy" and "Physio" both want the same glyph as Healthcare's
+ * neighbours, and a provider who typed "Sports Physio" still gets one.
+ *
+ * Lives here rather than in the component that first needed it because it is now
+ * read by two screens — the client dashboard's category card and the landing
+ * page's category tiles — and this file exists precisely because a category list
+ * copied into a second place is a list that starts disagreeing with itself.
+ */
+const CATEGORY_ICONS = {
+  physiotherapy: "exercise",
+  physio: "exercise",
+  healthcare: "stethoscope",
+  health: "stethoscope",
+  wellness: "spa",
+  fitness: "fitness_center",
+  tutoring: "school",
+  education: "school",
+  consulting: "strategy",
+  business: "strategy",
+  legal: "gavel",
+  beauty: "content_cut",
+  therapy: "psychology",
+  travel: "flight",
+  finance: "payments",
+  photography: "photo_camera",
+  automotive: "directions_car",
+  repair: "build",
+  home: "home_repair_service",
+  pet: "pets",
+};
+
+/**
+ * A glyph for one category name.
+ *
+ * Falls back to the generic tag rather than leaving a hole for a business type
+ * nobody anticipated — providers can store an unlisted category, so this has to
+ * answer for any string.
+ *
+ * @param {string|null|undefined} category
+ * @returns {string} A Material Symbols ligature.
+ */
+export function categoryIcon(category) {
+  const key = String(category || "").toLowerCase();
+  const match = Object.keys(CATEGORY_ICONS).find((name) => key.includes(name));
+  return match ? CATEGORY_ICONS[match] : "category";
+}
+
+/**
+ * Groups a directory response into categories, most providers first.
+ *
+ * The one honest way to answer "what can I find here?" without a telemetry
+ * endpoint: it counts the public directory, which is a single cheap request the
+ * discovery page already makes. The ranking is therefore "most providers" and
+ * nothing more, which is what the call sites say in their own labels.
+ *
+ * Counted through `normaliseCategory` because every caller renders these as
+ * links to `/providers?category=…`, and that page matches on the normalised
+ * value. Counting the raw `businessType` instead produced links that advertised
+ * six providers and returned none — "Therapy" is not a category the directory
+ * offers, and all six of those normalise to Healthcare.
+ *
+ * @param {Array<{businessType?: string|null}>} providers Rows from `GET /providers`.
+ * @param {number} [limit] How many to keep. Omit for all of them.
+ * @returns {Array<{name: string, count: number}>}
+ */
+export function groupByCategory(providers, limit) {
+  const counts = new Map();
+
+  for (const provider of providers ?? []) {
+    const name = normaliseCategory(provider.businessType);
+    if (!name) continue;
+    counts.set(name, (counts.get(name) ?? 0) + 1);
+  }
+
+  const ranked = [...counts.entries()]
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([name, count]) => ({ name, count }));
+
+  return limit == null ? ranked : ranked.slice(0, limit);
+}

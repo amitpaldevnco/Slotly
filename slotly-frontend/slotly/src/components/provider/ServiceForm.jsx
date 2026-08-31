@@ -506,7 +506,15 @@ export default function ServiceForm({ existingService, onSaved, onCancel, formId
                 </span>
               </div>
 
-              <p className="mb-4 line-clamp-3 font-body text-body text-on-surface-variant">
+              {/* `whitespace-pre-line` because the field's own hint promises
+                  "Line breaks are kept, so a list stays a list" — and this
+                  block is captioned as what the client will see. Without it the
+                  preview was the one place in the flow that flattened them, so
+                  a provider typing a list was shown a paragraph and told that
+                  was the result. The clamp stays: three lines is what the card
+                  on the booking page shows, and the full text opens in Details.
+                  */}
+              <p className="mb-4 line-clamp-3 whitespace-pre-line font-body text-body text-on-surface-variant">
                 {fields.description || "Description will appear here."}
               </p>
 

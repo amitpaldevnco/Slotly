@@ -269,7 +269,14 @@ export default function BookingDetailPage() {
                       <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-ink-3">
                         From the client
                       </p>
-                      <p className="mt-1 text-[0.8125rem] leading-relaxed text-ink">
+                      {/* `whitespace-pre-line`, as everywhere else a person's
+                          own words are shown back to them — the address above,
+                          the message thread, the reviews, the service
+                          description. This paragraph and the reason below were
+                          the two that had been missed, so a note typed as a
+                          list was stored with its breaks intact and rendered
+                          as one run-on line. */}
+                      <p className="mt-1 whitespace-pre-line text-[0.8125rem] leading-relaxed text-ink">
                         {booking.clientNote}
                       </p>
                     </div>
@@ -279,7 +286,7 @@ export default function BookingDetailPage() {
                       <p className="text-[0.6875rem] font-semibold uppercase tracking-[0.06em] text-danger-ink">
                         Cancellation reason
                       </p>
-                      <p className="mt-1 text-[0.8125rem] leading-relaxed text-danger-ink">
+                      <p className="mt-1 whitespace-pre-line text-[0.8125rem] leading-relaxed text-danger-ink">
                         {booking.cancellationReason}
                       </p>
                     </div>

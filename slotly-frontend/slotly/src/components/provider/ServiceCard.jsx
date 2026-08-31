@@ -177,8 +177,15 @@ export default function ServiceCard({
           card goes back to being sized by its text, which is the one failure
           mode this is here to prevent. `calc()` over a custom property has no
           such floor. */}
+      {/* `whitespace-pre-line` to match the form's live preview and the full
+          description in Details — this is the card that preview is a preview
+          *of*, so the two flattening or keeping line breaks differently is the
+          one way the preview could still lie. The clamp and the reserved height
+          above are unaffected: three lines is still three lines, the cut still
+          lands on a line boundary, and a card with no description still reserves
+          the same block. */}
       <p
-        className={`mb-6 line-clamp-3 min-h-[calc(3*var(--text-small)*var(--text-small--line-height))] font-small text-small text-on-surface-variant ${
+        className={`mb-6 line-clamp-3 min-h-[calc(3*var(--text-small)*var(--text-small--line-height))] whitespace-pre-line font-small text-small text-on-surface-variant ${
           retired ? "opacity-70" : ""
         }`}
       >

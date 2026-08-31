@@ -40,7 +40,7 @@ import EmptyState, { ErrorState, SkeletonRows } from "../ui/Feedback";
 import { countdownTo, formatTime, greeting, relativeTime } from "../../lib/time";
 import { container, formatDuration, statusStyle, zoneName } from "../../lib/ui";
 import { DISCOVERY_LABEL } from "../../lib/discovery";
-import { normaliseCategory } from "../../lib/categories";
+import { categoryIcon, groupByCategory } from "../../lib/categories";
 
 export default function ClientDashboard({ user }) {
   const viewerZone = user.timezone || "UTC";
@@ -355,30 +355,6 @@ function AppointmentSummary({ upcoming, past }) {
   );
 }
 
-/** Material Symbols glyph per business type, so the categories are scannable. */
-const CATEGORY_ICONS = {
-  physiotherapy: "exercise",
-  physio: "exercise",
-  healthcare: "stethoscope",
-  health: "stethoscope",
-  wellness: "spa",
-  fitness: "fitness_center",
-  tutoring: "school",
-  education: "school",
-  consulting: "strategy",
-  business: "strategy",
-  legal: "gavel",
-  beauty: "content_cut",
-  therapy: "psychology",
-};
-
-/** Falls back to a generic tag rather than leaving a hole for an unknown type. */
-function categoryIcon(category) {
-  const key = String(category || "").toLowerCase();
-  const match = Object.keys(CATEGORY_ICONS).find((name) => key.includes(name));
-  return match ? CATEGORY_ICONS[match] : "category";
-}
-
 /**
  * The discovery card: which kinds of provider are on the platform, and how many
  * of each.
@@ -422,20 +398,10 @@ function PopularCategories() {
   //
   // Normalising here means the name, the count and the link all agree with the
   // destination, which is the only way a count on a link is worth showing.
-  const categories = useMemo(() => {
-    const counts = new Map();
-
-    for (const provider of providers?.providers ?? []) {
-      const name = normaliseCategory(provider.businessType);
-      if (!name) continue;
-      counts.set(name, (counts.get(name) ?? 0) + 1);
-    }
-
-    return [...counts.entries()]
-      .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
-      .slice(0, 2)
-      .map(([name, count]) => ({ name, count }));
-  }, [providers]);
+  const categories = useMemo(
+    () => groupByCategory(providers?.providers, 2),
+    [providers]
+  );
 
   return (
     <div className="rounded-lg border border-outline-variant bg-surface p-6">

@@ -4,6 +4,7 @@ import { useState, useEffect } from "react";
 import { useNavigate, useSearchParams, useLocation } from "react-router-dom";
 import { GoogleLogin } from "@react-oauth/google";
 import { useAuth } from "../context/AuthContext";
+import { safeReturnTo } from "../lib/returnTo";
 import { parseApiError } from "../api/client";
 import * as authApi from "../api/auth";
 import Field, { Input } from "../components/ui/Field";
@@ -115,7 +116,12 @@ export default function LoginPage() {
   // Where to land after signing in. A guard or a "Sign in to book" link puts the
   // page the user was actually reaching for in `location.state.from`, so they
   // resume what they were doing instead of being dropped on the dashboard.
-  const redirectTo = location.state?.from || "/dashboard";
+  //
+  // Read through the same helper `GuestOnlyRoute` uses. That guard wraps this
+  // page and redirects the instant the auth context gains a user, so the two
+  // race on every successful sign-in — sharing the resolution is what stops them
+  // disagreeing about the destination.
+  const redirectTo = safeReturnTo(location.state?.from);
 
   const goAfterAuth = (profileComplete) => {
     navigate(profileComplete ? redirectTo : "/complete-profile", { replace: true });

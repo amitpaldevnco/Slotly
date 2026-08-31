@@ -32,6 +32,10 @@ export default function BookingPanel({
   providerId,
   isOwner,
   canBook,
+  // Whether anyone is signed in at all. `canBook` alone cannot answer that —
+  // it is false for a signed-out visitor and for a signed-in provider, and the
+  // two need different sentences.
+  isSignedIn,
   // Fired when a control inside the panel takes the reader somewhere else on
   // the page. Only the sheet supplies it.
   onCompare,
@@ -217,6 +221,23 @@ export default function BookingPanel({
             Choose a time
             <Icon name="arrow_forward" size={18} />
           </Link>
+        ) : isSignedIn ? (
+          /* Signed in, not the owner, and still cannot book — which leaves one
+             case: a provider looking at another provider's page. This branch
+             used to fall through to "Sign in to book" below, because `canBook`
+             is false for both a visitor and a provider and nothing here told
+             them apart. So a signed-in provider was asked to sign in, under a
+             note promising times in a timezone they were already seeing, by a
+             link to `/login` that `GuestOnlyRoute` bounces straight back.
+
+             Stated rather than offered, for the same reason the ineligible
+             branch above stops offering "Choose a time": the action cannot
+             succeed, so the honest thing is to say why instead of spending the
+             reader's click on finding out. */
+          <p className="rounded-md border border-outline-variant bg-surface-container-low p-3 font-caption text-caption text-on-surface-variant">
+            Only client accounts can book appointments. Yours is a provider
+            account, so there is nothing to book here.
+          </p>
         ) : (
           <>
             <Link
